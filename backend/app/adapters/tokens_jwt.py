@@ -24,6 +24,11 @@ consumption registry is a Task 9 concern, not a token-format concern.
 Errors: :meth:`validate` raises only :class:`app.adapters.protocols.TokenError`
 subclasses (``TokenExpiredError`` / ``InvalidTokenError``) so callers never
 catch PyJWT exceptions directly.
+
+**Secret strength:** ``Settings.secret_key`` has no strength floor (Task 2
+settings contract — do not add validation there). HS256 keys should be at
+least 32 random bytes; deployments must set a strong ``SECRET_KEY`` and local
+examples should keep their placeholder ≥32 characters.
 """
 
 from __future__ import annotations
@@ -108,6 +113,11 @@ class JwtAccessTokenProvider(_JwtProviderBase, AccessTokenProvider):
     def issue(self, *, user_id: int, username: str) -> str:
         if isinstance(user_id, bool) or not isinstance(user_id, int):
             raise TypeError(f"user_id must be an int, got {type(user_id).__name__}")
+        if user_id < 0:
+            # Must agree with _parse_user_id: a negative id would encode to
+            # "-1", which validate() rejects ("-1".isdigit() is False), so the
+            # provider refuses to mint a token it would reject itself.
+            raise ValueError(f"user_id must be >= 0, got {user_id}")
         username = username.strip()
         if not username:
             raise ValueError("username must not be blank")
