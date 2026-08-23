@@ -7,13 +7,13 @@
 # ./frontend, Vite production output in ./dist (the Vite default outDir).
 
 # --- Build stage ---
-FROM node:20-alpine AS build
+FROM node:22-alpine AS build
 
 WORKDIR /app
 
 # Install dependencies first for layer caching. `npm install` works with or
-# without a committed package-lock.json.
-COPY package.json package-lock.json* ./
+# without a committed package-lock.json (one is generated when absent).
+COPY package.json* ./
 RUN npm install
 
 # Build the production bundle.
