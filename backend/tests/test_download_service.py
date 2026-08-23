@@ -20,6 +20,7 @@ Covers :class:`app.application.download_service.DownloadService`:
   download; unknown → ``3001``; not completed → ``5002``.
 """
 
+import threading
 import uuid
 from datetime import timedelta
 
@@ -354,7 +355,7 @@ class TestGetFile:
     def test_completed_download_returns_resolved_file(self, service, engine, storage):
         task_id = seed_parse_task(engine)
         download_id = seed_completed_with_file(engine, storage, task_id=task_id)
-        token = service.issue_download_token(download_id)
+        token = service.issue_download_token(download_id).token
         file = service.get_file(download_id, token)
         assert file.path.is_file()
         assert file.path.read_bytes() == BUBBLE_DATA
@@ -440,7 +441,6 @@ class TestGetFile:
         task_id = seed_parse_task(engine)
         download_id = seed_completed_with_file(engine, storage, task_id=task_id)
         other = str(uuid.uuid4())
-        token = service.issue_download_token(download_id)
         # Re-issue with a different download_id target (same secret).
         provider = get_one_time_token_provider(make_settings())
         wrong = provider.issue(download_id=other)
@@ -452,7 +452,7 @@ class TestGetFile:
     def test_token_single_use_first_ok_second_5003(self, service, engine, storage):
         task_id = seed_parse_task(engine)
         download_id = seed_completed_with_file(engine, storage, task_id=task_id)
-        token = service.issue_download_token(download_id)
+        token = service.issue_download_token(download_id).token
         assert service.get_file(download_id, token).path.is_file()
         with pytest.raises(ApiError) as excinfo:
             service.get_file(download_id, token)
@@ -465,10 +465,38 @@ class TestGetFile:
         # fresh one-time token is a new link and must still serve the file.
         task_id = seed_parse_task(engine)
         download_id = seed_completed_with_file(engine, storage, task_id=task_id)
-        first = service.issue_download_token(download_id)
+        first = service.issue_download_token(download_id).token
         assert service.get_file(download_id, first).path.is_file()
-        second = service.issue_download_token(download_id)
+        second = service.issue_download_token(download_id).token
         assert service.get_file(download_id, second).path.is_file()
+
+    def test_concurrent_same_token_serves_exactly_once(self, service, engine, storage):
+        # Two simultaneous get_file calls with the SAME token: the atomic
+        # claim must let exactly one serve and reject the other with 5003
+        # (SQLite serializes the writes; only the first UPDATE matches).
+        task_id = seed_parse_task(engine)
+        download_id = seed_completed_with_file(engine, storage, task_id=task_id)
+        token = service.issue_download_token(download_id).token
+        barrier = threading.Barrier(2)
+        served: list[bool] = []
+        rejected: list[int] = []
+
+        def attempt() -> None:
+            barrier.wait()
+            try:
+                service.get_file(download_id, token)
+                served.append(True)
+            except ApiError as exc:
+                assert exc.code == CODE_FILE_TOKEN_INVALID
+                rejected.append(exc.code)
+
+        threads = [threading.Thread(target=attempt) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        assert len(served) == 1
+        assert len(rejected) == 1
 
     def test_missing_bubble_file_raises_5001(self, service, engine, storage):
         task_id = seed_parse_task(engine)
@@ -479,7 +507,7 @@ class TestGetFile:
             progress=100.0,
             bubble_path=str(storage.bubble_root(MediaType.VIDEO) / "gone.mp4"),
         )
-        token = service.issue_download_token(download_id)
+        token = service.issue_download_token(download_id).token
         with pytest.raises(ApiError) as excinfo:
             service.get_file(download_id, token)
         exc = api_error(excinfo.value)
@@ -491,7 +519,7 @@ class TestGetFile:
         download_id = seed_download(
             engine, task_id=task_id, status=DownloadStatus.COMPLETED, progress=100.0
         )
-        token = service.issue_download_token(download_id)
+        token = service.issue_download_token(download_id).token
         with pytest.raises(ApiError) as excinfo:
             service.get_file(download_id, token)
         exc = api_error(excinfo.value)
@@ -511,7 +539,7 @@ class TestGetFile:
             progress=100.0,
             bubble_path=str(outside),
         )
-        token = service.issue_download_token(download_id)
+        token = service.issue_download_token(download_id).token
         with pytest.raises(ApiError) as excinfo:
             service.get_file(download_id, token)
         exc = api_error(excinfo.value)
@@ -532,7 +560,7 @@ class TestGetFile:
         download_id = seed_download(
             engine, task_id=task_id, status=DownloadStatus.COMPLETED, progress=100.0
         )
-        token = service.issue_download_token(download_id)
+        token = service.issue_download_token(download_id).token
         with pytest.raises(ApiError) as excinfo:
             service.get_file(download_id, token)
         exc = api_error(excinfo.value)
@@ -546,11 +574,14 @@ class TestIssueDownloadToken:
     ):
         task_id = seed_parse_task(engine)
         download_id = seed_completed_with_file(engine, storage, task_id=task_id)
-        token = service.issue_download_token(download_id)
+        issued = service.issue_download_token(download_id)
         provider = get_one_time_token_provider(make_settings())
-        claims = provider.validate(token)
+        claims = provider.validate(issued.token)
         assert claims.download_id == download_id
         assert claims.token_id
+        # The issuer reports the same expiry the token itself carries, so the
+        # WS complete event can surface the 5-minute link validity.
+        assert issued.expires_at == claims.expires_at
 
     def test_issue_unknown_download_raises_3001(self, service):
         with pytest.raises(ApiError) as excinfo:

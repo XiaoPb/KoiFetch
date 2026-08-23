@@ -21,10 +21,14 @@ Design decisions (stable contract for Task 11):
   running loop and records the loop alongside it, so ``publish`` can deliver
   through ``loop.call_soon_threadsafe`` — safe to call from any thread/loop
   (the test suite and real workers both use it).
+* **Bounded queues, drop-oldest.** Subscriber queues are capped
+  (:data:`_SUBSCRIBER_QUEUE_MAXSIZE`); a slow consumer that cannot keep up
+  loses its *oldest* queued event so the newest progress always lands. This
+  keeps a stalled connection from growing memory without bound.
 * **Dropped events are acceptable.** An event published before the subscriber
-  awaits its queue (or to a connection that is tearing down) is skipped; the
-  client reconciles via ``GET /api/download/progress/{id}``. Progress is
-  lossy by nature; the WS is a live-update channel, not a record.
+  awaits its queue (or to a connection that is tearing down, or into a full
+  queue) is skipped; the client reconciles via ``GET /api/download/progress/{id}``.
+  Progress is lossy by nature; the WS is a live-update channel, not a record.
 * **``subscriber_count`` exists for tests/observability** — asserting that a
   closed connection releases its subscription.
 """
@@ -36,6 +40,10 @@ import threading
 from collections import defaultdict
 
 __all__ = ["DownloadEventHub", "event_hub"]
+
+# Cap on queued events per subscriber: progress is lossy by design, so a slow
+# consumer drops its oldest events instead of growing memory without bound.
+_SUBSCRIBER_QUEUE_MAXSIZE = 100
 
 
 class DownloadEventHub:
@@ -56,7 +64,7 @@ class DownloadEventHub:
         handler does this); the queue is bound to that loop so ``publish`` can
         deliver thread-safely.
         """
-        queue: asyncio.Queue[dict] = asyncio.Queue()
+        queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=_SUBSCRIBER_QUEUE_MAXSIZE)
         loop = asyncio.get_running_loop()
         with self._lock:
             self._subscribers[download_id][queue] = loop
@@ -76,16 +84,40 @@ class DownloadEventHub:
         """Deliver ``event`` to every current subscriber of ``download_id``.
 
         Safe from any thread/event loop: delivery is scheduled on each
-        subscriber's own loop via ``call_soon_threadsafe``. Subscribers whose
-        loop is closed (torn-down connections) are skipped; the caller never
-        blocks on a slow consumer.
+        subscriber's own loop via ``call_soon_threadsafe`` and never blocks on
+        a slow consumer — a full queue drops its oldest event instead.
+        Subscribers whose loop is closed (torn-down connections) are skipped.
         """
         with self._lock:
             pairs = list(self._subscribers.get(download_id, {}).items())
         for queue, loop in pairs:
             if loop.is_closed():
                 continue
-            loop.call_soon_threadsafe(queue.put_nowait, event)
+            try:
+                # The loop may be closing between the is_closed check and the
+                # schedule (teardown race); skip such subscribers.
+                loop.call_soon_threadsafe(self._enqueue, queue, event)
+            except RuntimeError:
+                continue
+
+    @staticmethod
+    def _enqueue(queue: asyncio.Queue, event: dict) -> None:
+        """Push ``event`` onto ``queue`` (drop-oldest when full).
+
+        Runs inside the subscriber's event loop via ``call_soon_threadsafe``,
+        so queue operations never cross loops.
+        """
+        try:
+            queue.put_nowait(event)
+        except asyncio.QueueFull:
+            try:
+                queue.get_nowait()  # drop the oldest event
+            except asyncio.QueueEmpty:  # pragma: no cover - race with the reader
+                pass
+            try:
+                queue.put_nowait(event)
+            except asyncio.QueueFull:  # pragma: no cover - hopelessly behind
+                pass
 
     def subscriber_count(self, download_id: str) -> int:
         """Number of live subscriptions for ``download_id`` (tests/observability)."""

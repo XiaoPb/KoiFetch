@@ -29,12 +29,14 @@ Design decisions (stable contract for Tasks 10-12):
   matches when the row holds no token_id or a *different* one), so reusing the
   same token always fails while a fresh issuance is a valid new link. Single
   use is therefore per *issuance*.
-* **Error precedence in ``get_file`` (documented).** task missing → ``3001``;
-  expired task → ``5004`` (410); not completed → ``5002`` (400); token rules →
-  ``5003`` (401); bubble file missing/escaped → ``5001`` (404). Status rules run
-  before token rules (they are about the task, not the credential) and the file
-  is verified *before* the token is consumed, so a failed attempt never burns
-  the link.
+* **Error precedence in ``get_file`` (documented).** a blank/missing token
+  short-circuits to ``5003`` (401) *before* any task/status lookup (a request
+  with no credential reveals nothing about the task); otherwise: task missing →
+  ``3001``; expired task → ``5004`` (410); not completed → ``5002`` (400); token
+  rules → ``5003`` (401); bubble file missing/escaped → ``5001`` (404). Status
+  rules run before token rules (they are about the task, not the credential)
+  and the file is verified *before* the token is consumed, so a failed attempt
+  never burns the link.
 * **Containment at resolution and at I/O.** The stored ``bubble_path`` is
   re-derived through :func:`app.domain.paths.build_path` against the live
   bubble root (traversal/corrupt paths → ``5001``), and
@@ -53,6 +55,7 @@ from __future__ import annotations
 import os
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -96,7 +99,7 @@ from app.domain.paths import PathOutsideRootError, build_path, is_within
 from app.infrastructure.database import session_scope
 from app.infrastructure.models import DownloadTask, ParseTask
 
-__all__ = ["DownloadService", "DownloadedFile"]
+__all__ = ["DownloadService", "DownloadedFile", "IssuedDownloadToken"]
 
 _MESSAGE_TASK_NOT_FOUND = "任务不存在 / Task not found"
 _MESSAGE_INVALID_SUBMIT = "请求参数错误 / Invalid request parameters"
@@ -121,6 +124,19 @@ class DownloadedFile:
     path: Path
     media_type: MediaType
     filename: str
+
+
+@dataclass(frozen=True)
+class IssuedDownloadToken:
+    """A freshly minted one-time download token plus its expiry.
+
+    Returned by :meth:`DownloadService.issue_download_token` so the transport
+    can surface both the token and the link's 5-minute validity window (the WS
+    ``complete`` event carries ``token_expire_at``).
+    """
+
+    token: str
+    expires_at: datetime
 
 
 class DownloadService:
@@ -237,10 +253,11 @@ class DownloadService:
     def get_file(self, download_id: str, token: str | None) -> DownloadedFile:
         """Validate the one-time token and resolve the completed bubble file.
 
-        Error precedence (see module docstring): ``3001``, ``5004`` (410),
-        ``5002`` (400), ``5003`` (401) for any token failure including reuse,
-        ``5001`` (404) for a missing/escaped bubble file. The token is consumed
-        atomically only after every other check passed.
+        Error precedence (see module docstring): a blank token short-circuits
+        to ``5003`` (401) ahead of every lookup; otherwise ``3001``, ``5004``
+        (410), ``5002`` (400), ``5003`` (401) for any token failure including
+        reuse, ``5001`` (404) for a missing/escaped bubble file. The token is
+        consumed atomically only after every other check passed.
         """
         if not token or not token.strip():
             raise ApiError(
@@ -304,15 +321,18 @@ class DownloadService:
                     HTTP_404_NOT_FOUND, CODE_FILE_NOT_FOUND, _MESSAGE_FILE_NOT_FOUND
                 )
 
-            # Single use, atomically: the UPDATE only matches when the row has
-            # no recorded token_id yet or a *different* one, so the same token
-            # can never serve twice (reuse → rowcount 0 → 5003) while a fresh
-            # issuance remains a valid new link. Concurrent same-token requests
-            # serialize on SQLite's write lock: only the first matches.
+            # Single use, atomically: the UPDATE only matches when the row is
+            # still COMPLETED and holds no token_id or a *different* one, so
+            # the same token can never serve twice (reuse → rowcount 0 → 5003)
+            # while a fresh issuance remains a valid new link. Concurrent
+            # same-token requests serialize on SQLite's write lock: only the
+            # first matches. The status guard closes the TOCTOU where the task
+            # is swept to ``expired`` between our check above and the claim.
             result = session.execute(
                 update(DownloadTask)
                 .where(
                     DownloadTask.download_id == download_id,
+                    DownloadTask.status == DownloadStatus.COMPLETED,
                     or_(
                         DownloadTask.token_id.is_(None),
                         DownloadTask.token_id != claims.token_id,
@@ -321,6 +341,16 @@ class DownloadService:
                 .values(token_id=claims.token_id, token_expires_at=claims.expires_at)
             )
             if result.rowcount == 0:
+                # Either this token was already used, or the task left
+                # COMPLETED (cleanup swept it to expired) mid-flight. Re-read
+                # the row to report the correct code; best-effort — under an
+                # in-flight write race the snapshot may still show COMPLETED,
+                # in which case reuse (5003) is the honest answer.
+                session.refresh(row)
+                if row.status == DownloadStatus.EXPIRED:
+                    raise ApiError(
+                        HTTP_410_GONE, CODE_FILE_EXPIRED, _MESSAGE_FILE_EXPIRED
+                    )
                 raise ApiError(
                     HTTP_401_UNAUTHORIZED,
                     CODE_FILE_TOKEN_INVALID,
@@ -332,7 +362,7 @@ class DownloadService:
                 filename=Path(row.bubble_path).name,
             )
 
-    def issue_download_token(self, download_id: str) -> str:
+    def issue_download_token(self, download_id: str) -> IssuedDownloadToken:
         """Mint a 5-minute one-time token for a completed download.
 
         This is how clients obtain a download link (the WS ``complete`` event
@@ -353,7 +383,9 @@ class DownloadService:
                     CODE_FILE_NOT_DOWNLOADED,
                     _MESSAGE_FILE_NOT_DOWNLOADED,
                 )
-        return self._token_provider.issue(download_id=download_id)
+        token = self._token_provider.issue(download_id=download_id)
+        claims = self._token_provider.validate(token)
+        return IssuedDownloadToken(token=token, expires_at=claims.expires_at)
 
     # -- internals -------------------------------------------------------------
 

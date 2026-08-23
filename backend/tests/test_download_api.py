@@ -211,6 +211,17 @@ class TestSubmitApi:
         assert response.status_code == 400
         assert response.json()["code"] == CODE_BAD_REQUEST
 
+    def test_submit_unknown_field_returns_generic_400(self, client):
+        # PRD §5.3 fields such as save_to_nas are Task 10 / NAS-API concerns:
+        # an unknown body field must be rejected loudly (extra="forbid"),
+        # never silently dropped while the client believes it took effect.
+        response = client.post(
+            "/api/download/submit",
+            json={"task_id": str(uuid.uuid4()), "save_to_nas": True},
+        )
+        assert response.status_code == 400
+        assert response.json()["code"] == CODE_BAD_REQUEST
+
     def test_parse_then_submit_end_to_end(self, tmp_path):
         """Real wiring (no overrides): POST /api/parse persists to the settings
         database, then POST /api/download/submit accepts its task_id."""
@@ -282,7 +293,7 @@ class TestFileApi:
     ):
         task_id = seed_parse_task(engine)
         download_id = seed_completed_with_file(engine, task_id=task_id, storage=storage)
-        token = app.state.download_service.issue_download_token(download_id)
+        token = app.state.download_service.issue_download_token(download_id).token
 
         response = client.get(self._file_url(download_id, token))
         assert response.status_code == 200
@@ -317,7 +328,7 @@ class TestFileApi:
     def test_file_reused_token_returns_5003(self, client, engine, app, storage):
         task_id = seed_parse_task(engine)
         download_id = seed_completed_with_file(engine, task_id=task_id, storage=storage)
-        token = app.state.download_service.issue_download_token(download_id)
+        token = app.state.download_service.issue_download_token(download_id).token
         first = client.get(self._file_url(download_id, token))
         assert first.status_code == 200
         second = client.get(self._file_url(download_id, token))
@@ -358,7 +369,7 @@ class TestFileApi:
             progress=100.0,
             bubble_path=str(bubble_root / "gone.mp4"),
         )
-        token = app.state.download_service.issue_download_token(download_id)
+        token = app.state.download_service.issue_download_token(download_id).token
         response = client.get(self._file_url(download_id, token))
         assert response.status_code == 404
         assert response.json()["code"] == CODE_FILE_NOT_FOUND

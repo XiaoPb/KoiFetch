@@ -4,20 +4,36 @@ Contract (documented in ``app.api.download``):
 
 * On connect the server sends one structured snapshot event — ``progress``
   for pending/downloading, ``complete`` for completed (with a one-time
-  ``download_url``), ``error`` for failed/expired.
+  ``download_url`` and ``token_expire_at``), ``error`` for failed/expired
+  (uniform shape: ``code`` + ``message`` + state fields).
 * Unknown download_id → an ``error`` event with ``code 3001`` then close.
 * Malformed download_id → an ``error`` event with ``code 400`` then close.
 * While connected, events published to the in-process event hub (the source
   Task 11's worker drives) are forwarded verbatim.
+* A client that disconnects while the handler is idle releases its hub
+  subscription server-side — asserted against a real uvicorn server, because
+  the TestClient tears the app down with the connection and would mask an
+  idle-subscription leak.
 """
 
+import json
+import socket
+import threading
+import time
 import uuid
 
 import pytest
+import uvicorn
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
+from websockets.sync.client import connect as websocket_connect
 
-from app.api.responses import CODE_BAD_REQUEST, CODE_TASK_NOT_FOUND
+from app.api.responses import (
+    CODE_BAD_REQUEST,
+    CODE_FILE_EXPIRED,
+    CODE_FILE_NOT_DOWNLOADED,
+    CODE_TASK_NOT_FOUND,
+)
 from app.application.download_events import DownloadEventHub
 from app.domain import DownloadStatus, MediaType
 from app.infrastructure import seed
@@ -141,6 +157,8 @@ class TestSnapshotOnConnect:
         assert data["progress"] == 100.0
         url = data["download_url"]
         assert url.startswith(f"/api/download/file/{download_id}?token=")
+        # The link's 5-minute validity window is surfaced explicitly.
+        assert data["token_expire_at"]
 
     def test_failed_task_sends_error_event(self, client, engine):
         task_id = seed_parse_task(engine)
@@ -155,6 +173,8 @@ class TestSnapshotOnConnect:
         assert event["type"] == "error"
         data = event["data"]
         assert data["status"] == "failed"
+        assert data["code"] == CODE_FILE_NOT_DOWNLOADED
+        assert data["message"]
         assert data["error_message"] == "download failed"
 
     def test_expired_task_sends_error_event(self, client, engine):
@@ -163,7 +183,10 @@ class TestSnapshotOnConnect:
         with client.websocket_connect(f"/ws/download/{download_id}") as ws:
             event = ws.receive_json()
         assert event["type"] == "error"
-        assert event["data"]["status"] == "expired"
+        data = event["data"]
+        assert data["status"] == "expired"
+        assert data["code"] == CODE_FILE_EXPIRED
+        assert data["message"]
 
     def test_unknown_download_sends_error_event_then_closes(self, client):
         with client.websocket_connect(f"/ws/download/{uuid.uuid4()}") as ws:
@@ -213,5 +236,63 @@ class TestLiveEvents:
         hub = app.state.download_event_hub
         with client.websocket_connect(f"/ws/download/{download_id}") as ws:
             assert ws.receive_json()["type"] == "progress"
-        # After the client closed, no subscribers may remain for this id.
+        # After the client closed, no subscribers may remain for this id. The
+        # server notices the disconnect asynchronously, so poll briefly.
+        deadline = time.monotonic() + 3
+        while hub.subscriber_count(download_id) > 0 and time.monotonic() < deadline:
+            time.sleep(0.02)
         assert hub.subscriber_count(download_id) == 0
+
+
+class TestDisconnectDetection:
+    """Server-side disconnect detection under a REAL uvicorn server.
+
+    The TestClient cancels the app task together with the connection, which
+    would mask an idle-subscription leak (a client that connects to a
+    terminal download, closes, and is never heard from again). With a real
+    server the handler must notice the close by itself and release the hub
+    subscription even though no further event is ever published.
+    """
+
+    @staticmethod
+    def _free_port() -> int:
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            return sock.getsockname()[1]
+
+    def test_idle_disconnect_releases_subscription(self, env):
+        settings, engine, app = env
+        task_id = seed_parse_task(engine)
+        download_id = seed_download(engine, task_id=task_id)
+        hub = app.state.download_event_hub
+        assert hub.subscriber_count(download_id) == 0
+
+        port = self._free_port()
+        config = uvicorn.Config(
+            app, host="127.0.0.1", port=port, log_level="error"
+        )
+        server = uvicorn.Server(config)
+        thread = threading.Thread(target=server.run, daemon=True)
+        thread.start()
+        try:
+            deadline = time.monotonic() + 10
+            while not server.started and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert server.started
+
+            with websocket_connect(
+                f"ws://127.0.0.1:{port}/ws/download/{download_id}"
+            ) as ws:
+                event = json.loads(ws.recv())
+                assert event["type"] == "progress"
+                assert hub.subscriber_count(download_id) == 1
+
+            # The client closed while the handler was idle (nothing was ever
+            # published): the handler must notice and unsubscribe on its own.
+            deadline = time.monotonic() + 5
+            while hub.subscriber_count(download_id) > 0 and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert hub.subscriber_count(download_id) == 0
+        finally:
+            server.should_exit = True
+            thread.join(timeout=10)

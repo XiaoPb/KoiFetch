@@ -22,19 +22,29 @@ Structured WS events (PRD §5.5), documented contract:
 
 * ``{"type": "progress", "data": {download_id, status, progress, speed,
   downloaded_bytes, total_bytes, remaining_time}}`` — pending or downloading.
+  ``remaining_time`` stays numeric seconds end-to-end; the PRD's display form
+  (约 2分钟) is the frontend's formatting concern.
 * ``{"type": "complete", "data": {..., "download_url":
-  "/api/download/file/{id}?token=..."}}`` — completed; the URL carries a fresh
-  one-time token minted at send time.
-* ``{"type": "error", "data": {..., "error_message"}}`` — failed/expired, or
-  a protocol failure with ``{"code", "message"}`` (unknown download → 3001;
-  malformed download_id → generic 400) followed by a close.
+  "/api/download/file/{id}?token=...", "token_expire_at": "<ISO-8601>"}}`` —
+  completed; the URL carries a fresh one-time token minted at send time and
+  ``token_expire_at`` its 5-minute validity. The field is named ``download_url``
+  (the plan's wording) — the PRD wavers between ``download_url`` and
+  ``file_url``; keep ``download_url``.
+* ``{"type": "error", "data": {code, message, ...state}}`` — one uniform error
+  shape. Task-state errors carry the state fields plus a code/message:
+  ``failed`` → code 5002 (文件未下载完成 — the file is not available because the
+  download failed), ``expired`` → code 5004 (文件已过期). Protocol failures
+  carry just ``{code, message}`` (unknown download → 3001; malformed
+  download_id → generic 400) and are followed by a close.
 
 The worker does not exist yet (Task 11): the snapshot is read straight from
 the DB, so the WS contract works today and gains live updates when the worker
-starts publishing. A connection whose client vanishes is cleaned up on the
-next publish (send failure); the snapshot/subscription handoff has a tiny
-window where an in-flight event may be missed — the client reconciles via the
-progress endpoint.
+starts publishing. The handler races its event queue against the socket's
+receive, so a client that disconnects while idle (no event in flight) releases
+its hub subscription immediately — verified against a real uvicorn server, not
+just the TestClient (which tears the connection down with the app). The
+snapshot/subscription handoff still has a tiny window where an in-flight event
+may be missed — the client reconciles via the progress endpoint.
 
 DI hook (override in tests via ``app.dependency_overrides``):
 
@@ -47,15 +57,18 @@ built by ``create_app`` (or one that sets the same state).
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.api.responses import (
     CODE_BAD_REQUEST,
+    CODE_FILE_EXPIRED,
+    CODE_FILE_NOT_DOWNLOADED,
     CODE_TASK_NOT_FOUND,
     ApiError,
     ok,
@@ -84,6 +97,8 @@ ws_router = APIRouter(tags=["download"])
 _MESSAGE_SUBMIT_OK = "提交下载成功 / Download submitted"
 _MESSAGE_PROGRESS_OK = "获取进度成功 / Progress loaded"
 _MESSAGE_INVALID_DOWNLOAD_ID = "下载ID格式无效 / Invalid download id"
+_MESSAGE_FILE_EXPIRED = "文件已过期 / File expired"
+_MESSAGE_FILE_NOT_DOWNLOADED = "文件未下载完成 / File not fully downloaded"
 
 # Stable close codes for the WS (RFC 6455): normal completion vs. policy
 # violation (malformed id).
@@ -96,9 +111,14 @@ class SubmitRequest(BaseModel):
 
     ``task_id`` is validated as a canonical UUID here (malformed → generic
     400); blank ``format``/``quality`` are rejected before the service sees
-    them. The PRD's ``bitrate``/``save_to_nas``/``nas_path`` fields are v1.1 /
-    Task 10 concerns and deliberately absent from the wire schema.
+    them. ``extra="forbid"`` (the project convention, like the domain models):
+    an unknown body field — e.g. the PRD §5.3 ``save_to_nas`` flag, which is
+    Task 10's NAS API concern — is rejected with a generic 400 rather than
+    silently dropped, so a client never believes a field took effect when it
+    did not.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     task_id: UuidStr
     format: str | None = Field(default=None, max_length=64)
@@ -116,6 +136,8 @@ class SubmitRequest(BaseModel):
 class SubmitData(BaseModel):
     """The payload of a successful submit response."""
 
+    model_config = ConfigDict(extra="forbid")
+
     download_id: str
     task_id: str
     status: str
@@ -125,6 +147,8 @@ class SubmitData(BaseModel):
 class SubmitResponse(BaseModel):
     """The unified envelope for ``POST /api/download/submit`` success."""
 
+    model_config = ConfigDict(extra="forbid")
+
     code: int
     message: str
     data: SubmitData | None = None
@@ -132,6 +156,8 @@ class SubmitResponse(BaseModel):
 
 class ProgressData(BaseModel):
     """The payload of a progress snapshot (PRD §5.4)."""
+
+    model_config = ConfigDict(extra="forbid")
 
     download_id: str
     status: str
@@ -145,6 +171,8 @@ class ProgressData(BaseModel):
 
 class ProgressResponse(BaseModel):
     """The unified envelope for ``GET /api/download/progress/{id}`` success."""
+
+    model_config = ConfigDict(extra="forbid")
 
     code: int
     message: str
@@ -225,8 +253,10 @@ async def download_ws(websocket: WebSocket, download_id: str) -> None:
 
     On connect: validate the id, send a DB-backed snapshot event, then forward
     every event the app's event hub publishes for this download (the worker's
-    channel). The handler never raises after ``accept`` — protocol problems
-    (unknown/malformed id) become an ``error`` event followed by a close.
+    channel). The event queue is raced against the socket's receive, so a
+    client that disconnects while idle releases its subscription at once. The
+    handler never raises after ``accept`` — protocol problems (unknown/
+    malformed id) become an ``error`` event followed by a close.
     """
     await websocket.accept()
     service: DownloadService = websocket.app.state.download_service
@@ -258,11 +288,30 @@ async def download_ws(websocket: WebSocket, download_id: str) -> None:
     queue = await hub.subscribe(download_id)
     try:
         while True:
-            event = await queue.get()
-            try:
-                await websocket.send_json(event)
-            except (WebSocketDisconnect, RuntimeError):
-                break  # client gone; the finally below releases the subscription
+            # Race the event queue against the socket: if the client
+            # disconnects while we are idle (no event in flight), the receive
+            # task finishes with a disconnect and we release the subscription
+            # immediately instead of waiting for the next publish to fail.
+            get_task = asyncio.create_task(queue.get())
+            recv_task = asyncio.create_task(websocket.receive())
+            done, pending = await asyncio.wait(
+                {get_task, recv_task}, return_when=asyncio.FIRST_COMPLETED
+            )
+            for task in pending:
+                task.cancel()
+            if recv_task in done:
+                try:
+                    recv_task.result()
+                except (WebSocketDisconnect, RuntimeError):
+                    break  # client gone; release the subscription
+                # else: a client-sent message — the v1 protocol is server →
+                # client only, so it is ignored.
+            if get_task in done:
+                event = get_task.result()
+                try:
+                    await websocket.send_json(event)
+                except (WebSocketDisconnect, RuntimeError):
+                    break  # send failed; the finally below unsubscribes
     finally:
         await hub.unsubscribe(download_id, queue)
 
@@ -279,9 +328,10 @@ def _is_canonical_uuid(value: str) -> bool:
 def _event_for(progress: DownloadProgress, service: DownloadService) -> dict:
     """Build the structured snapshot event for a task state (PRD §5.5).
 
-    ``progress`` for pending/downloading, ``complete`` (with a fresh one-time
-    ``download_url``) for completed, ``error`` (with the row's error message)
-    for failed/expired.
+    ``progress`` for pending/downloading; ``complete`` for completed (with a
+    fresh one-time ``download_url`` and its ``token_expire_at``); ``error``
+    for failed/expired — one uniform error shape carrying ``code``/``message``
+    plus the state fields (failed → 5002, expired → 5004).
     """
     data = {
         "download_id": progress.download_id,
@@ -293,12 +343,19 @@ def _event_for(progress: DownloadProgress, service: DownloadService) -> dict:
         "remaining_time": progress.remaining_time,
     }
     if progress.status is DownloadStatus.COMPLETED:
-        token = service.issue_download_token(progress.download_id)
+        issued = service.issue_download_token(progress.download_id)
         data["download_url"] = (
-            f"/api/download/file/{progress.download_id}?token={token}"
+            f"/api/download/file/{progress.download_id}?token={issued.token}"
         )
+        data["token_expire_at"] = issued.expires_at.isoformat()
         return {"type": "complete", "data": data}
-    if progress.status in (DownloadStatus.FAILED, DownloadStatus.EXPIRED):
+    if progress.status is DownloadStatus.EXPIRED:
+        data["code"] = CODE_FILE_EXPIRED
+        data["message"] = _MESSAGE_FILE_EXPIRED
+        return {"type": "error", "data": data}
+    if progress.status is DownloadStatus.FAILED:
+        data["code"] = CODE_FILE_NOT_DOWNLOADED
+        data["message"] = _MESSAGE_FILE_NOT_DOWNLOADED
         data["error_message"] = progress.error_message
         return {"type": "error", "data": data}
     return {"type": "progress", "data": data}

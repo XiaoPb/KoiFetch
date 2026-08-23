@@ -232,8 +232,8 @@ class DownloadProgress(_DownloadStateInvariants):
 
     ``progress`` is a 0-100 float, ``speed`` bytes/sec; ``downloaded_bytes``
     may not exceed ``total_bytes`` (either may be unknown until the worker
-    reports them). ``remaining_time`` is seconds remaining — the API layer
-    formats it as "约 2分钟" per PRD §5.4; it stays numeric here.
+    reports them). ``remaining_time`` stays numeric seconds here — the PRD's
+    display form ("约 2分钟", §5.4) is the frontend's formatting concern.
     """
 
     download_id: UuidStr
