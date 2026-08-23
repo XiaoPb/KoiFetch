@@ -14,6 +14,13 @@ code          meaning                 HTTP        notes
 1             存储未就绪              200         health endpoint only (degraded
                                                     mode; predates this table)
 400           请求参数错误            400         request validation failures
+1001          URL为空                 400         parse: empty list or blank entry
+1002          URL格式无效             400         parse: malformed URL (scheme,
+                                                    host, whitespace, control
+                                                    characters)
+1003          平台不支持              400         parse: reserved for real engines
+                                                    (the stub supports every URL)
+3001          任务不存在              400         preview/download: unknown task_id
 2001          未登录 / Not logged in  401         missing/malformed Authorization
 2002          权限不足 / Forbidden    403         admin-only endpoints (Task 10)
 2003          Token无效 / Invalid     401         malformed/tampered/mis-signed
@@ -70,8 +77,12 @@ __all__ = [
     "CODE_INVALID_CREDENTIALS",
     "CODE_INVALID_TOKEN",
     "CODE_OK",
+    "CODE_PLATFORM_UNSUPPORTED",
+    "CODE_TASK_NOT_FOUND",
     "CODE_TOKEN_EXPIRED",
     "CODE_UNAUTHORIZED",
+    "CODE_URL_EMPTY",
+    "CODE_URL_INVALID",
     "ApiError",
     "error",
     "ok",
@@ -80,6 +91,10 @@ __all__ = [
 
 CODE_OK = 0
 CODE_BAD_REQUEST = 400
+CODE_URL_EMPTY = 1001
+CODE_URL_INVALID = 1002
+CODE_PLATFORM_UNSUPPORTED = 1003
+CODE_TASK_NOT_FOUND = 3001
 CODE_UNAUTHORIZED = 2001
 CODE_FORBIDDEN = 2002
 CODE_INVALID_TOKEN = 2003
