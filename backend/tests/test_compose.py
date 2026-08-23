@@ -57,6 +57,15 @@ class TestBackendService:
         assert "uvicorn app.main:app" in command
         assert "--port 8000" in command
 
+    def test_admin_seed_runs_after_migrations(self, compose):
+        # The backend command must chain the idempotent admin seed between
+        # migrations and the API server (app/infrastructure/seed.py).
+        command = " ".join(compose["services"]["backend"]["command"])
+        assert (
+            "alembic upgrade head && python -m app.infrastructure.seed && uvicorn app.main:app"
+            in command
+        )
+
     def test_healthcheck_runs_readiness_probe(self, compose):
         # The healthcheck must reflect storage readiness, not plain HTTP 200:
         # /api/health always returns 200 and reports readiness in the body, so

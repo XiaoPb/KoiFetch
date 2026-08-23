@@ -5,10 +5,11 @@
 # Workflow: copy .env.example to .env, adjust values, then
 # `docker compose up --build`. The backend and worker share one Python image
 # (./backend/Dockerfile) and differ only in their startup command:
-#   - backend:  `alembic upgrade head && uvicorn ...`  (migrations are explicit)
+#   - backend:  `alembic upgrade head && python -m app.infrastructure.seed &&
+#               uvicorn ...`  (migrations, then the idempotent admin seed, then API)
 #   - worker:   `python -m app.workers.main`           (worker entrypoint module)
-# Both target modules arrive in later tasks (Alembic, worker); the commands
-# below define their shape now so the stack boots end-to-end once they land.
+# The worker module arrives in a later task; the command below defines its
+# shape now so the stack boots end-to-end once it lands.
 #
 # Storage layout: SQLite under ./data/db, Bubble (temporary) under
 # ./data/bubble, Pond (permanent) under ./data/pond — all bind-mounted into the
@@ -32,7 +33,7 @@ services:
     command:
       - sh
       - -c
-      - alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000
+      - alembic upgrade head && python -m app.infrastructure.seed && uvicorn app.main:app --host 0.0.0.0 --port 8000
     ports:
       - "8000:8000"
     restart: unless-stopped
