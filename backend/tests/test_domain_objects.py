@@ -124,6 +124,14 @@ class TestParseResult:
         r = self._minimal(media_type="image")
         assert r.media_type is MediaType.IMAGE
 
+    def test_empty_platform_rejected(self):
+        with pytest.raises(ValidationError):
+            self._minimal(platform="   ")
+
+    def test_empty_title_rejected(self):
+        with pytest.raises(ValidationError):
+            self._minimal(title="")
+
     def test_defaults(self):
         r = self._minimal()
         assert r.cover is None
@@ -225,6 +233,7 @@ class TestDownloadProgress:
         assert p.speed is None
         assert p.downloaded_bytes is None
         assert p.total_bytes is None
+        assert p.remaining_time is None
         assert p.error_message is None
 
     def test_full_progress(self):
@@ -235,9 +244,28 @@ class TestDownloadProgress:
             speed=2_400_000.0,
             downloaded_bytes=101_711_872,
             total_bytes=156_467_200,
+            remaining_time=120.5,
         )
         assert p.progress == 65.5
         assert p.speed == 2_400_000.0
+        assert p.remaining_time == 120.5
+
+    def test_remaining_time_round_trip(self):
+        p = DownloadProgress(
+            download_id=DOWNLOAD_ID,
+            status=DownloadStatus.DOWNLOADING,
+            remaining_time=42.0,
+        )
+        loaded = DownloadProgress.model_validate_json(p.model_dump_json())
+        assert loaded.remaining_time == 42.0
+
+    def test_completed_requires_progress_100(self):
+        with pytest.raises(ValidationError):
+            DownloadProgress(
+                download_id=DOWNLOAD_ID,
+                status=DownloadStatus.COMPLETED,
+                progress=99.9,
+            )
 
     def test_progress_upper_bound(self):
         with pytest.raises(ValidationError):
@@ -324,6 +352,15 @@ class TestDownloadResult:
                 total_bytes=100,
             )
 
+    def test_completed_requires_progress_100(self):
+        with pytest.raises(ValidationError):
+            DownloadResult(
+                download_id=DOWNLOAD_ID,
+                task_id=TASK_ID,
+                status=DownloadStatus.COMPLETED,
+                progress=50.0,
+            )
+
     def test_round_trip_json(self):
         r = DownloadResult(
             download_id=DOWNLOAD_ID, task_id=TASK_ID, status=DownloadStatus.FAILED
@@ -331,3 +368,12 @@ class TestDownloadResult:
         loaded = DownloadResult.model_validate_json(r.model_dump_json())
         assert loaded == r
         assert loaded.status is DownloadStatus.FAILED
+
+    def test_deferred_fields_not_present(self):
+        # Documented dispositions (module docstring): download_url is a
+        # per-request construct built by the API layer; metadata_path and
+        # sha256 are deferred to v1.1 (no Task 4 ORM columns). Pin their
+        # absence so adding them is a deliberate contract change.
+        assert "download_url" not in DownloadResult.model_fields
+        assert "metadata_path" not in DownloadResult.model_fields
+        assert "sha256" not in DownloadResult.model_fields

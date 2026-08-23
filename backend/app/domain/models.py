@@ -17,13 +17,24 @@ Conventions:
   against the canonical UUID format; ``uuid.UUID`` objects are accepted and
   normalized to lowercase strings. Version is not pinned (v1 uses v4, but the
   contract should accept any canonical UUID).
-* **Progress bounds.** ``progress`` is a 0-100 float and ``downloaded_bytes``
-  may never exceed ``total_bytes``; both are enforced by validation.
+* **Progress bounds.** ``progress`` is a 0-100 float, ``downloaded_bytes`` may
+  never exceed ``total_bytes``, and a ``COMPLETED`` snapshot must report
+  ``progress == 100``; all enforced by validation.
 * **NAS contract modeled, not enforced.** ``DownloadCommand`` carries
   ``save_to_nas``/``nas_path`` because v1 performs NAS saves through a
   separate authenticated API (Task 10); only the required-when-save invariant
   is validated here, not filesystem safety of ``nas_path`` (that is a virtual
   pond path, not a filesystem path).
+
+Field dispositions (deliberately NOT fields here):
+
+* ``download_url`` (PRD §3.3.5) is a per-request construct — the API layer
+  builds it with a short-lived token when serving the file. It is not a
+  domain/ORM field.
+* ``metadata_path`` (the sidecar ``.json`` path) and ``sha256`` (content
+  hash) are deferred to v1.1: the Task 4 ORM has no columns for them, so the
+  domain contract does not carry them yet. Add them here only when the
+  storage adapter (Task 6+) persists them.
 """
 
 from __future__ import annotations
@@ -71,6 +82,32 @@ def _normalize_uuid(value: object) -> str:
 
 
 UuidStr = Annotated[str, BeforeValidator(_normalize_uuid)]
+
+
+class _DownloadStateInvariants(BaseModel):
+    """Shared cross-field invariants for download snapshots.
+
+    Both :class:`DownloadProgress` and :class:`DownloadResult` must satisfy:
+    ``downloaded_bytes <= total_bytes`` (when both are known) and
+    ``status COMPLETED => progress == 100``. The second rule is deliberately
+    one-directional: non-completed snapshots may carry any 0-100 progress
+    (e.g. a ``downloading`` tick at 100 % just before finalization) so worker
+    updates are never rejected mid-flight.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def _check_download_state(self) -> "_DownloadStateInvariants":
+        if (
+            self.downloaded_bytes is not None
+            and self.total_bytes is not None
+            and self.downloaded_bytes > self.total_bytes
+        ):
+            raise ValueError("downloaded_bytes cannot exceed total_bytes")
+        if self.status is DownloadStatus.COMPLETED and self.progress < 100.0:
+            raise ValueError("a completed download must have progress == 100")
+        return self
 
 
 class ParseCommand(BaseModel):
@@ -128,16 +165,24 @@ class ParseResult(BaseModel):
     task_id: UuidStr
     url: str
     media_type: MediaType
-    platform: str
-    title: str
-    cover: str | None = None
-    duration: str | None = None  # PRD display form, e.g. "03:20"
-    file_size_mb: float | None = None
-    format: str | None = None
+    platform: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    cover: str | None = Field(default=None, min_length=1)
+    duration: str | None = Field(default=None, min_length=1)  # "MM:SS"
+    file_size_mb: float | None = Field(default=None, ge=0.0)
+    format: str | None = Field(default=None, min_length=1)
     available_qualities: list[str] = Field(default_factory=list)
     available_bitrates: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
     error: str | None = None
+
+    @field_validator("platform", "title")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("must not be blank")
+        return value
 
 
 class DownloadCommand(BaseModel):
@@ -182,15 +227,14 @@ class DownloadCommand(BaseModel):
         return self
 
 
-class DownloadProgress(BaseModel):
+class DownloadProgress(_DownloadStateInvariants):
     """A real-time progress snapshot for one download (PRD §5.4 / WebSocket).
 
     ``progress`` is a 0-100 float, ``speed`` bytes/sec; ``downloaded_bytes``
     may not exceed ``total_bytes`` (either may be unknown until the worker
-    reports them).
+    reports them). ``remaining_time`` is seconds remaining — the API layer
+    formats it as "约 2分钟" per PRD §5.4; it stays numeric here.
     """
-
-    model_config = ConfigDict(extra="forbid")
 
     download_id: UuidStr
     status: DownloadStatus
@@ -198,30 +242,22 @@ class DownloadProgress(BaseModel):
     speed: float | None = Field(default=None, ge=0.0)
     downloaded_bytes: int | None = Field(default=None, ge=0)
     total_bytes: int | None = Field(default=None, ge=0)
+    remaining_time: float | None = Field(default=None, ge=0.0)
     error_message: str | None = None
 
-    @model_validator(mode="after")
-    def _bytes_consistent(self) -> "DownloadProgress":
-        if (
-            self.downloaded_bytes is not None
-            and self.total_bytes is not None
-            and self.downloaded_bytes > self.total_bytes
-        ):
-            raise ValueError("downloaded_bytes cannot exceed total_bytes")
-        return self
 
-
-class DownloadResult(BaseModel):
+class DownloadResult(_DownloadStateInvariants):
     """A persisted download-task snapshot (mirrors the ``DownloadTask`` ORM
     row, Task 4; also the PRD §3.3.5 DownloadTask shape).
 
     ``media_type`` is not stored on the ORM row (it derives from the parse
     task) but is included for the frontend; services fill it from the joined
     parse task. Paths are the stored bubble/pond paths — safe path building is
-    the domain ``paths`` module's job.
+    the domain ``paths`` module's job. ``download_url`` is intentionally
+    absent: it is a per-request, token-bearing construct built by the API
+    layer, and ``metadata_path``/``sha256`` are deferred to v1.1 (see the
+    module docstring).
     """
-
-    model_config = ConfigDict(extra="forbid")
 
     download_id: UuidStr
     task_id: UuidStr
@@ -241,13 +277,3 @@ class DownloadResult(BaseModel):
     token_expires_at: datetime | None = None
     created_at: datetime | None = None
     completed_at: datetime | None = None
-
-    @model_validator(mode="after")
-    def _bytes_consistent(self) -> "DownloadResult":
-        if (
-            self.downloaded_bytes is not None
-            and self.total_bytes is not None
-            and self.downloaded_bytes > self.total_bytes
-        ):
-            raise ValueError("downloaded_bytes cannot exceed total_bytes")
-        return self
