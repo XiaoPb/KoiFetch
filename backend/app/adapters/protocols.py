@@ -184,8 +184,20 @@ class StorageAdapter(Protocol):
         """Write ``data`` into storage under ``filename``; return stored path."""
         ...
 
-    def move_to_pond(self, media_type: MediaType, bubble_path: Path) -> Path:
-        """Move a bubble file to the pond root; return the pond path."""
+    def move_to_pond(
+        self,
+        media_type: MediaType,
+        bubble_path: Path,
+        *,
+        target: str | None = None,
+    ) -> Path:
+        """Move a bubble file to the pond root; return the pond path.
+
+        ``target`` (Task 10 NAS save) optionally names a pond-relative
+        destination (directories + filename); when omitted, the bubble's
+        relative path is mirrored under the pond root. The adapter validates
+        the target and re-verifies containment at move time.
+        """
         ...
 
     def read_bytes(self, stored_path: Path) -> bytes:

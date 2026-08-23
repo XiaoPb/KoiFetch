@@ -136,6 +136,60 @@ class TestMoveBetweenBubbleAndPond:
             adapter.move_to_pond(MediaType.VIDEO, adapter.bubble_root(MediaType.VIDEO))
 
 
+class TestMoveToPondTarget:
+    """Task 10: ``move_to_pond(..., target=...)`` moves a bubble file to a
+    caller-chosen pond-relative destination (dirs + filename) instead of
+    mirroring the bubble's relative path. Containment rules stay in the
+    adapter: the target must be relative and free of ``.``/``..`` parts."""
+
+    def test_move_to_pond_with_target_directory(self, tmp_path):
+        adapter = make_adapter(tmp_path)
+        bubble = adapter.save_bytes(MediaType.VIDEO, "clip.mp4", b"data")
+        pond = adapter.move_to_pond(MediaType.VIDEO, bubble, target="视频/抖音/clip.mp4")
+        assert pond == adapter.resolve_pond(MediaType.VIDEO, "视频", "抖音", "clip.mp4")
+        assert not bubble.exists()  # moved, not copied
+        assert adapter.read_bytes(pond) == b"data"
+
+    def test_move_to_pond_target_renames_file(self, tmp_path):
+        adapter = make_adapter(tmp_path)
+        bubble = adapter.save_bytes(MediaType.VIDEO, "old-name.mp4", b"data")
+        pond = adapter.move_to_pond(MediaType.VIDEO, bubble, target="new-name.mp4")
+        assert pond == adapter.resolve_pond(MediaType.VIDEO, "new-name.mp4")
+        assert adapter.read_bytes(pond) == b"data"
+
+    def test_move_to_pond_target_creates_nested_directories(self, tmp_path):
+        adapter = make_adapter(tmp_path)
+        bubble = adapter.save_bytes(MediaType.MUSIC, "song.mp3", b"audio")
+        pond = adapter.move_to_pond(
+            MediaType.MUSIC, bubble, target="专辑/2026/01/song.mp3"
+        )
+        assert pond == adapter.resolve_pond(MediaType.MUSIC, "专辑", "2026", "01", "song.mp3")
+        assert adapter.read_bytes(pond) == b"audio"
+
+    def test_move_to_pond_without_target_mirrors_bubble_layout(self, tmp_path):
+        # Regression: the original contract (no target) still mirrors the
+        # bubble's relative path under the pond root.
+        adapter = make_adapter(tmp_path)
+        bubble = adapter.save_bytes(MediaType.VIDEO, "sub/folder/clip.mp4", b"data")
+        pond = adapter.move_to_pond(MediaType.VIDEO, bubble)
+        assert pond == adapter.resolve_pond(MediaType.VIDEO, "sub", "folder", "clip.mp4")
+
+    def test_move_to_pond_absolute_target_rejected(self, tmp_path):
+        adapter = make_adapter(tmp_path)
+        bubble = adapter.save_bytes(MediaType.VIDEO, "clip.mp4", b"data")
+        with pytest.raises(PathOutsideRootError):
+            adapter.move_to_pond(MediaType.VIDEO, bubble, target=str(tmp_path / "x.mp4"))
+        assert adapter.exists(bubble)  # untouched
+
+    def test_move_to_pond_dotdot_target_rejected(self, tmp_path):
+        adapter = make_adapter(tmp_path)
+        bubble = adapter.save_bytes(MediaType.VIDEO, "clip.mp4", b"data")
+        for bad in ("../evil.mp4", "a/../evil.mp4", "./evil.mp4", "a/./evil.mp4"):
+            with pytest.raises(PathOutsideRootError):
+                adapter.move_to_pond(MediaType.VIDEO, bubble, target=bad)
+        assert adapter.exists(bubble)
+
+
 class TestContainment:
     """Traversal attempts are rejected both at path build and at I/O time."""
 
@@ -219,6 +273,16 @@ class TestContainment:
         with pytest.raises(PathOutsideRootError):
             adapter.save_file(MediaType.VIDEO, source, "evil/pwned.bin")
         assert not (hostile_mkdir / "pwned.bin").exists()
+
+    def test_move_to_pond_target_rechecks_at_write_time(self, tmp_path, hostile_mkdir):
+        # Same TOCTOU rule as save_file: a symlink planted into a parent of
+        # the move target between build and move must not redirect the write.
+        adapter = make_adapter(tmp_path)
+        bubble = adapter.save_bytes(MediaType.VIDEO, "clip.mp4", b"data")
+        with pytest.raises(PathOutsideRootError):
+            adapter.move_to_pond(MediaType.VIDEO, bubble, target="evil/pwned.mp4")
+        assert not (hostile_mkdir / "pwned.mp4").exists()
+        assert adapter.exists(bubble)  # the bubble file is left untouched
 
     def test_read_bytes_rechecks_containment_at_open_time(self, tmp_path):
         # TOCTOU note (Task 5): containment is re-verified when the file is

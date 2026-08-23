@@ -48,6 +48,7 @@ Notes for later tasks (do NOT implement yet):
 from __future__ import annotations
 
 import os
+import re
 import shutil
 from pathlib import Path
 
@@ -150,7 +151,24 @@ class LocalStorageAdapter:
             out.write(data)
         return target
 
-    def move_to_pond(self, media_type: MediaType, bubble_path: Path | str) -> Path:
+    def move_to_pond(
+        self,
+        media_type: MediaType,
+        bubble_path: Path | str,
+        *,
+        target: str | None = None,
+    ) -> Path:
+        """Move a bubble file into the pond; return the pond path.
+
+        ``target`` (Task 10 NAS save) optionally names a *pond-relative*
+        destination — directories plus the final filename, e.g. ``"视频/抖音/
+        clip.mp4"`` — validated here as relative and free of ``.``/``..``
+        parts. When omitted, the bubble's relative path is mirrored under the
+        pond root (the original contract). The source is re-verified against
+        the current bubble root and the target against the current pond root
+        (TOCTOU, see the module docstring); traversal attempts raise
+        :class:`app.domain.paths.PathOutsideRootError`.
+        """
         bubble_root = self._bubble[media_type]
         pond_root = self._pond[media_type]
         bubble = Path(bubble_path)
@@ -163,8 +181,11 @@ class LocalStorageAdapter:
             raise ValueError(
                 f"move_to_pond source must be a file, got {str(bubble)!r}"
             )
-        relative = os.path.relpath(bubble, bubble_root)
-        pond_target = build_path(pond_root, relative)
+        if target is None:
+            relative = os.path.relpath(bubble, bubble_root)
+            pond_target = build_path(pond_root, relative)
+        else:
+            pond_target = self._pond_target(pond_root, target)
         pond_target.parent.mkdir(parents=True, exist_ok=True)
         # TOCTOU: re-verify the pond target after its parents exist, exactly
         # like save_file/save_bytes.
@@ -215,6 +236,28 @@ class LocalStorageAdapter:
                 f"target {str(target)!r} escapes root {str(root)!r} at write time"
             )
         return target
+
+    @staticmethod
+    def _pond_target(pond_root: Path, target: str) -> Path:
+        """Build a contained pond path from a caller-supplied relative target.
+
+        The target must be a non-empty relative path whose raw segments never
+        include ``.``/``..`` (``build_path`` alone would accept a non-escaping
+        ``a/../b``; and pathlib silently drops ``.`` segments from ``parts``,
+        so the raw string is checked, split on both separator styles);
+        everything else is handed to ``build_path`` for containment.
+        """
+        raw = Path(target)
+        if not target or raw.is_absolute() or not raw.parts:
+            raise PathOutsideRootError(
+                f"move_to_pond target must be a relative path, got {target!r}"
+            )
+        segments = [part for part in re.split(r"[\\/]", target) if part]
+        if any(part in (".", "..") for part in segments):
+            raise PathOutsideRootError(
+                f"move_to_pond target must not contain '.' or '..' parts: {target!r}"
+            )
+        return build_path(pond_root, *raw.parts)
 
     def _all_roots(self) -> tuple[Path, ...]:
         return (*self._pond.values(), *self._bubble.values())
