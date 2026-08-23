@@ -45,13 +45,14 @@ _MESSAGE_PARSE_OK = "解析成功 / Parse successful"
 class ParseRequest(BaseModel):
     """A batch parse request: one or more source URLs.
 
-    The list structure is checked here (a missing/blank/malformed body → 400);
-    the domain business rules (1..50 absolute http/https URLs) are enforced by
-    :class:`app.domain.ParseCommand` inside the service, which maps failures to
-    the PRD codes (1001 URL为空, 1002 URL格式无效).
+    The list structure is checked here (a missing/blank/malformed body → 400;
+    ``max_length=50`` is wire-level defense in depth — the domain owns the
+    semantic rule via :class:`app.domain.ParseCommand`); the domain business
+    rules (1..50 absolute http/https URLs) are enforced inside the service,
+    which maps failures to the PRD codes (1001 URL为空, 1002 URL格式无效).
     """
 
-    urls: list[str]
+    urls: list[str] = Field(max_length=50)
 
 
 class ParseFailureData(BaseModel):

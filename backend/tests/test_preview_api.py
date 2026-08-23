@@ -156,6 +156,27 @@ class TestPreviewMetadata:
         assert data["preview_type"] == "image"
         assert data["streams"] == []
 
+    def test_task_without_enriched_metadata_returns_fallbacks(self, client, engine):
+        # A row persisted by an older path (or a future engine) may lack the
+        # file_size/ladder keys the parse service enriches today; the preview
+        # must fall back to None/[] instead of erroring.
+        _seed_task(
+            engine,
+            task_id="44444444-4444-4444-4444-444444444444",
+            url=VIDEO_URL,
+            media_type=MediaType.VIDEO,
+            format="mp4",
+            title="bare",
+            metadata={"stub": True},
+        )
+        response = client.get("/api/preview/44444444-4444-4444-4444-444444444444")
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["file_size_mb"] is None
+        assert data["available_qualities"] == []
+        assert data["available_bitrates"] == []
+        assert data["streams"] == []
+
     def test_missing_task_returns_400_code_3001(self, client):
         response = client.get(f"/api/preview/{uuid.uuid4()}")
         assert response.status_code == 400

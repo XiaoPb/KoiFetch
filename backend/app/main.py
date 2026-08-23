@@ -110,7 +110,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         engine=get_engine(settings.database_url),
     )
     app.state.parse_service = ParseService(
-        parser=get_parser(),
+        parser=get_parser(settings),
         engine=get_engine(settings.database_url),
     )
     app.state.preview_service = PreviewService(

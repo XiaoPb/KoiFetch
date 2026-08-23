@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.adapters.factory import get_parser
+from app.adapters.parser_stub import StubParserAdapter
 from app.api.parse import get_parse_service
 from app.api.responses import (
     CODE_BAD_REQUEST,
@@ -34,6 +35,20 @@ PASSWORD = "admin-s3cret-pass"
 
 VIDEO_URL = "https://www.bilibili.com/video/av123"
 MUSIC_URL = "https://music.example.com/song/hello.mp3"
+BAD_URL = "https://bad.example.com/video/x"
+
+
+class _FlakyParser:
+    """A parser that fails for one specific URL, delegating the rest to the stub."""
+
+    def __init__(self, bad_url: str) -> None:
+        self._bad_url = bad_url
+        self._delegate = StubParserAdapter()
+
+    def parse(self, command):
+        if command.urls[0] == self._bad_url:
+            raise ValueError("platform engine unavailable")
+        return self._delegate.parse(command)
 
 PRD_RESULT_KEYS = {
     "task_id",
@@ -128,6 +143,8 @@ class TestParseValidation:
         assert response.json()["code"] == CODE_URL_INVALID
 
     def test_too_many_urls_returns_400(self, client):
+        # Rejected at the wire level (ParseRequest.max_length=50) before the
+        # domain count rule; same visible envelope code 400.
         urls = [f"https://example.com/video/{i}" for i in range(51)]
         response = client.post("/api/parse", json={"urls": urls})
         assert response.status_code == 400
@@ -156,6 +173,45 @@ class TestParseValidation:
         response = client.post("/api/parse", json={"urls": []})
         assert set(response.json()) == {"code", "message", "data"}
         assert response.json()["message"]
+
+
+class TestPartialFailure:
+    """Per-URL parser failures surface in the response ``failed`` list."""
+
+    def test_failed_urls_surface_in_response_failed_list(self, engine):
+        app = create_app(settings=make_settings())
+        app.dependency_overrides[get_parse_service] = lambda: ParseService(
+            parser=_FlakyParser(BAD_URL), engine=engine
+        )
+        client = TestClient(app)
+
+        response = client.post(
+            "/api/parse", json={"urls": [VIDEO_URL, BAD_URL, MUSIC_URL]}
+        )
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert [r["url"] for r in data["results"]] == [VIDEO_URL, MUSIC_URL]
+        assert len(data["failed"]) == 1
+        failure = data["failed"][0]
+        assert failure["url"] == BAD_URL
+        # Sanitized: stable message + exception class name; raw exception text
+        # is never echoed to the client.
+        assert "Parse failed" in failure["error"]
+        assert "(ValueError)" in failure["error"]
+        assert "platform engine unavailable" not in failure["error"]
+
+    def test_all_urls_failed_still_returns_200_with_empty_results(self, engine):
+        app = create_app(settings=make_settings())
+        app.dependency_overrides[get_parse_service] = lambda: ParseService(
+            parser=_FlakyParser(VIDEO_URL), engine=engine
+        )
+        client = TestClient(app)
+
+        response = client.post("/api/parse", json={"urls": [VIDEO_URL]})
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["results"] == []
+        assert len(data["failed"]) == 1
 
 
 class TestParsePersistence:
