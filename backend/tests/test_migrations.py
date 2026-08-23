@@ -52,6 +52,7 @@ DOWNLOAD_TASK_COLUMNS = {
     "error_message",
     "bubble_path",
     "pond_path",
+    "token_id",
     "token_expires_at",
     "created_at",
     "completed_at",

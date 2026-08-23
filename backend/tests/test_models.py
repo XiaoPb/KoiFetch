@@ -190,6 +190,7 @@ class TestDownloadTask:
         assert download.downloaded_bytes is None
         assert download.bubble_path is None
         assert download.pond_path is None
+        assert download.token_id is None
         assert download.token_expires_at is None
         assert download.completed_at is None
         assert isinstance(download.created_at, datetime)

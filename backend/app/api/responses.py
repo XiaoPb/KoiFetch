@@ -21,6 +21,20 @@ code          meaning                 HTTP        notes
 1003          平台不支持              400         parse: reserved for real engines
                                                     (the stub supports every URL)
 3001          任务不存在              400         preview/download: unknown task_id
+                                                    or download_id
+3002          任务已在下载            409         download submit: an active
+                                                    (pending/downloading) download
+                                                    already exists for the task
+3003          任务已完成              400         download submit: the identical
+                                                    format+quality variant is
+                                                    already completed
+5001          文件不存在              404         download file: bubble file missing
+5002          文件未下载完成          400         download file: task not completed
+5003          Token无效或已过期       401         download file: missing, malformed,
+                                                    expired, mis-targeted, or reused
+                                                    one-time token (single code per
+                                                    PRD — no 2003/2004 split here)
+5004          文件已过期              410         download file: task expired
 2001          未登录 / Not logged in  401         missing/malformed Authorization
 2002          权限不足 / Forbidden    403         admin-only endpoints (Task 10)
 2003          Token无效 / Invalid     401         malformed/tampered/mis-signed
@@ -76,12 +90,18 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 __all__ = [
     "CODE_BAD_REQUEST",
+    "CODE_FILE_EXPIRED",
+    "CODE_FILE_NOT_DOWNLOADED",
+    "CODE_FILE_NOT_FOUND",
+    "CODE_FILE_TOKEN_INVALID",
     "CODE_FORBIDDEN",
     "CODE_INTERNAL_ERROR",
     "CODE_INVALID_CREDENTIALS",
     "CODE_INVALID_TOKEN",
     "CODE_OK",
     "CODE_PLATFORM_UNSUPPORTED",
+    "CODE_TASK_ALREADY_COMPLETED",
+    "CODE_TASK_ALREADY_DOWNLOADING",
     "CODE_TASK_NOT_FOUND",
     "CODE_TOKEN_EXPIRED",
     "CODE_UNAUTHORIZED",
@@ -99,6 +119,12 @@ CODE_URL_EMPTY = 1001
 CODE_URL_INVALID = 1002
 CODE_PLATFORM_UNSUPPORTED = 1003
 CODE_TASK_NOT_FOUND = 3001
+CODE_TASK_ALREADY_DOWNLOADING = 3002
+CODE_TASK_ALREADY_COMPLETED = 3003
+CODE_FILE_NOT_FOUND = 5001
+CODE_FILE_NOT_DOWNLOADED = 5002
+CODE_FILE_TOKEN_INVALID = 5003
+CODE_FILE_EXPIRED = 5004
 CODE_UNAUTHORIZED = 2001
 CODE_FORBIDDEN = 2002
 CODE_INVALID_TOKEN = 2003
