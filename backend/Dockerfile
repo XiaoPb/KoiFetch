@@ -1,8 +1,8 @@
 # Koi Fetch backend image — shared by the `backend` (API) and `worker`
 # (background jobs) Compose services. The services differ only in their startup
-# command: Compose passes the migration + uvicorn command (backend) or the
-# worker entrypoint module (worker). The default CMD below runs the API for
-# standalone `docker run`.
+# command: Compose passes the migration + seed + uvicorn command (backend) or
+# the worker entrypoint module (worker). The default CMD below runs the API for
+# standalone `docker run` (without migrations — use Compose for the full stack).
 
 FROM python:3.12-slim
 
@@ -26,6 +26,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Application code (ports-and-adapters layout under app/).
 COPY app ./app
+
+# Alembic migration configuration and scripts: the backend startup command
+# (`alembic upgrade head`) runs with WORKDIR /app, so alembic.ini must live at
+# /app and resolve `script_location` (ini-relative via %(here)s) to /app/alembic.
+COPY alembic.ini ./
+COPY alembic ./alembic
 
 # Runtime storage layout: SQLite dir, Bubble (temp), Pond (permanent).
 # Compose overrides these paths with bind mounts; the directories also make a
