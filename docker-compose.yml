@@ -35,12 +35,17 @@ services:
       - alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000
     ports:
       - "8000:8000"
+    restart: unless-stopped
     healthcheck:
+      # Runs the app's readiness probe (app/health.py): /api/health always
+      # returns 200 and reports readiness in the body, so the probe requires
+      # code == 0 — `depends_on: service_healthy` on worker/frontend therefore
+      # reflects storage readiness, not just a live HTTP server.
       test:
         - CMD
         - python
-        - -c
-        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"
+        - -m
+        - app.health
       interval: 10s
       timeout: 5s
       retries: 5
@@ -75,6 +80,7 @@ services:
     # server. Nginx proxies /api and /ws to the backend service.
     ports:
       - "5173:80"
+    restart: unless-stopped
     depends_on:
       backend:
         condition: service_healthy

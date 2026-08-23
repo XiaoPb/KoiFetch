@@ -42,6 +42,10 @@ class TestStack:
     def test_stack_named(self, compose):
         assert compose.get("name") == "koi-fetch"
 
+    def test_all_services_restart_unless_stopped(self, compose):
+        for name in sorted(EXPECTED_SERVICES):
+            assert compose["services"][name].get("restart") == "unless-stopped"
+
 
 class TestBackendService:
     def test_env_file_is_dotenv(self, compose):
@@ -53,9 +57,14 @@ class TestBackendService:
         assert "uvicorn app.main:app" in command
         assert "--port 8000" in command
 
-    def test_healthcheck_hits_health_endpoint(self, compose):
+    def test_healthcheck_runs_readiness_probe(self, compose):
+        # The healthcheck must reflect storage readiness, not plain HTTP 200:
+        # /api/health always returns 200 and reports readiness in the body, so
+        # the healthcheck runs the app's probe (app/health.py), which requires
+        # code == 0. That is what makes `depends_on: service_healthy` on
+        # worker/frontend gate on full service AND storage readiness.
         test = " ".join(compose["services"]["backend"]["healthcheck"]["test"])
-        assert "http://127.0.0.1:8000/api/health" in test
+        assert test == "CMD python -m app.health"
 
     def test_port_8000_exposed(self, compose):
         assert "8000:8000" in compose["services"]["backend"].get("ports", [])
@@ -90,3 +99,8 @@ class TestFrontendService:
     def test_frontend_waits_for_backend_health(self, compose):
         depends = compose["services"]["frontend"]["depends_on"]["backend"]
         assert depends["condition"] == "service_healthy"
+
+    def test_frontend_has_healthcheck(self, compose):
+        # Nginx serves /usr/share/nginx/html; busybox wget ships in nginx:alpine.
+        test = " ".join(compose["services"]["frontend"]["healthcheck"]["test"])
+        assert "wget -q -O /dev/null http://127.0.0.1/" in test
