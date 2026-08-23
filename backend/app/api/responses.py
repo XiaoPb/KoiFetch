@@ -20,16 +20,21 @@ code          meaning                 HTTP        notes
                                                     characters)
 1003          平台不支持              400         parse: reserved for real engines
                                                     (the stub supports every URL)
-3001          任务不存在              400         preview/download: unknown task_id
-                                                    or download_id
+3001          任务不存在              400         preview/download/NAS save:
+                                                    unknown task_id or
+                                                    download_id
 3002          任务已在下载            409         download submit: an active
                                                     (pending/downloading) download
                                                     already exists for the task
 3003          任务已完成              400         download submit: the identical
                                                     format+quality variant is
                                                     already completed
-5001          文件不存在              404         download file: bubble file missing
-5002          文件未下载完成          400         download file: task not completed
+5001          文件不存在              404         download file / NAS save:
+                                                    bubble file missing
+5002          文件未下载完成          400         download file / NAS save: task
+                                                    not completed (any non-
+                                                    COMPLETED status, including
+                                                    expired)
 5003          Token无效或已过期       401         download file: missing, malformed,
                                                     expired, mis-targeted, or reused
                                                     one-time token (single code per

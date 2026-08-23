@@ -5,9 +5,9 @@ data}`` response envelope (``app.api.responses``), the admin auth router
 (``POST /api/auth/login`` + the ``require_admin`` guard), the parse router
 (``POST /api/parse``), the preview router (``GET /api/preview/{task_id}``),
 the download routers (submit/progress/file under ``/api/download`` and the
-progress WebSocket at ``/ws/download/{id}``), and the readiness endpoint
-``GET /api/health`` that reports service and storage readiness. The NAS
-endpoint arrives in Task 10 and registers its router here via ``create_app``.
+progress WebSocket at ``/ws/download/{id}``), the NAS router
+(``POST /api/nas/save``), and the readiness endpoint
+``GET /api/health`` that reports service and storage readiness.
 
 ``create_app`` accepts an explicit settings object for tests; the module-level
 ``app`` (imported by uvicorn as ``app.main:app``) is built from the process
@@ -41,12 +41,14 @@ from app.adapters.factory import (
 from app.api.auth import router as auth_router
 from app.api.download import router as download_router
 from app.api.download import ws_router as download_ws_router
+from app.api.nas import router as nas_router
 from app.api.parse import router as parse_router
 from app.api.preview import router as preview_router
 from app.api.responses import error, ok, register_exception_handlers
 from app.application.auth_service import AuthService
 from app.application.download_events import event_hub
 from app.application.download_service import DownloadService
+from app.application.nas_service import NasService
 from app.application.parse_service import ParseService
 from app.application.preview_service import PreviewService
 from app.infrastructure.config import Settings, get_settings
@@ -140,6 +142,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         downloader=get_downloader(settings),
         engine=get_engine(settings.database_url),
     )
+    app.state.nas_service = NasService(
+        storage=storage,
+        engine=get_engine(settings.database_url),
+    )
     # The in-process event hub: the download WebSocket subscribes here and the
     # worker (Task 11) publishes progress through the same singleton.
     app.state.download_event_hub = event_hub
@@ -149,6 +155,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(parse_router, prefix="/api")
     app.include_router(preview_router, prefix="/api")
     app.include_router(download_router, prefix="/api")
+    app.include_router(nas_router, prefix="/api")
     app.include_router(download_ws_router)
 
     @app.get("/api/health")
