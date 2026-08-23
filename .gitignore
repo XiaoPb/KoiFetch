@@ -7,3 +7,23 @@
 
 # Python virtual environments
 .venv/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Test and tooling caches
+.pytest_cache/
+
+# Runtime data (bubble/pond/db) — downloaded media and local databases
+/data/
+
+# SQLite database files (wherever they appear)
+*.db
+*.sqlite
+*.sqlite3
+
+# Secrets — never commit the real .env (keep .env.example tracked)
+.env
+.env.*
+!.env.example

@@ -1,0 +1,10 @@
+# Backend Python dependencies for the Koi Fetch v1 foundation.
+# Install with: pip install -r backend/requirements.txt
+#
+# The settings module (app/infrastructure/config.py) implements the
+# pydantic-settings-equivalent behavior with plain pydantic, so this task only
+# needs pydantic for runtime and pytest for tests. Later tasks will extend this
+# file as they introduce their own dependencies.
+
+pydantic>=2.9
+pytest>=8.4
