@@ -6,8 +6,9 @@ Two things live here (both are HTTP-layer concerns — all real work happens in
 * ``POST /api/auth/login`` — validate admin credentials and issue a 24-hour
   JWT. The endpoint never logs or echoes credentials.
 * :func:`require_admin` — a FastAPI dependency that validates the ``Bearer``
-  access token and returns its claims. Task 10 (``POST /api/nas/save``) and any
-  other admin-only endpoint reuse it.
+  access token (via the OpenAPI-documented ``HTTPBearer`` security scheme) and
+  returns its claims. Task 10 (``POST /api/nas/save``) and any other
+  admin-only endpoint reuse it.
 
 DI hooks (override in tests via ``app.dependency_overrides``):
 
@@ -27,7 +28,8 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel, Field
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from pydantic import BaseModel, Field, field_validator
 from starlette.status import HTTP_401_UNAUTHORIZED
 
 from app.adapters.protocols import (
@@ -47,7 +49,9 @@ from app.api.responses import (
 from app.application.auth_service import AuthService
 
 __all__ = [
+    "LoginData",
     "LoginRequest",
+    "LoginResponse",
     "get_auth_service",
     "get_token_provider",
     "require_admin",
@@ -62,12 +66,46 @@ _MESSAGE_NOT_LOGGED_IN = "未登录 / Not logged in"
 _MESSAGE_TOKEN_EXPIRED = "登录已过期，请重新登录 / Token expired"
 _MESSAGE_TOKEN_INVALID = "Token无效 / Invalid token"
 
+# OpenAPI security scheme: documents the ``Authorization: Bearer <token>``
+# header for protected routes. ``auto_error=False`` makes a missing/malformed
+# header resolve to ``None`` instead of raising, so require_admin maps every
+# absence to the 2001 envelope rather than a framework 403.
+_bearer_scheme = HTTPBearer(auto_error=False)
+
 
 class LoginRequest(BaseModel):
-    """Login credentials. Missing/blank fields fail request validation (400)."""
+    """Login credentials.
 
-    username: str = Field(min_length=1)
-    password: str = Field(min_length=1)
+    Fields are required (missing → 400). Values are stripped of surrounding
+    whitespace *before* length checks, so whitespace-only input is rejected as
+    blank (400) instead of being passed to the auth service.
+    """
+
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=128)
+
+    @field_validator("username", "password", mode="before")
+    @classmethod
+    def _strip_whitespace(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip()
+        return value
+
+
+class LoginData(BaseModel):
+    """The payload of a successful login response."""
+
+    token: str
+    username: str
+    expires_at: str  # ISO-8601 with timezone (e.g. "...T...+00:00")
+
+
+class LoginResponse(BaseModel):
+    """The unified envelope for ``POST /api/auth/login`` success."""
+
+    code: int
+    message: str
+    data: LoginData | None = None
 
 
 def get_auth_service(request: Request) -> AuthService:
@@ -80,7 +118,7 @@ def get_token_provider(request: Request) -> AccessTokenProvider:
     return request.app.state.token_provider
 
 
-@router.post("/login")
+@router.post("/login", response_model=LoginResponse)
 def login(
     body: LoginRequest,
     auth: Annotated[AuthService, Depends(get_auth_service)],
@@ -111,7 +149,9 @@ def login(
 
 
 def require_admin(
-    request: Request,
+    credentials: Annotated[
+        HTTPAuthorizationCredentials | None, Depends(_bearer_scheme)
+    ],
     token_provider: Annotated[AccessTokenProvider, Depends(get_token_provider)],
 ) -> AccessTokenClaims:
     """Validate the ``Authorization: Bearer <token>`` header; return its claims.
@@ -120,12 +160,10 @@ def require_admin(
     未登录; invalid token → ``401`` 2003 Token无效; expired token → ``401`` 2004
     Token已过期. Reused by Task 10's admin-only endpoints.
     """
-    header = request.headers.get("authorization", "")
-    scheme, _, token = header.partition(" ")
-    if scheme.lower() != "bearer" or not token.strip():
+    if credentials is None:
         raise ApiError(HTTP_401_UNAUTHORIZED, CODE_UNAUTHORIZED, _MESSAGE_NOT_LOGGED_IN)
     try:
-        return token_provider.validate(token.strip())
+        return token_provider.validate(credentials.credentials)
     except TokenExpiredError as exc:
         raise ApiError(
             HTTP_401_UNAUTHORIZED, CODE_TOKEN_EXPIRED, _MESSAGE_TOKEN_EXPIRED

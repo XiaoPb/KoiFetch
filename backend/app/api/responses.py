@@ -1,8 +1,9 @@
 """Unified response envelope and error mapping for the HTTP API.
 
 Every endpoint returns the same shape — ``{code, message, data}`` — on success
-*and* failure (the v1 design spec). Success is ``code == 0``; errors carry a
-stable numeric code from the table below, mapped to an HTTP status.
+*and* failure (the v1 design spec), including unexpected server errors. Success
+is ``code == 0``; errors carry a stable numeric code from the table below,
+mapped to an HTTP status.
 
 Error-code table (PRD unless noted):
 
@@ -10,6 +11,8 @@ Error-code table (PRD unless noted):
 code          meaning                 HTTP        notes
 ============  ======================  ==========  ==============================
 0             成功 / ok               200         success
+1             存储未就绪              200         health endpoint only (degraded
+                                                    mode; predates this table)
 400           请求参数错误            400         request validation failures
 2001          未登录 / Not logged in  401         missing/malformed Authorization
 2002          权限不足 / Forbidden    403         admin-only endpoints (Task 10)
@@ -19,11 +22,21 @@ code          meaning                 HTTP        notes
                                                     no wrong-password code, so
                                                     login failure reuses the 401
                                                     class with this stable code
+9001          服务器内部错误          500         unexpected exceptions (the
+                                                    generic handler below); detail
+                                                    is logged, never returned
 ============  ======================  ==========  ==============================
 
-``data`` is ``None`` on errors and holds the payload on success. Messages are
-human-readable and bilingual (Chinese-first per product direction); they are
-user-visible, so they must never embed secrets.
+``data`` is ``None`` on errors (the 500 handler carries a ``request_id`` for
+log correlation) and holds the payload on success. Messages are human-readable
+and bilingual (Chinese-first per product direction); they are user-visible, so
+they must never embed secrets.
+
+**Code conventions.** Framework-driven 404/405 responses mirror the HTTP status
+as the body ``code`` (they have no PRD code). Domain errors — from Tasks 8-10
+onward — must use explicit PRD codes (parse 1001-1005, download 3001-3003,
+NAS 5001-5004) raised via :class:`ApiError`; do not reuse the HTTP-mirroring
+convention for them.
 
 Handlers registered by :func:`register_exception_handlers`:
 
@@ -31,12 +44,18 @@ Handlers registered by :func:`register_exception_handlers`:
   8-10 reuse it). Its ``message`` must never contain credentials or paths.
 * ``RequestValidationError`` — FastAPI's 422 becomes a 400 envelope so missing
   fields (e.g. an incomplete login body) match the documented contract.
-* ``HTTPException`` (Starlette) — 404/405/... responses keep the envelope;
-  the body ``code`` mirrors the HTTP status for these framework-driven errors.
+* ``HTTPException`` (Starlette) — 404/405/... responses keep the envelope and
+  preserve any ``WWW-Authenticate``-style headers the exception carries.
+* ``Exception`` (fallback) — any unexpected error becomes a 500 envelope with
+  code 9001; the exception (with request id/method/path) is logged server-side
+  and never echoed to the client. This keeps the "every response is an
+  envelope" contract even when a bug or an external dependency fails.
 """
 
 from __future__ import annotations
 
+import logging
+import uuid
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -47,6 +66,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 __all__ = [
     "CODE_BAD_REQUEST",
     "CODE_FORBIDDEN",
+    "CODE_INTERNAL_ERROR",
     "CODE_INVALID_CREDENTIALS",
     "CODE_INVALID_TOKEN",
     "CODE_OK",
@@ -65,9 +85,13 @@ CODE_FORBIDDEN = 2002
 CODE_INVALID_TOKEN = 2003
 CODE_TOKEN_EXPIRED = 2004
 CODE_INVALID_CREDENTIALS = 2005
+CODE_INTERNAL_ERROR = 9001
 
 _MESSAGE_OK = "ok"
 _MESSAGE_BAD_REQUEST = "请求参数错误 / Invalid request parameters"
+_MESSAGE_INTERNAL_ERROR = "服务器内部错误 / Internal server error"
+
+logger = logging.getLogger(__name__)
 
 
 def ok(data: Any = None, message: str = _MESSAGE_OK) -> dict:
@@ -115,10 +139,38 @@ async def http_exception_handler(
     request: Request, exc: StarletteHTTPException
 ) -> JSONResponse:
     # Framework-driven errors (404/405/...) keep the envelope; the body code
-    # mirrors the HTTP status (these have no PRD code).
+    # mirrors the HTTP status (these have no PRD code). Headers carried by the
+    # exception (e.g. future WWW-Authenticate challenges) are preserved.
     return JSONResponse(
         status_code=exc.status_code,
         content=error(exc.status_code, str(exc.detail) or "请求失败 / Request failed"),
+        headers=dict(exc.headers) if exc.headers else None,
+    )
+
+
+async def unhandled_exception_handler(
+    request: Request, exc: Exception
+) -> JSONResponse:
+    """Last-resort handler: any unexpected error becomes a 500 envelope.
+
+    The exception (with a correlation id and the request method/path) is logged
+    server-side; the client only ever sees the generic 9001 envelope — internal
+    detail and tracebacks are never echoed, even in debug mode.
+    """
+    request_id = uuid.uuid4().hex[:8]
+    logger.exception(
+        "unhandled error request_id=%s on %s %s",
+        request_id,
+        request.method,
+        request.url.path,
+    )
+    return JSONResponse(
+        status_code=500,
+        content=error(
+            CODE_INTERNAL_ERROR,
+            _MESSAGE_INTERNAL_ERROR,
+            data={"request_id": request_id},
+        ),
     )
 
 
@@ -127,3 +179,4 @@ def register_exception_handlers(app: FastAPI) -> None:
     app.add_exception_handler(ApiError, api_error_handler)
     app.add_exception_handler(RequestValidationError, request_validation_handler)
     app.add_exception_handler(StarletteHTTPException, http_exception_handler)
+    app.add_exception_handler(Exception, unhandled_exception_handler)
