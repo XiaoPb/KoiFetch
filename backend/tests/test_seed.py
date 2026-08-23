@@ -86,6 +86,13 @@ class TestSeedAdmin:
         with pytest.raises(ValueError, match="ADMIN_PASSWORD"):
             seed.seed_admin(settings=make_settings("   "), engine=engine)
 
+    def test_password_over_72_bytes_rejected(self, engine):
+        # bcrypt 3.2+ truncates >72-byte passwords silently, which would create
+        # an admin whose real password can never authenticate (the auth service
+        # rejects >72-byte inputs). Fail fast instead.
+        with pytest.raises(ValueError, match="72"):
+            seed.seed_admin(settings=make_settings("x" * 73), engine=engine)
+
     def test_missing_password_setting_fails_fast(self, engine):
         # Settings requires ADMIN_PASSWORD; a settings object without it cannot
         # even be constructed, so seeding fails before touching the database.

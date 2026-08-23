@@ -10,13 +10,23 @@ Design decisions (stable contract for Tasks 8-12):
 
 * **One account, no registration.** v1 seeds exactly one administrator (see
   ``app.infrastructure.seed``); there is no signup and no refresh-token flow.
-* **Failures are indistinguishable.** A nonexistent username and a wrong
-  password return the same result (``None``), so callers cannot enumerate
-  accounts. Blank inputs are rejected before touching the database.
+* **Failures are indistinguishable — in result *and* timing.** A nonexistent
+  username and a wrong password return the same result (``None``), and the
+  missing-user path runs a bcrypt comparison against a fixed dummy hash so the
+  two paths take comparable time — callers cannot enumerate accounts by
+  response shape or timing. Blank/non-string inputs are rejected before any
+  database or bcrypt work.
+* **72-byte bcrypt limit handled explicitly.** bcrypt 3.2+ silently
+  *truncates* passwords over 72 bytes (it does not raise), so without a guard
+  ``checkpw`` on a long password whose first 72 bytes match a stored hash would
+  succeed. :meth:`AuthService._verify_password` therefore rejects any password
+  over 72 bytes *before* calling bcrypt, so the service never authenticates on
+  a truncated prefix. The seed (``app.infrastructure.seed``) rejects over-long
+  ``ADMIN_PASSWORD`` values for the same reason.
 * **Secrets never leave the bcrypt call.** Passwords are handed straight to
-  ``bcrypt.checkpw`` and are never logged, stored, or echoed. Malformed input
-  (e.g. bcrypt 3.x raising ``ValueError`` for passwords over 72 bytes) fails
-  *closed* — treated as an authentication failure, never a server error.
+  ``bcrypt.checkpw`` and are never logged, stored, or echoed. Malformed
+  *stored hashes* (a corrupt DB row) fail closed — treated as an
+  authentication failure, never a server error.
 * **DI over globals.** The service takes an explicit ``token_provider`` (from
   ``app.adapters.factory.get_access_token_provider``) and an optional
   ``engine``; ``create_app`` wires the production instance and tests override
@@ -37,6 +47,18 @@ from app.infrastructure.database import session_scope
 from app.infrastructure.models import User
 
 __all__ = ["AuthService", "LoginResult"]
+
+# Bcrypt's input limit is 72 bytes (any trailing bytes are silently truncated
+# by bcrypt 3.2+). Reject longer passwords before bcrypt sees them.
+_BCRYPT_MAX_PASSWORD_BYTES = 72
+
+# A fixed, valid bcrypt hash (cost factor 12, matching the seed) used to
+# equalize login timing for nonexistent usernames: the missing-user path runs
+# a real comparison against this hash so it costs roughly as much as a
+# wrong-password attempt. The result is ignored.
+_DUMMY_HASH = (
+    "$2b$12$HPoisdLphOu2GdHztnF5De8SWJba4EozD9RcYix.QMjAQ/oLZ0Pg."
+)
 
 
 @dataclass(frozen=True)
@@ -73,15 +95,23 @@ class AuthService:
     def authenticate(self, username: str, password: str) -> User | None:
         """Return the admin :class:`User` when credentials match, else ``None``.
 
-        Missing user and wrong password return the same ``None``. The password
-        is only ever handed to bcrypt — never logged, stored, or echoed.
+        Missing user and wrong password return the same ``None`` and perform
+        comparable bcrypt work (see module docstring), so callers cannot tell
+        them apart. The password is only ever handed to bcrypt — never logged,
+        stored, or echoed.
         """
-        username = (username or "").strip()
-        if not username or not isinstance(password, str) or not password:
+        if not isinstance(username, str) or not isinstance(password, str):
+            return None
+        username = username.strip()
+        if not username or not password:
             return None
         with session_scope(self._engine) as session:
             user = session.scalar(select(User).where(User.username == username))
             if user is None:
+                # Timing parity: run a bcrypt comparison against a dummy hash
+                # so the missing-user path costs about as much as a
+                # wrong-password attempt (result is ignored).
+                self._verify_password(password, _DUMMY_HASH)
                 return None
             if not self._verify_password(password, user.password_hash):
                 return None
@@ -112,12 +142,20 @@ class AuthService:
 
     @staticmethod
     def _verify_password(password: str, stored_hash: str) -> bool:
-        """bcrypt-verify; any malformed input fails closed (never raises)."""
+        """bcrypt-verify; any out-of-contract input fails closed (never raises).
+
+        Passwords over 72 bytes are rejected explicitly: bcrypt 3.2+ silently
+        truncates them, which would let a long password authenticate against a
+        hash of its 72-byte prefix. A malformed stored hash (corrupt DB row)
+        is caught and treated as an authentication failure.
+        """
+        if len(password.encode("utf-8")) > _BCRYPT_MAX_PASSWORD_BYTES:
+            return False
         try:
             return bcrypt.checkpw(
                 password.encode("utf-8"), stored_hash.encode("utf-8")
             )
         except ValueError:
-            # bcrypt 3.x raises for >72-byte passwords and malformed hashes;
-            # treat both as authentication failure rather than a 500.
+            # bcrypt raises ValueError only for malformed hashes now (the
+            # >72-byte case is handled above); fail closed either way.
             return False

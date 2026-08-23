@@ -1,11 +1,12 @@
 """Tests for the admin auth service (``app/application/auth_service.py``).
 
 Covers: bcrypt verification against the seeded admin (correct/wrong/missing
-user are indistinguishable failures), blank-input rejection, graceful handling
-of bcrypt's >72-byte password limit (fail closed, never a 500), token issuance
-with 24h expiry and correct claims, the ``login`` convenience that bundles
-authentication + issuance, and the security contract that passwords never
-appear in logs.
+user are indistinguishable failures, including timing — the missing-user path
+runs a dummy bcrypt comparison), blank/non-string input rejection, explicit
+rejection of >72-byte passwords (bcrypt truncates instead of raising), token
+issuance with 24h expiry and correct claims, the ``login`` convenience that
+bundles authentication + issuance, and the security contract that passwords
+never appear in logs.
 """
 
 from datetime import timedelta
@@ -90,17 +91,56 @@ class TestAuthenticate:
         assert service.authenticate("   ", "   ") is None
         assert service.authenticate(None, None) is None
 
+    def test_non_string_inputs_return_none(self, engine, service):
+        seed_admin(engine)
+        assert service.authenticate(123, PASSWORD) is None
+        assert service.authenticate("admin", 123) is None
+        assert service.authenticate([], {}) is None
+
     def test_username_whitespace_is_stripped(self, engine, service):
         seed_admin(engine)
         user = service.authenticate("  admin  ", PASSWORD)
         assert user is not None
 
-    def test_password_over_72_bytes_fails_closed(self, engine, service):
-        # bcrypt 3.x raises ValueError for >72-byte inputs; the service must
-        # turn that into an authentication failure instead of a 500.
-        seed_admin(engine)
-        long_password = "x" * 73
+    def test_password_over_72_bytes_rejected_even_when_prefix_matches(
+        self, engine, service
+    ):
+        # bcrypt 3.2+ TRUNCATES >72-byte inputs instead of raising: without an
+        # explicit guard, a >72-byte password whose first 72 bytes match the
+        # stored hash would authenticate (checkpw(b"P"*73, hashpw(b"P"*72))
+        # returns True). The service must reject the long password up front.
+        long_password = PASSWORD + "y" * 60  # 77 bytes; first 72 = PASSWORD + 55 y's
+        prefix = long_password[:72]
+        with session_scope(engine) as session:
+            session.add(
+                User(
+                    username="admin",
+                    password_hash=bcrypt.hashpw(
+                        prefix.encode("utf-8"), bcrypt.gensalt()
+                    ).decode("utf-8"),
+                )
+            )
         assert service.authenticate("admin", long_password) is None
+        # bcrypt semantics: the exact 72-byte prefix itself still authenticates.
+        assert service.authenticate("admin", prefix) is not None
+
+    def test_unknown_user_still_runs_bcrypt_comparison(
+        self, engine, service, monkeypatch
+    ):
+        # Login timing must not leak whether a username exists: the missing-user
+        # path performs a bcrypt comparison (against a dummy hash) just like the
+        # wrong-password path.
+        seed_admin(engine)
+        calls: list = []
+        real_checkpw = bcrypt.checkpw
+
+        def tracking_checkpw(password: bytes, hashed: bytes) -> bool:
+            calls.append((password, hashed))
+            return real_checkpw(password, hashed)
+
+        monkeypatch.setattr(bcrypt, "checkpw", tracking_checkpw)
+        assert service.authenticate("nobody", PASSWORD) is None
+        assert len(calls) == 1
 
 
 class TestIssueAccessToken:

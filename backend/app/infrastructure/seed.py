@@ -41,7 +41,10 @@ def seed_admin(
     ``settings`` defaults to the process-wide settings singleton and ``engine``
     to the configured engine — both overridable so tests run against a temp
     database. Fails fast (before touching the database) when ``ADMIN_PASSWORD``
-    is missing or blank. The password is bcrypt-hashed and never logged.
+    is missing, blank, or longer than 72 bytes — bcrypt 3.2+ silently
+    truncates longer passwords, which would create an admin whose real password
+    can never authenticate (the auth service rejects >72-byte inputs). The
+    password is bcrypt-hashed and never logged.
 
     Idempotent and atomic: the admin row is created with an ``INSERT ... ON
     CONFLICT (username) DO NOTHING``, so a second (or concurrent) call inserts
@@ -52,6 +55,11 @@ def seed_admin(
     if not password or not password.strip():
         raise ValueError(
             "ADMIN_PASSWORD must be set to seed the admin user"
+        )
+    if len(password.encode("utf-8")) > 72:
+        raise ValueError(
+            "ADMIN_PASSWORD must be at most 72 bytes (bcrypt truncates longer "
+            "passwords, which would leave the admin unable to log in)"
         )
     engine = engine or get_engine()
 

@@ -20,8 +20,10 @@ pytest>=8.4
 # Persistence: SQLAlchemy ORM (app/infrastructure/models.py), Alembic
 # migrations (backend/alembic, run via `alembic upgrade head` at deploy time),
 # and bcrypt for the admin password hash (app/infrastructure/seed.py).
-# bcrypt is capped below 5: 4.x truncates >72-byte passwords while 3.x raises,
-# and the hash format is identical either way — pinning avoids surprise behavior.
+# bcrypt is pinned below 5; across the allowed range (>=3.2,<5) bcrypt SILENTLY
+# TRUNCATES >72-byte passwords (no exception) and the hash format is identical.
+# The seed and auth service therefore reject >72-byte inputs explicitly
+# (app/infrastructure/seed.py, app/application/auth_service.py).
 sqlalchemy>=2.0
 alembic>=1.13
 bcrypt>=3.2,<5
