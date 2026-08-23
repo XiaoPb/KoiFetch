@@ -2,9 +2,10 @@
 # Install with: pip install -r backend/requirements.txt
 #
 # The settings module (app/infrastructure/config.py) implements the
-# pydantic-settings-equivalent behavior with plain pydantic, so this task only
-# needs pydantic for runtime and pytest for tests. Later tasks will extend this
-# file as they introduce their own dependencies.
+# pydantic-settings-equivalent behavior with plain pydantic; python-dotenv
+# loads the local .env file. Later tasks will extend this file as they
+# introduce their own dependencies.
 
 pydantic>=2.9
+python-dotenv>=1.2
 pytest>=8.4

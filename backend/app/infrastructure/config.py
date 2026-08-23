@@ -6,9 +6,11 @@ session, auth, workers) depend on — do not rename them casually.
 
 ``Settings`` is a plain pydantic model so it stays dependency-light: values are
 read from uppercase environment variables by :meth:`Settings.from_env` (or
-passed directly as keyword arguments, which tests and callers may do). Real
-environments are supplied by Docker Compose ``env_file``/CI; the local dev
-defaults live in ``.env.example``.
+passed directly as keyword arguments, which tests and callers may do). For
+local development a ``.env`` file is loaded first (safe local defaults live in
+``.env.example``); process environment variables always take precedence over
+``.env`` values, and Docker/CI supply real values directly through the process
+environment.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from dotenv import load_dotenv
 from pydantic import BaseModel, Field, field_validator
 
 __all__ = ["Settings", "get_settings"]
@@ -85,13 +88,22 @@ class Settings(BaseModel):
         return value
 
     @classmethod
-    def from_env(cls) -> "Settings":
+    def from_env(
+        cls,
+        dotenv_path: str | os.PathLike[str] | None = None,
+    ) -> "Settings":
         """Build settings from the process environment (uppercase names).
 
-        Only variables that are set are passed through, so unset optional
-        variables fall back to their defaults while unset required secrets
-        still fail validation.
+        A ``.env`` file is loaded first for local development (by default
+        ``load_dotenv`` searches from this module upward, i.e. the project
+        root's ``.env``); process environment variables are never overridden
+        by ``.env`` values, so Docker/CI and real deployments simply set the
+        variables directly. ``dotenv_path`` lets callers point at a specific
+        file (used by tests). Only variables that are set are passed through,
+        so unset optional variables fall back to their defaults while unset
+        required secrets still fail validation.
         """
+        load_dotenv(dotenv_path=dotenv_path)
         values: dict[str, Any] = {}
         for name in cls.model_fields:
             raw = os.environ.get(name.upper())

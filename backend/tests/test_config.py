@@ -107,6 +107,48 @@ class TestEnvOverrides:
         assert settings.cors_origins == []
 
 
+class TestDotenvLoading:
+    def test_dotenv_values_picked_up_when_env_unset(self, clean_env, tmp_path):
+        dotenv_file = tmp_path / ".env"
+        dotenv_file.write_text(
+            "ADMIN_PASSWORD=dotenv-admin\n"
+            "SECRET_KEY=dotenv-secret\n"
+            "MAX_CONCURRENT=9\n",
+            encoding="utf-8",
+        )
+        settings = Settings.from_env(dotenv_path=dotenv_file)
+        assert settings.admin_password == "dotenv-admin"
+        assert settings.secret_key == "dotenv-secret"
+        assert settings.max_concurrent == 9
+
+    def test_process_env_overrides_dotenv_values(self, clean_env, monkeypatch, tmp_path):
+        dotenv_file = tmp_path / ".env"
+        dotenv_file.write_text(
+            "ADMIN_PASSWORD=dotenv-admin\n"
+            "SECRET_KEY=dotenv-secret\n"
+            "MAX_CONCURRENT=9\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("ADMIN_PASSWORD", "real-admin")
+        monkeypatch.setenv("MAX_CONCURRENT", "3")
+        settings = Settings.from_env(dotenv_path=dotenv_file)
+        assert settings.admin_password == "real-admin"  # process env wins
+        assert settings.max_concurrent == 3
+        assert settings.secret_key == "dotenv-secret"  # dotenv fills the gap
+
+    def test_missing_dotenv_file_still_uses_defaults(self, clean_env, monkeypatch, tmp_path):
+        monkeypatch.setenv("ADMIN_PASSWORD", "pw")
+        monkeypatch.setenv("SECRET_KEY", "sk")
+        settings = Settings.from_env(dotenv_path=tmp_path / ".env")  # does not exist
+        assert settings.max_concurrent == 3
+        assert settings.bubble_expire_hours == 24
+        assert settings.cors_origins == []
+
+    def test_missing_dotenv_file_without_secrets_still_raises(self, clean_env, tmp_path):
+        with pytest.raises(ValidationError):
+            Settings.from_env(dotenv_path=tmp_path / ".env")
+
+
 class TestCorsParsing:
     def test_comma_separated_env_parsed_into_list(self, clean_env, monkeypatch):
         monkeypatch.setenv("ADMIN_PASSWORD", "pw")
