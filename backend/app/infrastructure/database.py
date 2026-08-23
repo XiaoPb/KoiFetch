@@ -18,21 +18,25 @@ Design decisions (stable contract for downstream tasks):
 * **Parent directories are created.** Fresh clones have an empty, gitignored
   ``data/`` tree; :func:`build_engine` creates the SQLite file's parent
   directory (``mkdir(parents=True, exist_ok=True)``).
-* **Foreign keys are enforced.** SQLite only checks FKs when
-  ``PRAGMA foreign_keys=ON`` runs per connection; a connect listener installs
-  it on every engine built here.
-* **UTC timestamps.** Models use ``datetime.now(timezone.utc)`` defaults; the
-  ``DateTime(timezone=True)`` column type round-trips aware datetimes.
+* **Concurrency-safe SQLite.** Every connection is configured with
+  ``PRAGMA foreign_keys=ON``, WAL journal mode, and a busy timeout, so the
+  backend and worker processes can share one DB file without "database is
+  locked" failures.
+* **UTC datetimes.** Models store timestamps through :class:`UTCDateTime`,
+  which persists naive UTC wall-clock values (SQLite strips tzinfo) and
+  returns aware UTC ``datetime`` objects on load — so downstream logic can
+  compare them to ``datetime.now(timezone.utc)`` without TypeError.
 """
 
 from __future__ import annotations
 
+import datetime as dt
 from collections.abc import Iterator
 from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
 
-from sqlalchemy import Engine, create_engine, event
+from sqlalchemy import DateTime, Engine, TypeDecorator, create_engine, event
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
@@ -40,6 +44,8 @@ from app.infrastructure.config import get_settings
 
 __all__ = [
     "Base",
+    "UTCDateTime",
+    "SQLITE_BUSY_TIMEOUT_MS",
     "build_engine",
     "get_engine",
     "get_session_factory",
@@ -47,9 +53,50 @@ __all__ = [
     "sqlite_db_path",
 ]
 
+# Milliseconds a connection waits for a locked DB before raising
+# "database is locked" — the backend and worker contend on one SQLite file.
+SQLITE_BUSY_TIMEOUT_MS = 5000
+
 
 class Base(DeclarativeBase):
     """Declarative base for all ORM models (see ``app.infrastructure.models``)."""
+
+
+class UTCDateTime(TypeDecorator):
+    """A ``DateTime`` column that round-trips aware UTC datetimes on SQLite.
+
+    SQLite silently strips tzinfo from stored datetimes (naive out even for
+    aware in), which breaks comparisons against ``datetime.now(timezone.utc)``
+    (``TypeError: can't compare offset-naive and offset-aware datetimes``).
+    This decorator fixes the contract at the type level:
+
+    * **bind** — any aware datetime is normalized to UTC, then stored as a
+      naive UTC wall-clock value (``astimezone(utc).replace(tzinfo=None)``);
+      naive input is treated as UTC (never platform-local time).
+    * **load** — the naive value is re-attached to ``timezone.utc``.
+
+    The underlying column is ``DateTime(timezone=True)``, matching the initial
+    migration's DDL, so ``alembic check`` stays deterministic.
+    """
+
+    impl = DateTime(timezone=True)
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        if not isinstance(value, dt.datetime):
+            raise TypeError(
+                f"UTCDateTime expects a datetime, got {type(value).__name__}"
+            )
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=dt.timezone.utc)
+        return value.astimezone(dt.timezone.utc).replace(tzinfo=None)
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+        return value.replace(tzinfo=dt.timezone.utc)
 
 
 def sqlite_db_path(database_url: str) -> Path | None:
@@ -72,9 +119,10 @@ def sqlite_db_path(database_url: str) -> Path | None:
 def build_engine(database_url: str) -> Engine:
     """Create a SQLAlchemy engine for ``database_url``.
 
-    For SQLite: the DB file's parent directory is created if missing and the
-    per-connection ``PRAGMA foreign_keys=ON`` listener is installed so foreign
-    keys are actually enforced (SQLite's default is off).
+    For SQLite: the DB file's parent directory is created if missing, and each
+    connection is configured for concurrent multi-process access — foreign
+    keys enforced, WAL journal mode, and a busy timeout (see
+    :data:`SQLITE_BUSY_TIMEOUT_MS`).
     """
     db_file = sqlite_db_path(database_url)
     if db_file is not None:
@@ -89,9 +137,16 @@ def build_engine(database_url: str) -> Engine:
     if database_url.startswith("sqlite"):
 
         @event.listens_for(engine, "connect")
-        def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record) -> None:
+        def _configure_sqlite_connection(
+            dbapi_connection, _connection_record
+        ) -> None:
             cursor = dbapi_connection.cursor()
             cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+            # WAL is a persistent DB-level setting; re-asserting it on every
+            # connection is idempotent and covers DBs created before this
+            # listener existed. Consume the returned row to keep the cursor clean.
+            cursor.execute("PRAGMA journal_mode=WAL").fetchone()
             cursor.close()
 
     return engine
@@ -132,10 +187,14 @@ def session_scope(engine: Engine | None = None) -> Iterator[Session]:
     """Transaction-scoped session: commit on success, rollback on error.
 
     ``engine`` defaults to the configured engine (:func:`get_engine`); pass an
-    explicit engine to scope work to a test/temp database.
+    explicit engine to scope work to a test/temp database. Uses the cached
+    session factory (:func:`get_session_factory`) so no sessionmaker is built
+    per call.
     """
-    factory = sessionmaker(
-        bind=engine or get_engine(), autoflush=False, expire_on_commit=False
+    factory = (
+        get_session_factory()
+        if engine is None
+        else sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
     )
     session = factory()
     try:

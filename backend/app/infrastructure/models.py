@@ -21,7 +21,9 @@ Conventions (documented once, applied everywhere):
   the enums (``enum_check_constraint``) — named constraints keep
   ``alembic check`` deterministic on SQLite, unlike Enum's type-bound CHECKs.
 * **Timestamps are UTC.** ``created_at``/``updated_at``/``completed_at`` use
-  ``DateTime(timezone=True)`` with ``datetime.now(timezone.utc)`` defaults.
+  :class:`app.infrastructure.database.UTCDateTime`, which persists naive UTC
+  wall-clock values (SQLite strips tzinfo) and returns aware UTC datetimes on
+  load, with ``datetime.now(timezone.utc)`` Python defaults.
 * **JSON metadata** lives in a ``JSON`` column named ``metadata``. The Python
   attribute is ``metadata_`` because ``metadata`` is reserved on declarative
   classes (``Base.metadata``); the mapped column name keeps the DB schema per
@@ -47,7 +49,6 @@ from sqlalchemy import (
     JSON,
     BigInteger,
     CheckConstraint,
-    DateTime,
     Enum,
     Float,
     ForeignKey,
@@ -58,7 +59,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.domain.enums import DownloadStatus, MediaType
-from app.infrastructure.database import Base
+from app.infrastructure.database import Base, UTCDateTime
 
 __all__ = ["User", "ParseTask", "DownloadTask"]
 
@@ -118,7 +119,7 @@ class User(Base):
     username: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=_utcnow
+        UTCDateTime(), nullable=False, default=_utcnow
     )
 
     parse_tasks: Mapped[list[ParseTask]] = relationship(
@@ -155,10 +156,10 @@ class ParseTask(Base):
         ForeignKey("users.id"), index=True
     )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=_utcnow, index=True
+        UTCDateTime(), nullable=False, default=_utcnow, index=True
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
+        UTCDateTime(),
         nullable=False,
         default=_utcnow,
         onupdate=_utcnow,
@@ -205,12 +206,10 @@ class DownloadTask(Base):
     error_message: Mapped[str | None] = mapped_column(Text)
     bubble_path: Mapped[str | None] = mapped_column(Text)
     pond_path: Mapped[str | None] = mapped_column(Text)
-    token_expires_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True)
-    )
+    token_expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=_utcnow, index=True
+        UTCDateTime(), nullable=False, default=_utcnow, index=True
     )
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
     parse_task: Mapped[ParseTask] = relationship(back_populates="downloads")
