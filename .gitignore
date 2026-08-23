@@ -1,0 +1,6 @@
+# Local product documentation and planning artifacts
+/docs/prd/
+/docs/superpowers/
+
+# Isolated development worktrees
+/.worktrees/
