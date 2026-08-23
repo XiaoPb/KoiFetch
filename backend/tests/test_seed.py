@@ -46,6 +46,33 @@ class TestSeedAdmin:
             users = session.scalars(select(User)).all()
             assert len(users) == 1
 
+    def test_preserves_existing_password_hash(self, engine):
+        # Seeding again must NOT re-hash/overwrite the existing admin's hash:
+        # an existing account keeps its original password, whatever the current
+        # ADMIN_PASSWORD value is.
+        assert (
+            seed.seed_admin(settings=make_settings("first-pass"), engine=engine)
+            is True
+        )
+        with session_scope(engine) as session:
+            original_hash = session.scalar(select(User)).password_hash
+
+        assert (
+            seed.seed_admin(settings=make_settings("second-pass"), engine=engine)
+            is False
+        )
+
+        with session_scope(engine) as session:
+            users = session.scalars(select(User)).all()
+            assert len(users) == 1
+            assert users[0].password_hash == original_hash
+            assert bcrypt.checkpw(
+                b"first-pass", users[0].password_hash.encode("utf-8")
+            )
+            assert not bcrypt.checkpw(
+                b"second-pass", users[0].password_hash.encode("utf-8")
+            )
+
     def test_seed_into_empty_engine_via_default_settings(self, engine, monkeypatch):
         monkeypatch.setattr(seed, "get_engine", lambda: engine)
         monkeypatch.setattr(seed, "get_settings", lambda: make_settings("via-defaults"))

@@ -9,6 +9,11 @@ and is invoked explicitly:
   after ``alembic upgrade head``), and
 * manually, e.g. ``python -m app.infrastructure.seed`` from ``backend/``.
 
+Creation is **atomic**: a single ``INSERT ... ON CONFLICT DO NOTHING`` (SQLite
+upsert) instead of a check-then-insert, so concurrent seeder processes cannot
+duplicate the admin or race each other. An existing admin row is never
+re-hashed or overwritten.
+
 The FastAPI app import stays side-effect-free: this module is never imported by
 ``app.main``; the seed runs only when called or executed as a module.
 """
@@ -16,7 +21,8 @@ The FastAPI app import stays side-effect-free: this module is never imported by
 from __future__ import annotations
 
 import bcrypt
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from app.infrastructure.config import Settings, get_settings
 from app.infrastructure.database import get_engine, session_scope
@@ -36,6 +42,10 @@ def seed_admin(
     to the configured engine — both overridable so tests run against a temp
     database. Fails fast (before touching the database) when ``ADMIN_PASSWORD``
     is missing or blank. The password is bcrypt-hashed and never logged.
+
+    Idempotent and atomic: the admin row is created with an ``INSERT ... ON
+    CONFLICT (username) DO NOTHING``, so a second (or concurrent) call inserts
+    nothing, preserves the existing row's hash, and returns False.
     """
     settings = settings or get_settings()
     password = settings.admin_password
@@ -45,17 +55,17 @@ def seed_admin(
         )
     engine = engine or get_engine()
 
+    password_hash = bcrypt.hashpw(
+        password.encode("utf-8"), bcrypt.gensalt()
+    ).decode("utf-8")
+    stmt = (
+        sqlite_insert(User)
+        .values(username=ADMIN_USERNAME, password_hash=password_hash)
+        .on_conflict_do_nothing(index_elements=["username"])
+    )
     with session_scope(engine) as session:
-        existing = session.scalar(
-            select(User).where(User.username == ADMIN_USERNAME)
-        )
-        if existing is not None:
-            return False
-        password_hash = bcrypt.hashpw(
-            password.encode("utf-8"), bcrypt.gensalt()
-        ).decode("utf-8")
-        session.add(User(username=ADMIN_USERNAME, password_hash=password_hash))
-        return True
+        result = session.execute(stmt)
+    return result.rowcount > 0
 
 
 def main() -> int:
