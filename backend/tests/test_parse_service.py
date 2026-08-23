@@ -42,6 +42,22 @@ class _FlakyParser:
         return self._delegate.parse(command)
 
 
+class _InvalidDurationParser:
+    """A parser whose result carries a duration ParseResult accepts ("03:99"
+    passes the model — the field has no format constraint) but the persistence
+    layer cannot convert, proving row construction is isolated per URL."""
+
+    def __init__(self, bad_url: str) -> None:
+        self._bad_url = bad_url
+        self._delegate = StubParserAdapter()
+
+    def parse(self, command):
+        if command.urls[0] == self._bad_url:
+            result = self._delegate.parse(command)[0]
+            return [result.model_copy(update={"duration": "03:99"})]
+        return self._delegate.parse(command)
+
+
 @pytest.fixture
 def engine(tmp_path):
     engine = build_engine(f"sqlite:///{tmp_path / 'parse-service.db'}")
@@ -153,8 +169,29 @@ class TestPartialFailure:
         assert len(batch.failed) == 1
         failure = batch.failed[0]
         assert failure.url == bad_url
-        assert failure.error  # a human-readable message
+        # Sanitized: stable bilingual message + exception class name — the raw
+        # exception text (which could embed paths or signed tokens) is never
+        # echoed to the client.
+        assert "Parse failed" in failure.error
+        assert "(ValueError)" in failure.error
+        assert "platform engine unavailable" not in failure.error
         # Only the successful parses are persisted.
+        stored = rows(engine)
+        assert len(stored) == 2
+        assert {row.url for row in stored} == {VIDEO_URL, MUSIC_URL}
+
+    def test_row_construction_failure_is_isolated_per_url(self, engine):
+        bad_url = "https://bad.example.com/video/x"
+        service = ParseService(parser=_InvalidDurationParser(bad_url), engine=engine)
+        batch = service.parse([VIDEO_URL, bad_url, MUSIC_URL])
+
+        # The bad result parses fine but cannot build an ORM row (duration
+        # "03:99" is not convertible to seconds): that URL fails alone — the
+        # whole batch must not roll back or 500.
+        assert [r.url for r in batch.results] == [VIDEO_URL, MUSIC_URL]
+        assert len(batch.failed) == 1
+        assert batch.failed[0].url == bad_url
+        assert "Parse failed" in batch.failed[0].error
         stored = rows(engine)
         assert len(stored) == 2
         assert {row.url for row in stored} == {VIDEO_URL, MUSIC_URL}

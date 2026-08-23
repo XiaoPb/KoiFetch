@@ -8,19 +8,25 @@ successful :class:`~app.domain.ParseResult` as a :class:`ParseTask` row.
 
 Design decisions (stable contract for Tasks 9-12):
 
-* **Validation is the domain's job.** :meth:`ParseService.parse` builds a
-  :class:`~app.domain.ParseCommand` first; its pydantic ``ValidationError`` is
-  translated to the PRD envelope codes — empty list / blank entry → ``1001``
-  (URL为空), malformed URL → ``1002`` (URL格式无效), batch over the 50-URL
-  limit → generic ``400`` (the PRD defines no dedicated code for the count
-  limit). The translated :class:`~app.api.responses.ApiError` carries the
-  message, so no URL is ever parsed before the whole batch is valid.
+* **Validation is the domain's job, codes decided up front.** The cheap
+  batch-level rules are pre-checked in the service so their PRD codes cannot
+  drift with the domain's wording: empty list / blank entry → ``1001``
+  (URL为空), batch over the 50-URL limit → generic ``400`` (the PRD defines no
+  dedicated code for the count limit). Every remaining
+  :class:`~app.domain.ParseCommand` validation failure is a malformed URL →
+  ``1002`` (URL格式无效). The raised :class:`~app.api.responses.ApiError`
+  carries the message, so no URL is ever parsed before the whole batch is
+  valid.
 * **Per-URL isolation for runtime failures.** Domain validation rejects a
   malformed *request* wholesale (1001/1002), but a *parser* that fails on one
   URL (a real engine later; the stub never raises) must not sink the batch:
-  each URL is parsed separately and its exception is collected into a
-  ``failed`` list, while successes are still persisted and returned. The API
-  renders this as the PRD ``data: {results, failed}`` shape. Unsupported
+  each URL is parsed *and its row built/queued* separately, so any exception
+  in that per-URL step — a parser error or a result the persistence layer
+  rejects (e.g. an unconvertible duration) — is collected into a ``failed``
+  list while successes are still persisted and returned. The API renders this
+  as the PRD ``data: {results, failed}`` shape. Failure messages are
+  sanitized (stable bilingual text + exception class name; raw exception text
+  is never echoed, per the repo's message-safety convention). Unsupported
   platforms (code ``1003``) are reserved for real engines — the stub derives
   metadata for every URL.
 * **Option ladders survive in ``metadata``.** :class:`ParseTask` has no
@@ -100,13 +106,31 @@ class ParseService:
         """Parse ``urls``, persisting each success; collect per-URL failures.
 
         Raises :class:`ApiError` (400 with code 1001/1002/400) when the batch
-        itself is invalid — nothing is parsed or persisted then. Runtime parser
-        failures are returned in ``failed``, never raised.
+        itself is invalid — nothing is parsed or persisted then. Runtime
+        failures (parser errors, or results the persistence layer rejects) are
+        returned in ``failed``, never raised.
         """
+        # Cheap batch-level rules are pre-checked here so their PRD codes
+        # cannot drift with the domain's wording: empty list / blank entry →
+        # 1001 (URL为空), batch over the 50-URL limit → generic 400 (the PRD
+        # defines no dedicated count-limit code).
+        if not urls:
+            raise ApiError(HTTP_400_BAD_REQUEST, CODE_URL_EMPTY, _MESSAGE_URL_EMPTY)
+        if any(isinstance(url, str) and not url.strip() for url in urls):
+            raise ApiError(HTTP_400_BAD_REQUEST, CODE_URL_EMPTY, _MESSAGE_URL_EMPTY)
+        if len(urls) > ParseCommand.MAX_URLS:
+            raise ApiError(
+                HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_BATCH_TOO_LARGE
+            )
         try:
             command = ParseCommand(urls=urls)
         except ValidationError as exc:
-            raise _map_validation_error(exc) from exc
+            # With the empty/blank/count cases handled above, the only
+            # remaining domain rules are malformed-URL ones (scheme, host,
+            # whitespace, control characters) — all map to 1002.
+            raise ApiError(
+                HTTP_400_BAD_REQUEST, CODE_URL_INVALID, _MESSAGE_URL_INVALID
+            ) from exc
 
         results: list[ParseResult] = []
         failed: list[ParseFailure] = []
@@ -114,37 +138,32 @@ class ParseService:
             for url in command.urls:
                 try:
                     parsed = self._parser.parse(ParseCommand(urls=[url]))[0]
+                    # Row construction is inside the isolation: a real parser
+                    # may return a result the persistence layer rejects (e.g.
+                    # a duration the ORM cannot convert) — that must fail this
+                    # URL only, never roll back the whole batch. When the
+                    # parser protocols gain a ParserError family, narrow this
+                    # broad `except Exception` so genuine programming errors
+                    # from real parsers aren't silently collected as failures.
+                    session.add(_task_row(parsed))
                 except Exception as exc:
                     failed.append(
-                        ParseFailure(
-                            url=url, error=str(exc) or _MESSAGE_PARSE_FAILED
-                        )
+                        ParseFailure(url=url, error=_failure_error(exc))
                     )
                     continue
-                session.add(_task_row(parsed))
                 results.append(parsed)
         return ParseBatchResult(results=results, failed=failed)
 
 
-def _map_validation_error(exc: ValidationError) -> ApiError:
-    """Translate a domain :class:`ParseCommand` validation failure to the PRD code.
+def _failure_error(exc: Exception) -> str:
+    """Build a safe, stable message for a per-URL parse failure.
 
-    The classification keys on the domain's own stable messages (documented in
-    ``app/domain/models.py``): empty-list/blank-entry → 1001, batch over the
-    50-URL limit → generic 400 (no dedicated PRD code), everything else
-    (scheme/host/whitespace/control-character rules) → 1002.
+    The raw exception text is never echoed — real engines may raise messages
+    embedding filesystem paths, signed-token URLs, or internals. The client
+    gets the stable bilingual message plus the exception *class name* as a
+    diagnostic hint.
     """
-    messages = " ".join(str(err.get("msg", "")) for err in exc.errors())
-    if (
-        "at least one URL is required" in messages
-        or "must not contain empty entries" in messages
-    ):
-        return ApiError(HTTP_400_BAD_REQUEST, CODE_URL_EMPTY, _MESSAGE_URL_EMPTY)
-    if "at most" in messages:
-        return ApiError(
-            HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_BATCH_TOO_LARGE
-        )
-    return ApiError(HTTP_400_BAD_REQUEST, CODE_URL_INVALID, _MESSAGE_URL_INVALID)
+    return f"{_MESSAGE_PARSE_FAILED} ({type(exc).__name__})"
 
 
 def _task_row(result: ParseResult) -> ParseTask:
