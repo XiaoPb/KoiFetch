@@ -44,21 +44,6 @@ def clean_env(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
 
-@pytest.fixture(autouse=True)
-def no_dotenv_file(monkeypatch):
-    """Keep tests hermetic against a real repo-root ``.env`` file.
-
-    ``Settings.from_env()``/``get_settings()`` load ``.env`` by default for the
-    documented local-dev workflow, so a developer's real ``.env`` would leak
-    into tests that assert on defaults or missing secrets. Every test except
-    ``TestDotenvLoading`` (which overrides this fixture to exercise real
-    ``.env`` loading) therefore treats ``load_dotenv`` as a no-op.
-    """
-    import app.infrastructure.config as config
-
-    monkeypatch.setattr(config, "load_dotenv", lambda *args, **kwargs: False)
-
-
 def build(**overrides) -> Settings:
     """Construct Settings directly from keyword arguments."""
     return Settings(**{**DEFAULTS, **overrides})
