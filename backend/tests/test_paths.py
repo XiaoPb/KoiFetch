@@ -6,6 +6,7 @@ root-scoped path builder (``build_path``). All filesystem fixtures live under
 pytest's ``tmp_path`` — never real storage roots.
 """
 
+import re
 from datetime import date, datetime
 from pathlib import Path
 
@@ -19,8 +20,6 @@ from app.domain.paths import (
     safe_media_filename,
     slugify,
 )
-
-SAFE_CHARSET = set("abcdefghijklmnopqrstuvwxyz0123456789-_")
 
 
 class TestSlugify:
@@ -42,9 +41,25 @@ class TestSlugify:
     def test_custom_fallback(self):
         assert slugify("!!!", fallback="unknown") == "unknown"
 
-    def test_non_ascii_is_dropped(self):
-        # Chinese/emoji are not in the ASCII slug charset -> dropped entirely.
-        assert slugify("晴天 示例") == "untitled"
+    def test_fallback_sanitized(self):
+        # A caller-supplied fallback may not reintroduce traversal.
+        assert slugify("!!!", fallback="../../etc") == "etc"
+        assert "/" not in slugify("!!!", fallback="a/b")
+        assert slugify("!!!", fallback="a b c") == "a-b-c"
+
+    def test_blank_fallback_rejected(self):
+        with pytest.raises(ValueError):
+            slugify("!!!", fallback="")
+        with pytest.raises(ValueError):
+            slugify("!!!", fallback="   ")
+
+    def test_cjk_preserved(self):
+        # Chinese-primary product: CJK letters survive slugification.
+        assert slugify("晴天 示例") == "晴天-示例"
+        assert slugify("晴天") == "晴天"
+
+    def test_mixed_cjk_and_ascii(self):
+        assert slugify("B站 教程 2026") == "b站-教程-2026"
 
     def test_accents_decompose_to_ascii(self):
         assert slugify("café") == "cafe"
@@ -59,10 +74,22 @@ class TestSlugify:
         assert slugify("..") == "untitled"
 
     def test_result_always_safe_charset(self):
+        # Only word characters (letters/digits, any script) and '-' survive;
+        # control chars, slashes, and dots are neutralized.
         nasty = "a/\\..:\x00\t\n'\"%$#@!()[]{}中文🎉 b"
         result = slugify(nasty)
-        assert result == "a-b"
-        assert set(result) <= SAFE_CHARSET
+        assert result == "a-中文-b"
+        assert re.fullmatch(r"[\w-]+", result) is not None
+
+    def test_lone_surrogate_does_not_crash(self):
+        # JSON \ud800 escapes are valid Python str; truncation hashing must
+        # not raise UnicodeEncodeError (see truncation branch).
+        result = slugify("a" * 200 + "\ud800")
+        assert len(result) <= 120
+        assert "\ud800" not in result
+
+    def test_lone_surrogate_only_slugs_to_fallback(self):
+        assert slugify("\ud800") == "untitled"
 
     def test_max_length_enforced(self):
         assert len(slugify("x" * 300)) <= 120
@@ -96,7 +123,7 @@ class TestSafeMediaFilename:
         assert name == "2026-08-23_my-awesome-video_v12345.mp4"
 
     def test_music_uses_same_pattern(self):
-        # Chinese title is dropped by slugify; source_id keeps the file unique.
+        # CJK is preserved by slugify; source_id still keeps the file unique.
         name = safe_media_filename(
             MediaType.MUSIC,
             published_at=date(2026, 8, 23),
@@ -104,7 +131,28 @@ class TestSafeMediaFilename:
             source_id="m678",
             ext="flac",
         )
-        assert name == "2026-08-23_untitled_m678.flac"
+        assert name == "2026-08-23_晴天-周杰伦_m678.flac"
+
+    def test_artist_included_when_provided(self):
+        name = safe_media_filename(
+            MediaType.MUSIC,
+            published_at=date(2026, 8, 23),
+            title="晴天",
+            artist="周杰伦",
+            source_id="m1",
+            ext="flac",
+        )
+        assert name == "2026-08-23_周杰伦_晴天_m1.flac"
+
+    def test_artist_omitted_when_absent(self):
+        name = safe_media_filename(
+            MediaType.VIDEO,
+            published_at=date(2026, 8, 23),
+            title="My Video",
+            source_id="v1",
+            ext="mp4",
+        )
+        assert name == "2026-08-23_my-video_v1.mp4"
 
     def test_image_numbered_pattern(self):
         name = safe_media_filename(
@@ -130,6 +178,18 @@ class TestSafeMediaFilename:
         with pytest.raises(ValueError):
             safe_media_filename(
                 MediaType.IMAGE, published_at=date(2026, 8, 23), title="x", ext="jpg"
+            )
+
+    def test_image_does_not_require_published_at(self):
+        name = safe_media_filename(
+            MediaType.IMAGE, title="Trip Photos", index=1, ext="jpg"
+        )
+        assert name == "001_trip-photos.jpg"
+
+    def test_video_requires_published_at(self):
+        with pytest.raises(ValueError):
+            safe_media_filename(
+                MediaType.VIDEO, title="x", source_id="s", ext="mp4"
             )
 
     def test_video_requires_source_id(self):
@@ -291,3 +351,9 @@ class TestBuildPath:
     def test_empty_components_return_root(self, tmp_path):
         root = tmp_path / "pond"
         assert build_path(root) == root
+
+    def test_relative_root_rejected(self):
+        # A relative root would silently resolve against the caller's CWD;
+        # require absolute roots so containment is unambiguous.
+        with pytest.raises(ValueError):
+            build_path("relative/root", "video")
