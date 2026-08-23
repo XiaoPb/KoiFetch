@@ -25,3 +25,7 @@ pytest>=8.4
 sqlalchemy>=2.0
 alembic>=1.13
 bcrypt>=3.2,<5
+
+# Tokens: PyJWT signs the 24-hour admin access tokens and the five-minute
+# single-use file tokens issued by the download API (app/adapters/tokens_jwt.py).
+pyjwt>=2.13
