@@ -19,7 +19,10 @@ here, not in the settings contract.
 containment when a path is *built*; every I/O operation here re-verifies the
 candidate against the *current* roots right before touching the filesystem
 (roots could be swapped or symlinks could appear between build and use).
-Traversal attempts raise :class:`app.domain.paths.PathOutsideRootError`.
+Write targets are re-verified *after* their parent directories are created —
+that is when a swapped symlink in a parent would otherwise redirect the
+write outside the root. Traversal attempts raise
+:class:`app.domain.paths.PathOutsideRootError`.
 
 **Move semantics:** :meth:`save_file` and :meth:`move_to_pond` *move* (via
 ``shutil.move``, which handles cross-device by copy+delete), so the source
@@ -28,6 +31,18 @@ disappears. Callers that need the source kept should copy first.
 **Listing:** :meth:`list_files` walks one bucket recursively and returns
 sorted absolute paths of files (directories are skipped) — enough for the
 preview and NAS APIs; this is deliberately not a full file browser.
+
+Notes for later tasks (do NOT implement yet):
+
+* **Buckets are keyed by :class:`app.domain.enums.MediaType`.** Adding a
+  media type (e.g. the PRD's deferred ``live_photo``) means extending the
+  domain enum, adding a pond/bubble root pair to the constructor *and* the
+  factory, and extending the ``MediaType``-keyed maps; an unknown type
+  currently surfaces as ``KeyError`` from the internal dict.
+* **:meth:`read_bytes` loads whole files into memory.** The preview and
+  download-file APIs (Tasks 8/9) may need a streaming or file-handle method;
+  add one to the protocol when a caller needs it — deliberately not
+  implemented yet.
 """
 
 from __future__ import annotations
@@ -137,15 +152,27 @@ class LocalStorageAdapter:
 
     def move_to_pond(self, media_type: MediaType, bubble_path: Path | str) -> Path:
         bubble_root = self._bubble[media_type]
+        pond_root = self._pond[media_type]
         bubble = Path(bubble_path)
         # TOCTOU: re-verify the source is still inside the current bubble root.
         if not is_within(bubble_root, bubble):
             raise PathOutsideRootError(
                 f"path {str(bubble)!r} is outside bubble root {str(bubble_root)!r}"
             )
+        if not bubble.is_file():
+            raise ValueError(
+                f"move_to_pond source must be a file, got {str(bubble)!r}"
+            )
         relative = os.path.relpath(bubble, bubble_root)
-        pond_target = self._resolve(self._pond[media_type], (relative,))
+        pond_target = build_path(pond_root, relative)
         pond_target.parent.mkdir(parents=True, exist_ok=True)
+        # TOCTOU: re-verify the pond target after its parents exist, exactly
+        # like save_file/save_bytes.
+        if not is_within(pond_root, pond_target.resolve()):
+            raise PathOutsideRootError(
+                f"target {str(pond_target)!r} escapes root {str(pond_root)!r} "
+                "at write time"
+            )
         shutil.move(os.fspath(bubble), os.fspath(pond_target))
         return pond_target
 
@@ -177,12 +204,16 @@ class LocalStorageAdapter:
     def _save_target(
         self, media_type: MediaType, filename: str, to_pond: bool
     ) -> Path:
-        target = (
-            self.resolve_pond(media_type, filename)
-            if to_pond
-            else self.resolve_bubble(media_type, filename)
-        )
+        root = self._pond[media_type] if to_pond else self._bubble[media_type]
+        target = build_path(root, filename)
         target.parent.mkdir(parents=True, exist_ok=True)
+        # TOCTOU: re-verify the target's *current* realpath after the parents
+        # exist — a symlink swapped into a parent between build and I/O must
+        # not redirect the write outside the root.
+        if not is_within(root, target.resolve()):
+            raise PathOutsideRootError(
+                f"target {str(target)!r} escapes root {str(root)!r} at write time"
+            )
         return target
 
     def _all_roots(self) -> tuple[Path, ...]:

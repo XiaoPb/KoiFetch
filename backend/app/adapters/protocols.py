@@ -192,7 +192,16 @@ class StorageAdapter(Protocol):
         """Return the bytes of a stored file (bubble or pond)."""
         ...
 
-    def exists(self, stored_path: Path) -> bool: ...
+    def exists(self, stored_path: Path) -> bool:
+        """Return whether the path is a stored file inside a configured root.
+
+        Predicate semantics: a path outside every configured root returns
+        ``False`` (no exception), while :meth:`read_bytes` and :meth:`delete`
+        raise :class:`app.domain.paths.PathOutsideRootError` for the same
+        input. ``exists`` performs no containment re-check beyond the
+        containment predicate itself.
+        """
+        ...
 
     def delete(self, stored_path: Path) -> None:
         """Delete a stored file; raise ``FileNotFoundError`` when absent."""

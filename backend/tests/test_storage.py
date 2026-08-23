@@ -128,9 +128,38 @@ class TestMoveBetweenBubbleAndPond:
         with pytest.raises(PathOutsideRootError):
             adapter.move_to_pond(MediaType.VIDEO, outside)
 
+    def test_move_to_pond_rejects_directory_source(self, tmp_path):
+        # Passing the bubble root itself (or any directory) would move the
+        # whole tree; the adapter refuses non-file sources.
+        adapter = make_adapter(tmp_path)
+        with pytest.raises(ValueError):
+            adapter.move_to_pond(MediaType.VIDEO, adapter.bubble_root(MediaType.VIDEO))
+
 
 class TestContainment:
     """Traversal attempts are rejected both at path build and at I/O time."""
+
+    @pytest.fixture
+    def hostile_mkdir(self, tmp_path, monkeypatch):
+        """Simulate a TOCTOU race: swap the freshly created ``evil`` parent
+        directory for a symlink to an outside directory, so the adapter's
+        next I/O would escape the root unless it re-verifies at write time."""
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        real_mkdir = Path.mkdir
+
+        def _swap(self_path, *args, **kwargs):
+            result = real_mkdir(self_path, *args, **kwargs)
+            if self_path.name == "evil":
+                self_path.rename(self_path.with_name("evil_real"))
+                try:
+                    self_path.symlink_to(outside, target_is_directory=True)
+                except (OSError, NotImplementedError):
+                    pytest.skip("symlinks not supported on this platform/filesystem")
+            return result
+
+        monkeypatch.setattr(Path, "mkdir", _swap)
+        return outside
 
     def test_resolve_bubble_rejects_escape(self, tmp_path):
         adapter = make_adapter(tmp_path)
@@ -159,6 +188,38 @@ class TestContainment:
         with pytest.raises(PathOutsideRootError):
             adapter.save_file(MediaType.VIDEO, source, "../evil.bin")
 
+    def test_save_rejects_symlinked_parent_escape(self, tmp_path):
+        # A symlink inside the root pointing outside must never let a write
+        # land outside (defense in depth: build-time and write-time checks).
+        adapter = make_adapter(tmp_path)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        link = adapter.bubble_root(MediaType.VIDEO) / "evil"
+        try:
+            link.symlink_to(outside, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks not supported on this platform/filesystem")
+        with pytest.raises(PathOutsideRootError):
+            adapter.save_bytes(MediaType.VIDEO, "evil/pwned.bin", b"x")
+        assert not (outside / "pwned.bin").exists()
+
+    def test_save_bytes_rechecks_target_at_write_time(self, tmp_path, hostile_mkdir):
+        # Regression for the TOCTOU note: a symlink planted between path
+        # build and the actual write must be caught by the write-time
+        # re-verification, not just by the build-time check.
+        adapter = make_adapter(tmp_path)
+        with pytest.raises(PathOutsideRootError):
+            adapter.save_bytes(MediaType.VIDEO, "evil/pwned.bin", b"x")
+        assert not (hostile_mkdir / "pwned.bin").exists()
+
+    def test_save_file_rechecks_target_at_write_time(self, tmp_path, hostile_mkdir):
+        adapter = make_adapter(tmp_path)
+        source = tmp_path / "raw.bin"
+        source.write_bytes(b"x")
+        with pytest.raises(PathOutsideRootError):
+            adapter.save_file(MediaType.VIDEO, source, "evil/pwned.bin")
+        assert not (hostile_mkdir / "pwned.bin").exists()
+
     def test_read_bytes_rechecks_containment_at_open_time(self, tmp_path):
         # TOCTOU note (Task 5): containment is re-verified when the file is
         # opened, not just when the path was built.
@@ -174,6 +235,15 @@ class TestContainment:
         outside.write_text("s")
         with pytest.raises(PathOutsideRootError):
             adapter.delete(outside)
+
+    def test_exists_returns_false_outside_roots(self, tmp_path):
+        # Predicate semantics (documented on the protocol): exists() never
+        # raises — paths outside every configured root are simply not "stored
+        # files" — while read_bytes/delete raise PathOutsideRootError.
+        adapter = make_adapter(tmp_path)
+        outside = tmp_path / "elsewhere.txt"
+        outside.write_text("x")
+        assert adapter.exists(outside) is False
 
     def test_bubble_path_rejected_as_pond_source(self, tmp_path):
         # A pond-root path is not a valid bubble source for move_to_pond.
