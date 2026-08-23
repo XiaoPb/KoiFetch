@@ -15,8 +15,10 @@ missing — a misconfigured service must not start.
 **DI wiring.** ``create_app`` builds the access-token provider from ``settings``
 and stores it alongside an :class:`app.application.auth_service.AuthService` on
 ``app.state``; the auth router reads them through its DI hooks
-(``app.api.auth.get_auth_service``/``get_token_provider``). Tests override the
-hooks to pin a temp database and secret.
+(``app.api.auth.get_auth_service``/``get_token_provider``). The auth service is
+bound to the engine for ``settings.database_url`` (cached per URL), so the
+service always queries the database the app was configured with. Tests override
+the hooks to pin a temp database and secret.
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ from app.api.auth import router as auth_router
 from app.api.responses import error, ok, register_exception_handlers
 from app.application.auth_service import AuthService
 from app.infrastructure.config import Settings, get_settings
+from app.infrastructure.database import get_engine
 
 __all__ = ["APP_TITLE", "APP_VERSION", "STORAGE_ROOT_FIELDS", "create_app", "app"]
 
@@ -88,11 +91,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # Auth wiring: the token provider and auth service are built once from
     # ``settings`` and exposed to the auth router via app.state (DI hooks in
-    # app.api.auth). The auth service falls back to the configured engine
-    # (get_engine -> settings.database_url) for its DB sessions.
+    # app.api.auth). The auth service is bound to the engine for THIS settings
+    # object's database_url (cached per URL in infrastructure.database), so a
+    # caller passing custom settings gets that database — never the process
+    # singleton by accident.
     token_provider = get_access_token_provider(settings)
     app.state.token_provider = token_provider
-    app.state.auth_service = AuthService(token_provider=token_provider)
+    app.state.auth_service = AuthService(
+        token_provider=token_provider,
+        engine=get_engine(settings.database_url),
+    )
 
     register_exception_handlers(app)
     app.include_router(auth_router, prefix="/api")

@@ -157,12 +157,16 @@ def _engine_for(database_url: str) -> Engine:
     return build_engine(database_url)
 
 
-def get_engine() -> Engine:
-    """Return the process-wide engine for the configured ``database_url``.
+def get_engine(database_url: str | None = None) -> Engine:
+    """Return the cached engine for ``database_url`` (default: configured URL).
 
-    Cached per URL, so repeated calls share one connection pool.
+    Cached per URL, so repeated calls share one connection pool — and passing
+    the URL from a :class:`app.infrastructure.config.Settings` object returns
+    the *same* cached engine the process-wide path uses when the URLs match.
+    ``create_app`` relies on this to bind services to the database its own
+    settings object points at, instead of silently using the process singleton.
     """
-    return _engine_for(get_settings().database_url)
+    return _engine_for(database_url or get_settings().database_url)
 
 
 @lru_cache

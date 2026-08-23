@@ -2,10 +2,12 @@
 
 Covers the ``POST /api/auth/login`` contract (200 + ``{code, message, data}``
 envelope with ``{token, username, expires_at}``; 401 with a stable code for bad
-credentials, indistinguishable for unknown users; 400 for missing fields), the
-``require_admin`` dependency (valid token passes, missing/malformed header →
-2001, invalid token → 2003, expired token → 2004), the envelope shape on every
-error path, and the security contract that credentials never appear in logs.
+credentials, indistinguishable for unknown users; 400 for missing/blank/overlong
+fields), the ``require_admin`` dependency (valid token passes, missing/malformed
+header → 2001, invalid token → 2003, expired token → 2004), the envelope shape
+on every error path including unexpected server errors (9001), the security
+contract that credentials never appear in logs, and that ``create_app`` binds
+the auth service to the database URL from its own settings.
 
 The protected-route tests mount a tiny test-only ``/api/protected`` endpoint on
 the app (the guard is exercised through FastAPI's real dependency machinery,
@@ -29,6 +31,7 @@ from app.api.auth import (
 )
 from app.api.responses import (
     CODE_BAD_REQUEST,
+    CODE_INTERNAL_ERROR,
     CODE_INVALID_CREDENTIALS,
     CODE_INVALID_TOKEN,
     CODE_OK,
@@ -48,8 +51,8 @@ SECRET = "test-secret-key-0123456789abcdef"
 PASSWORD = "admin-s3cret-pass"
 
 
-def make_settings() -> Settings:
-    return Settings(admin_password=PASSWORD, secret_key=SECRET)
+def make_settings(**overrides) -> Settings:
+    return Settings(admin_password=PASSWORD, secret_key=SECRET, **overrides)
 
 
 @pytest.fixture
@@ -150,12 +153,22 @@ class TestLogin:
             {"username": "admin"},
             {"password": PASSWORD},
             {"username": "", "password": ""},
+            {"username": "   ", "password": "   "},
         ):
             response = client.post("/api/auth/login", json=payload)
             assert response.status_code == 400, payload
             body = response.json()
             assert set(body) == {"code", "message", "data"}
             assert body["code"] == CODE_BAD_REQUEST
+
+    def test_overlong_fields_return_400_envelope(self, client):
+        for payload in (
+            {"username": "a" * 65, "password": PASSWORD},
+            {"username": "admin", "password": "p" * 129},
+        ):
+            response = client.post("/api/auth/login", json=payload)
+            assert response.status_code == 400, payload
+            assert response.json()["code"] == CODE_BAD_REQUEST
 
     def test_malformed_json_body_returns_400_envelope(self, client):
         response = client.post(
@@ -267,3 +280,49 @@ class TestEnvelopeEverywhere:
     def test_health_still_returns_envelope(self, client):
         body = client.get("/api/health").json()
         assert set(body) == {"code", "message", "data"}
+
+
+class TestUnhandledErrors:
+    """Every response is an envelope, even unexpected server errors (PRD 9001)."""
+
+    def test_unexpected_exception_returns_9001_envelope(self, engine, provider, caplog):
+        app = build_app(engine, provider)
+
+        @app.get("/api/boom")
+        def boom() -> dict:
+            raise RuntimeError("boom")
+
+        client = TestClient(app, raise_server_exceptions=False)
+        with caplog.at_level("ERROR"):
+            response = client.get("/api/boom")
+        assert response.status_code == 500
+        body = response.json()
+        assert set(body) == {"code", "message", "data"}
+        assert body["code"] == CODE_INTERNAL_ERROR
+        assert body["data"]["request_id"]
+        # Internal detail goes to the server log, never into the response body.
+        assert "boom" in caplog.text
+        assert "boom" not in response.text
+
+
+class TestSettingsWiring:
+    """create_app must bind the auth service to ITS OWN settings database URL.
+
+    No dependency overrides here: the production wiring itself has to query
+    the database the settings object points at, not the process-wide default.
+    """
+
+    def test_create_app_binds_auth_to_settings_database(self, tmp_path):
+        settings = make_settings(database_url=f"sqlite:///{tmp_path / 'wired.db'}")
+        engine = build_engine(settings.database_url)
+        Base.metadata.create_all(engine)
+        assert seed.seed_admin(settings=settings, engine=engine) is True
+
+        client = TestClient(create_app(settings=settings))
+        response = client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": PASSWORD},
+        )
+        assert response.status_code == 200
+        assert response.json()["code"] == CODE_OK
+        assert response.json()["data"]["username"] == "admin"
