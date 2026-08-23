@@ -46,8 +46,16 @@ def get_parser(settings: Settings | None = None) -> ParserAdapter:
 
 
 def get_downloader(settings: Settings | None = None) -> DownloaderAdapter:
-    """Return the stub downloader (deterministic local test media)."""
-    return StubDownloaderAdapter()
+    """Return the stub downloader, throttled by the configured speed limit.
+
+    ``settings.download_speed_limit`` (MB/s; 0 = unlimited) maps to a
+    per-chunk delay inside the stub, so the worker's progress speed is
+    observable end-to-end (the setting has no other consumer in v1).
+    """
+    settings = settings or get_settings()
+    return StubDownloaderAdapter(
+        speed_limit_mb_s=float(settings.download_speed_limit)
+    )
 
 
 def get_storage(settings: Settings | None = None) -> StorageAdapter:

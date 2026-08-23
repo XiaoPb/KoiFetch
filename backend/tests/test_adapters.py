@@ -53,6 +53,9 @@ from app.domain import (
 
 TASK_ID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 DOWNLOAD_ID = "33333333-3333-3333-3333-333333333333"
+# HS256 test secret, ≥32 bytes (keeps the suite free of PyJWT's
+# InsecureKeyLengthWarning).
+TEST_SECRET = "test-secret-key-0123456789abcdef"
 _UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 )
@@ -120,8 +123,8 @@ class TestProtocolContracts:
         assert isinstance(adapter, StorageAdapter)
 
     def test_token_providers_satisfy_protocols(self):
-        assert isinstance(JwtAccessTokenProvider("sk"), AccessTokenProvider)
-        assert isinstance(JwtOneTimeTokenProvider("sk"), OneTimeTokenProvider)
+        assert isinstance(JwtAccessTokenProvider(TEST_SECRET), AccessTokenProvider)
+        assert isinstance(JwtOneTimeTokenProvider(TEST_SECRET), OneTimeTokenProvider)
 
 
 class TestStubParser:
@@ -347,11 +350,43 @@ class TestStubDownloader:
         result = downloader.download(self._request(tmp_path / "clip.bin"))
         assert result.speed is not None and result.speed > 0
 
+    def test_zero_byte_download_rejected(self):
+        # A 0-byte download would contradict the documented contract ("the
+        # final callback reports the complete byte count"): no chunk ever
+        # runs, so no callback fires. Refuse it up front.
+        with pytest.raises(ValueError):
+            StubDownloaderAdapter(total_bytes=0)
+
+    def test_speed_limit_maps_to_chunk_delay(self):
+        # 100 bytes per chunk at 1 MB/s ⇒ 1e-4 s between progress callbacks.
+        adapter = StubDownloaderAdapter(
+            total_bytes=1000, chunk_size=100, speed_limit_mb_s=1.0
+        )
+        assert adapter.chunk_size == 100
+        assert adapter.chunk_delay == pytest.approx(100 / 1_000_000)
+
+    def test_speed_limit_zero_means_unlimited(self):
+        adapter = StubDownloaderAdapter(total_bytes=1000, chunk_size=100)
+        assert adapter.chunk_delay == 0.0
+
+    def test_speed_limit_and_chunk_delay_are_mutually_exclusive(self):
+        with pytest.raises(ValueError):
+            StubDownloaderAdapter(
+                total_bytes=1000,
+                chunk_size=100,
+                speed_limit_mb_s=1.0,
+                chunk_delay=0.5,
+            )
+
     def test_invalid_constructor_args_rejected(self):
         with pytest.raises(ValueError):
             StubDownloaderAdapter(total_bytes=-1)
         with pytest.raises(ValueError):
+            StubDownloaderAdapter(total_bytes=0)
+        with pytest.raises(ValueError):
             StubDownloaderAdapter(chunk_size=0)
+        with pytest.raises(ValueError):
+            StubDownloaderAdapter(speed_limit_mb_s=-1)
 
 
 class TestAdapterFactory:
@@ -363,7 +398,7 @@ class TestAdapterFactory:
 
         return Settings(
             admin_password="pw",
-            secret_key="factory-secret",
+            secret_key=TEST_SECRET,
             video_storage_path=tmp_path / "pond/video",
             image_storage_path=tmp_path / "pond/image",
             music_storage_path=tmp_path / "pond/music",
@@ -379,6 +414,18 @@ class TestAdapterFactory:
     def test_get_downloader_returns_stub(self):
         assert isinstance(get_downloader(), StubDownloaderAdapter)
         assert isinstance(get_downloader(), DownloaderAdapter)
+
+    def test_factory_wires_speed_limit_into_downloader(self, settings):
+        # download_speed_limit (MB/s) must flow into the stub downloader's
+        # per-chunk delay so the worker's progress speed is observable; 0
+        # (default) means unlimited.
+        throttled = settings.model_copy(update={"download_speed_limit": 2})
+        adapter = get_downloader(throttled)
+        assert isinstance(adapter, StubDownloaderAdapter)
+        assert adapter.chunk_delay == pytest.approx(
+            adapter.chunk_size / (2 * 1_000_000)
+        )
+        assert get_downloader(settings).chunk_delay == 0.0
 
     def test_get_storage_returns_local_adapter(self, settings):
         storage = get_storage(settings)
