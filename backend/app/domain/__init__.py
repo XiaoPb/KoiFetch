@@ -15,6 +15,7 @@ objects instead of redefining vocabulary. It exports:
 """
 
 from app.domain.enums import DownloadStatus, MediaType
+from app.domain.formats import format_duration, parse_duration
 from app.domain.models import (
     DownloadCommand,
     DownloadProgress,
@@ -47,7 +48,9 @@ __all__ = [
     "ParseResult",
     "PathOutsideRootError",
     "build_path",
+    "format_duration",
     "is_within",
+    "parse_duration",
     "safe_media_filename",
     "slugify",
     "transition",

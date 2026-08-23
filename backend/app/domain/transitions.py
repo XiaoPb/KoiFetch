@@ -29,6 +29,11 @@ Decisions, documented:
   (re-download) from both, modeled here as a re-claim back to ``pending``.
 * **Retry budgeting lives outside the graph.** ``failed -> pending`` is always
   legal; the retry cap (3, Task 11) is a worker policy layered on top.
+* **There is NO ``downloading -> pending`` edge.** A task the worker started
+  cannot be re-queued directly: worker crash recovery relies on the cleanup
+  pass marking stale ``downloading`` tasks ``expired`` (after which
+  ``expired -> pending`` re-download is available). Tasks 11/12 must NOT
+  direct-re-claim ``downloading`` tasks — they either finish or fail them.
 
 The graph is immutable by convention (module-level mapping); tests assert its
 exact shape so any deliberate change is a reviewed change.
