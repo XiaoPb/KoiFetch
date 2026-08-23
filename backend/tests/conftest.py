@@ -1,6 +1,16 @@
 """Shared pytest fixtures for the backend test suite."""
 
+import os
+
 import pytest
+
+# Importing ``app.main`` constructs the module-level FastAPI instance, which
+# calls ``get_settings()`` and therefore requires the two secrets. Provide safe
+# local values for the whole test process (this module is imported before any
+# test module). Tests that care about a hermetic environment delete these via
+# ``clean_env`` in test_config.py.
+os.environ.setdefault("ADMIN_PASSWORD", "pw")
+os.environ.setdefault("SECRET_KEY", "sk")
 
 
 @pytest.fixture(autouse=True)

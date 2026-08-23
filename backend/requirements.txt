@@ -4,10 +4,15 @@
 # The settings module (app/infrastructure/config.py) implements the
 # pydantic-settings-equivalent behavior with plain pydantic; python-dotenv
 # loads the local .env file, and tzdata provides the IANA timezone database
-# for the tz validator on systems without one (e.g. Windows). Later tasks
-# will extend this file as they introduce their own dependencies.
+# for the tz validator on systems without one (e.g. Windows). fastapi + uvicorn
+# power the ASGI application entrypoint (app/main.py) and the local dev server;
+# httpx backs FastAPI's TestClient. Later tasks will extend this file as they
+# introduce their own dependencies.
 
+fastapi>=0.115
+uvicorn>=0.30
 pydantic>=2.9
 python-dotenv>=1.2
 tzdata>=2023.3
+httpx>=0.27
 pytest>=8.4
