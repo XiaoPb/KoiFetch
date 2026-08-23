@@ -19,6 +19,7 @@ import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, field_validator
@@ -34,18 +35,18 @@ class Settings(BaseModel):
     :class:`pydantic.ValidationError` so a misconfigured service fails fast.
     """
 
-    model_config = {"extra": "ignore"}
+    model_config = {"extra": "forbid"}
 
     # --- Required secrets (never log these; safe local values only in .env.example) ---
     admin_password: str = Field(min_length=1)
     secret_key: str = Field(min_length=1)
 
     # --- Storage roots (pond = permanent/NAS, bubble = temporary) ---
-    video_storage_path: Path = Path("data/pond/videos")
-    image_storage_path: Path = Path("data/pond/images")
+    video_storage_path: Path = Path("data/pond/video")
+    image_storage_path: Path = Path("data/pond/image")
     music_storage_path: Path = Path("data/pond/music")
-    temp_video_path: Path = Path("data/bubble/videos")
-    temp_image_path: Path = Path("data/bubble/images")
+    temp_video_path: Path = Path("data/bubble/video")
+    temp_image_path: Path = Path("data/bubble/image")
     temp_music_path: Path = Path("data/bubble/music")
 
     # --- Runtime behavior ---
@@ -85,6 +86,17 @@ class Settings(BaseModel):
             if not value.strip():
                 return []
             return [item.strip() for item in value.split(",") if item.strip()]
+        return value
+
+    @field_validator("tz", mode="after")
+    @classmethod
+    def _validate_timezone(cls, value: str) -> str:
+        # Fail fast on typos instead of surfacing them at scheduling time.
+        # ZoneInfo raises ZoneInfoNotFoundError (a KeyError) for unknown names.
+        try:
+            ZoneInfo(value)
+        except (KeyError, ValueError) as exc:
+            raise ValueError(f"unknown timezone name: {value!r}") from exc
         return value
 
     @classmethod

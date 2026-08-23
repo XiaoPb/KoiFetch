@@ -28,14 +28,14 @@ real `.env`; the example file contains safe local-development values only.
 | --- | --- | --- |
 | `ADMIN_PASSWORD` | *(required)* | Admin login seed — never log or commit the real value |
 | `SECRET_KEY` | *(required)* | JWT signing key |
-| `VIDEO_STORAGE_PATH` / `IMAGE_STORAGE_PATH` / `MUSIC_STORAGE_PATH` | `data/pond/...` | Permanent (Pond/NAS) storage roots |
-| `TEMP_VIDEO_PATH` / `TEMP_IMAGE_PATH` / `TEMP_MUSIC_PATH` | `data/bubble/...` | Temporary (Bubble) staging roots |
+| `VIDEO_STORAGE_PATH` / `IMAGE_STORAGE_PATH` / `MUSIC_STORAGE_PATH` | `data/pond/{video,image,music}` | Permanent (Pond/NAS) storage roots |
+| `TEMP_VIDEO_PATH` / `TEMP_IMAGE_PATH` / `TEMP_MUSIC_PATH` | `data/bubble/{video,image,music}` | Temporary (Bubble) staging roots |
 | `MAX_CONCURRENT` | `3` | Concurrent downloads (`>= 1`) |
 | `DOWNLOAD_SPEED_LIMIT` | `0` | Speed limit in MB/s; `0` = unlimited |
 | `BUBBLE_EXPIRE_HOURS` | `24` | Bubble retention hours (`>= 1`) |
-| `CORS_ORIGINS` | `http://localhost:5173,http://localhost:8000` | Comma-separated allowed origins (no wildcard in production) |
+| `CORS_ORIGINS` | *(none — empty list)* | Comma-separated allowed origins (no wildcard in production); example: `http://localhost:5173,http://localhost:8000` |
 | `DEBUG` | `false` | Debug mode |
-| `TZ` | `Asia/Shanghai` | Application timezone |
+| `TZ` | `Asia/Shanghai` | Application timezone (validated against the IANA database) |
 | `DATABASE_URL` | `sqlite:///./data/db/koifetch.db` | SQLAlchemy database URL |
 
 ## Docs

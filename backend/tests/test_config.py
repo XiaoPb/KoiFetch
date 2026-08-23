@@ -12,24 +12,9 @@ from pydantic import ValidationError
 from app.infrastructure.config import Settings, get_settings
 
 # Every environment variable the settings object reads. Tests delete all of
-# them first so results never depend on ambient machine state.
-ENV_NAMES = (
-    "ADMIN_PASSWORD",
-    "SECRET_KEY",
-    "VIDEO_STORAGE_PATH",
-    "IMAGE_STORAGE_PATH",
-    "MUSIC_STORAGE_PATH",
-    "TEMP_VIDEO_PATH",
-    "TEMP_IMAGE_PATH",
-    "TEMP_MUSIC_PATH",
-    "MAX_CONCURRENT",
-    "DOWNLOAD_SPEED_LIMIT",
-    "BUBBLE_EXPIRE_HOURS",
-    "CORS_ORIGINS",
-    "DEBUG",
-    "TZ",
-    "DATABASE_URL",
-)
+# them first so results never depend on ambient machine state. Derived from
+# the model so the list cannot drift from the field contract.
+ENV_NAMES = tuple(name.upper() for name in Settings.model_fields)
 
 DEFAULTS = {
     "admin_password": "pw",
@@ -63,11 +48,11 @@ class TestDefaults:
 
     def test_storage_root_defaults(self, clean_env):
         settings = build()
-        assert settings.video_storage_path == Path("data/pond/videos")
-        assert settings.image_storage_path == Path("data/pond/images")
+        assert settings.video_storage_path == Path("data/pond/video")
+        assert settings.image_storage_path == Path("data/pond/image")
         assert settings.music_storage_path == Path("data/pond/music")
-        assert settings.temp_video_path == Path("data/bubble/videos")
-        assert settings.temp_image_path == Path("data/bubble/images")
+        assert settings.temp_video_path == Path("data/bubble/video")
+        assert settings.temp_image_path == Path("data/bubble/image")
         assert settings.temp_music_path == Path("data/bubble/music")
 
     def test_database_url_default(self, clean_env):
@@ -226,6 +211,30 @@ class TestValidation:
         monkeypatch.setenv("ADMIN_PASSWORD", "pw")
         monkeypatch.setenv("SECRET_KEY", "sk")
         monkeypatch.setenv("MAX_CONCURRENT", "not-a-number")
+        with pytest.raises(ValidationError):
+            Settings.from_env()
+
+    def test_unknown_field_rejected(self, clean_env):
+        # extra="forbid" catches typos in direct construction.
+        with pytest.raises(ValidationError):
+            Settings(admin_password="pw", secret_key="sk", admin_pasword="typo")
+
+
+class TestTimezone:
+    @pytest.mark.parametrize("tz", ["Asia/Shanghai", "UTC", "America/New_York"])
+    def test_valid_timezone_accepted(self, clean_env, tz):
+        settings = build(tz=tz)
+        assert settings.tz == tz
+
+    @pytest.mark.parametrize("tz", ["Asia/Shnghai", "Not/AZone", "Shanghai"])
+    def test_invalid_timezone_rejected(self, clean_env, tz):
+        with pytest.raises(ValidationError):
+            build(tz=tz)
+
+    def test_invalid_timezone_env_rejected(self, clean_env, monkeypatch):
+        monkeypatch.setenv("ADMIN_PASSWORD", "pw")
+        monkeypatch.setenv("SECRET_KEY", "sk")
+        monkeypatch.setenv("TZ", "Not/AZone")
         with pytest.raises(ValidationError):
             Settings.from_env()
 
