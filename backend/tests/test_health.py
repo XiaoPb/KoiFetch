@@ -1,9 +1,13 @@
-"""Tests for the FastAPI entrypoint and the readiness endpoint.
+"""Tests for the FastAPI entrypoint, the readiness endpoint, and the
+container readiness probe.
 
 Covers: the ``GET /api/health`` contract (``{code, message, data}`` envelope,
 service + storage readiness), storage-root directory creation, degraded mode
-when a root cannot be created, CORS wiring, and the module-level ``app`` that
-uvicorn imports.
+when a root cannot be created, CORS wiring, the module-level ``app`` that
+uvicorn imports, and the ``app.health`` probe that the Compose backend
+healthcheck runs — the probe must fail whenever the health body does not
+report full readiness, so ``depends_on: service_healthy`` reflects storage
+readiness, not just HTTP 200.
 """
 
 from pathlib import Path
@@ -12,19 +16,13 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app import health as health_module
+from app.health import is_ready, main, probe
 from app.infrastructure.config import Settings
-from app.main import APP_TITLE, create_app
+from app.main import APP_TITLE, STORAGE_ROOT_FIELDS, create_app
 
-# Storage root field names on Settings, in contract order. The health endpoint
-# reports one status per root.
-STORAGE_ROOT_FIELDS = [
-    "video_storage_path",
-    "image_storage_path",
-    "music_storage_path",
-    "temp_video_path",
-    "temp_image_path",
-    "temp_music_path",
-]
+# STORAGE_ROOT_FIELDS is imported from app.main so the per-root reporting
+# contract cannot drift between the endpoint and its tests.
 
 
 def make_settings(tmp_path: Path, **overrides) -> Settings:
@@ -32,6 +30,22 @@ def make_settings(tmp_path: Path, **overrides) -> Settings:
     values = {field: tmp_path / field for field in STORAGE_ROOT_FIELDS}
     values.update(overrides)
     return Settings(admin_password="pw", secret_key="sk", **values)
+
+
+class _FakeResponse:
+    """Minimal file-like stand-in for urllib's HTTPResponse."""
+
+    def __init__(self, payload: str):
+        self._payload = payload.encode("utf-8")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self) -> bytes:
+        return self._payload
 
 
 @pytest.fixture
@@ -109,3 +123,52 @@ class TestAppEntrypoint:
     def test_create_app_accepts_explicit_settings(self, tmp_path):
         app = create_app(settings=make_settings(tmp_path))
         assert isinstance(app, FastAPI)
+
+
+class TestReadinessProbe:
+    """The Compose backend healthcheck runs ``python -m app.health``.
+
+    ``/api/health`` always returns HTTP 200 and reports readiness in the body
+    (``code``), so the probe must fail on anything but ``code == 0`` — that is
+    what makes ``depends_on: service_healthy`` reflect storage readiness too.
+    """
+
+    def test_ready_body_accepted(self):
+        assert is_ready({"code": 0, "message": "ok"})
+
+    def test_degraded_body_rejected(self):
+        assert not is_ready({"code": 1, "message": "storage not ready"})
+
+    def test_missing_or_malformed_body_rejected(self):
+        assert not is_ready({})
+        assert not is_ready({"code": "0"})  # wrong type
+        assert not is_ready("not a dict")
+
+    def test_probe_ok_when_ready(self, monkeypatch):
+        monkeypatch.setattr(
+            health_module, "urlopen", lambda url, timeout=3: _FakeResponse('{"code": 0}')
+        )
+        assert probe() is True
+
+    def test_probe_fails_on_degraded_body(self, monkeypatch):
+        monkeypatch.setattr(
+            health_module, "urlopen", lambda url, timeout=3: _FakeResponse('{"code": 1}')
+        )
+        assert probe() is False
+
+    def test_probe_fails_on_connection_error(self, monkeypatch):
+        def boom(url, timeout=3):
+            raise OSError("connection refused")
+
+        monkeypatch.setattr(health_module, "urlopen", boom)
+        assert probe() is False
+
+    def test_main_exit_code_follows_readiness(self, monkeypatch):
+        monkeypatch.setattr(
+            health_module, "urlopen", lambda url, timeout=3: _FakeResponse('{"code": 0}')
+        )
+        assert main() == 0
+        monkeypatch.setattr(
+            health_module, "urlopen", lambda url, timeout=3: _FakeResponse('{"code": 1}')
+        )
+        assert main() == 1

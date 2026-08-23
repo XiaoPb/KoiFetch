@@ -19,14 +19,16 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.infrastructure.config import Settings, get_settings
 
-__all__ = ["APP_TITLE", "APP_VERSION", "create_app", "app"]
+__all__ = ["APP_TITLE", "APP_VERSION", "STORAGE_ROOT_FIELDS", "create_app", "app"]
 
 APP_TITLE = "Koi Fetch API"
 APP_VERSION = "0.1.0"
 
 # Storage root field names on Settings, in contract order. The health endpoint
-# reports one status per root.
-_STORAGE_ROOT_FIELDS = (
+# reports one status per root; the container readiness probe (app/health.py)
+# and its tests depend on this list, so it is part of the module's public
+# surface rather than an implementation detail.
+STORAGE_ROOT_FIELDS = (
     "video_storage_path",
     "image_storage_path",
     "music_storage_path",
@@ -44,7 +46,7 @@ def _check_storage_roots(settings: Settings) -> tuple[dict[str, str], bool]:
     runs where nothing else has created the directories yet.
     """
     roots: dict[str, str] = {}
-    for field in _STORAGE_ROOT_FIELDS:
+    for field in STORAGE_ROOT_FIELDS:
         path = getattr(settings, field)
         try:
             path.mkdir(parents=True, exist_ok=True)
