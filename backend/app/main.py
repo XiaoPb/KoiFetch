@@ -3,9 +3,10 @@
 This module wires configuration-driven CORS, the unified ``{code, message,
 data}`` response envelope (``app.api.responses``), the admin auth router
 (``POST /api/auth/login`` + the ``require_admin`` guard), the parse router
-(``POST /api/parse``), and the readiness endpoint ``GET /api/health`` that
-reports service and storage readiness. Business endpoints (preview, download,
-NAS) arrive in later tasks and register their routers here via ``create_app``.
+(``POST /api/parse``), the preview router (``GET /api/preview/{task_id}``),
+and the readiness endpoint ``GET /api/health`` that reports service and
+storage readiness. Business endpoints (download, NAS) arrive in later tasks
+and register their routers here via ``create_app``.
 
 ``create_app`` accepts an explicit settings object for tests; the module-level
 ``app`` (imported by uvicorn as ``app.main:app``) is built from the process
@@ -15,12 +16,13 @@ missing — a misconfigured service must not start.
 **DI wiring.** ``create_app`` builds the access-token provider from ``settings``
 and stores it alongside an :class:`app.application.auth_service.AuthService` on
 ``app.state``; the auth router reads them through its DI hooks
-(``app.api.auth.get_auth_service``/``get_token_provider``). The parse service
-is likewise built once from ``settings`` and exposed via ``app.state`` (hook
-``app.api.parse.get_parse_service``). All services are bound to the engine for
-``settings.database_url`` (cached per URL), so each service always queries the
-database the app was configured with. Tests override the hooks to pin a temp
-database and secret.
+(``app.api.auth.get_auth_service``/``get_token_provider``). The parse and
+preview services are likewise built once from ``settings`` and exposed via
+``app.state`` (hooks ``app.api.parse.get_parse_service`` /
+``app.api.preview.get_preview_service``). All services are bound to the engine
+for ``settings.database_url`` (cached per URL), so each service always queries
+the database the app was configured with. Tests override the hooks to pin a
+temp database and secret.
 """
 
 from __future__ import annotations
@@ -31,9 +33,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.adapters.factory import get_access_token_provider, get_parser
 from app.api.auth import router as auth_router
 from app.api.parse import router as parse_router
+from app.api.preview import router as preview_router
 from app.api.responses import error, ok, register_exception_handlers
 from app.application.auth_service import AuthService
 from app.application.parse_service import ParseService
+from app.application.preview_service import PreviewService
 from app.infrastructure.config import Settings, get_settings
 from app.infrastructure.database import get_engine
 
@@ -109,10 +113,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         parser=get_parser(),
         engine=get_engine(settings.database_url),
     )
+    app.state.preview_service = PreviewService(
+        engine=get_engine(settings.database_url),
+    )
 
     register_exception_handlers(app)
     app.include_router(auth_router, prefix="/api")
     app.include_router(parse_router, prefix="/api")
+    app.include_router(preview_router, prefix="/api")
 
     @app.get("/api/health")
     def health() -> dict:
