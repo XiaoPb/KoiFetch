@@ -226,12 +226,15 @@ describe('ParserWorkspace', () => {
 
     const grid = await screen.findByTestId('parser-grid');
     expect(grid).toHaveAttribute('data-mode', 'video');
-    expect(document.querySelector('.parser-grid .parser-grid-item')).toBeInTheDocument();
+    expect(grid.querySelector('.parser-grid-item')).toBeInTheDocument();
 
     // act() flushes the re-keyed grid synchronously: React 18 defers renders
     // scheduled outside React events, so without it the synchronous
     // getByTestId below would read the pre-flush grid (data-mode="video").
     act(() => useAppStore.setState({ mediaMode: 'music' }));
+    // The grid remounts (key={mediaMode}) — DOM node identity changes — which
+    // is what replays the staggered animation. Pin the re-key explicitly.
+    expect(screen.getByTestId('parser-grid')).not.toBe(grid);
     expect(screen.getByTestId('parser-grid')).toHaveAttribute('data-mode', 'music');
     expect(await screen.findByTestId('result-card-t2')).toBeInTheDocument();
     expect(screen.queryByTestId('result-card-t1')).not.toBeInTheDocument();
