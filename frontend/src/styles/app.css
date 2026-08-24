@@ -136,7 +136,77 @@ body {
 .parser-workspace {
   display: flex;
   flex-direction: column;
+  gap: 16px;
+}
+
+.parser-input-area {
+  display: flex;
+  flex-direction: column;
   gap: 12px;
+}
+
+.parser-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 32px 0;
+}
+
+.parser-summary {
+  margin-top: 4px;
+}
+
+.parser-failed-list {
+  margin: 8px 0 0;
+  padding-left: 20px;
+}
+
+.parser-failed-item {
+  margin: 4px 0;
+}
+
+.parser-empty {
+  padding: 24px 0;
+  text-align: center;
+}
+
+/* --- Result card grid (PRD §4.2.2) --- */
+
+.parser-grid {
+  margin-top: 4px;
+}
+
+.result-card-cover {
+  position: relative;
+  height: 150px;
+  overflow: hidden;
+  background: #f0f0f0;
+}
+
+.result-card-cover .ant-image,
+.result-card-cover .ant-image-img,
+.result-card-cover-empty {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.result-card-duration {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  margin: 0;
+  background: rgba(0, 0, 0, 0.65);
+  color: #fff;
+  border: none;
+}
+
+.result-card-size {
+  color: rgba(0, 0, 0, 0.65);
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 .login-page {
