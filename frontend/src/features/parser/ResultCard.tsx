@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Button, Card, Image, Select, Space, Tag, Typography } from 'antd';
-import { DownloadOutlined, EyeOutlined } from '@ant-design/icons';
+import { AudioOutlined, DownloadOutlined, EyeOutlined, PictureOutlined, VideoCameraOutlined } from '@ant-design/icons';
 import { useTranslation } from '../../services/i18n';
 import type { ParseResult } from '../../types/api';
 
@@ -13,6 +13,13 @@ const COVER_FALLBACK =
       '<text x="50%" y="50%" fill="#bfbfbf" font-size="14" text-anchor="middle" dominant-baseline="middle">Koi Fetch</text>' +
       '</svg>',
   );
+
+/** Small translucent badge on the cover corner identifying the media type. */
+const TYPE_BADGE: Record<string, JSX.Element> = {
+  video: <VideoCameraOutlined />,
+  music: <AudioOutlined />,
+  image: <PictureOutlined />,
+};
 
 /** Options passed to the download action (format + the single quality slot). */
 export interface DownloadOptions {
@@ -66,6 +73,13 @@ export function ResultCard({ result, downloading, onPreview, onDownload }: Resul
           ) : (
             <div className="result-card-cover-empty" aria-label={result.title} />
           )}
+          <div
+            className="result-card-type"
+            data-testid={`type-badge-${result.task_id}`}
+            aria-label={result.type}
+          >
+            {TYPE_BADGE[result.type] ?? null}
+          </div>
           {result.duration && (
             <Tag className="result-card-duration" data-testid={`duration-${result.task_id}`}>
               {result.duration}

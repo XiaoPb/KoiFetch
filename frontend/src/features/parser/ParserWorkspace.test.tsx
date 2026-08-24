@@ -240,6 +240,21 @@ describe('ParserWorkspace', () => {
     expect(screen.queryByTestId('result-card-t1')).not.toBeInTheDocument();
   });
 
+  it('shows a media-type badge on each card cover', async () => {
+    (parseApi.parse as Mock).mockResolvedValue({ results: [videoResult, musicResult, imageResult], failed: [] });
+    renderWithProviders(<ParserWorkspace />);
+    await parseSeeded('https://example.com/v/a\nhttps://example.com/m/b\nhttps://example.com/p/c');
+
+    // Video mode renders the video and image cards, each with a type badge;
+    // the music card is filtered out of this mode (selectVisibleResults).
+    expect(await screen.findByTestId('type-badge-t1')).toBeInTheDocument();
+    expect(screen.getByTestId('type-badge-t3')).toBeInTheDocument();
+
+    // Music mode swaps in the music card, which carries its own badge.
+    act(() => useAppStore.setState({ mediaMode: 'music' }));
+    expect(await screen.findByTestId('type-badge-t2')).toBeInTheDocument();
+  });
+
   it('shows loading on the search button while a parse is in flight', async () => {
     let resolveParse!: (value: unknown) => void;
     (parseApi.parse as Mock).mockReturnValue(new Promise((resolve) => { resolveParse = resolve; }));
