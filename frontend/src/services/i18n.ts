@@ -23,8 +23,6 @@ const zh = {
   'header.downloadCenter': '下载中心 / Download center',
   'header.adminMenu.nas': 'NAS 管理',
 
-  'download.progress': '下载进度 {percent}%',
-
   'home.title': '解析工作台',
 
   // Parser workspace (Task 14)
@@ -65,6 +63,7 @@ const zh = {
 
   // Download center (Task 15)
   'downloads.empty': '暂无下载任务',
+  'downloads.emptyTab': '该分类下暂无任务',
   'downloads.tab.all': '全部',
   'downloads.tab.active': '进行中',
   'downloads.tab.completed': '已完成',
@@ -79,10 +78,10 @@ const zh = {
   'downloads.refreshLink': '刷新链接',
   'downloads.retry': '重试',
   'downloads.retryStarted': '已重新提交下载任务',
-  'downloads.linkMissing': '文件链接不可用,请点击刷新链接',
-  'downloads.linkMissingHint': '未获取到文件链接(可能错过了推送),可刷新链接获取',
-  'downloads.linkExpired': '文件链接已过期(5 分钟),请刷新链接',
-  'downloads.linkExpiredHint': '链接已过期,刷新后 5 分钟内有效',
+  'downloads.linkMissing': '文件链接不可用，请点击刷新链接',
+  'downloads.linkMissingHint': '未获取到文件链接(可能错过了推送)，可刷新链接获取',
+  'downloads.linkExpired': '文件链接已过期(5 分钟)，请刷新链接',
+  'downloads.linkExpiredHint': '链接已过期，刷新后 5 分钟内有效',
   'downloads.linkValidHint': '链接 5 分钟内有效',
   'downloads.cancelNotSupported': '当前版本暂不支持取消下载',
   'downloads.downloadedOf': '已下载 {downloaded} / {total}',
@@ -125,8 +124,6 @@ const en: Record<TranslationKey, string> = {
   'header.downloadCenter': 'Download center',
   'header.adminMenu.nas': 'NAS Admin',
 
-  'download.progress': 'Download progress {percent}%',
-
   'home.title': 'Parser Workspace',
 
   // Parser workspace (Task 14)
@@ -166,6 +163,7 @@ const en: Record<TranslationKey, string> = {
 
   // Download center (Task 15)
   'downloads.empty': 'No download tasks yet',
+  'downloads.emptyTab': 'No tasks in this category',
   'downloads.tab.all': 'All',
   'downloads.tab.active': 'In progress',
   'downloads.tab.completed': 'Completed',

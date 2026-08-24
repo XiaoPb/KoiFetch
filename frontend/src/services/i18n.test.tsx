@@ -38,10 +38,10 @@ describe('i18n', () => {
   });
 
   it('interpolates params into templates (Task 15 progress strings)', () => {
-    expect(translate('zh', 'download.progress', { percent: 45 })).toBe('下载进度 45%');
-    expect(translate('en', 'download.progress', { percent: 45 })).toBe('Download progress 45%');
+    expect(translate('zh', 'downloads.remainingMinutes', { value: 2 })).toBe('约 2 分钟');
+    expect(translate('en', 'downloads.remainingMinutes', { value: 2 })).toBe('~2 min');
     // Unknown params are left as-is rather than silently dropped.
-    expect(translate('en', 'download.progress', { other: 1 })).toBe('Download progress {percent}%');
+    expect(translate('en', 'downloads.remainingMinutes', { other: 1 })).toBe('~{value} min');
   });
 
   it('toggles the active language through the hook', async () => {

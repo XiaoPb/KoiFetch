@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { App, Button, Drawer, List, Progress, Space, Tabs, Tag, Tooltip, Typography } from 'antd';
 import { ReloadOutlined, StopOutlined } from '@ant-design/icons';
 import { useTranslation } from '../../services/i18n';
@@ -42,6 +42,35 @@ export function DownloadCenterDrawer({ open, onClose }: DownloadCenterDrawerProp
   const refreshFileLink = useDownloadsStore((state) => state.refreshFileLink);
   const [tab, setTab] = useState<TabKey>('all');
   const [retrying, setRetrying] = useState<string | null>(null);
+  // Per-item [刷新链接] loading feedback: cleared when the fresh link (or a
+  // terminal error) arrives, with a safety timeout for the no-socket case.
+  const [refreshing, setRefreshing] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    setRefreshing((prev) => {
+      let changed = false;
+      const next: Record<string, boolean> = {};
+      for (const id of Object.keys(prev)) {
+        const item = items.find((i) => i.download_id === id);
+        if (item && (item.download_url != null || item.status !== 'completed')) {
+          changed = true; // fresh link captured, or the task left completed
+          continue;
+        }
+        next[id] = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [items]);
+
+  const handleRefreshLink = (item: DownloadItem) => {
+    setRefreshing((prev) => ({ ...prev, [item.download_id]: true }));
+    refreshFileLink(item.download_id);
+    // Safety: if no socket can connect (no WebSocket / server down), the
+    // spinner must still clear.
+    window.setTimeout(() => {
+      setRefreshing((prev) => ({ ...prev, [item.download_id]: false }));
+    }, 10_000);
+  };
 
   const counts = useMemo(
     () => ({
@@ -143,7 +172,8 @@ export function DownloadCenterDrawer({ open, onClose }: DownloadCenterDrawerProp
           key="refresh"
           size="small"
           icon={<ReloadOutlined />}
-          onClick={() => refreshFileLink(item.download_id)}
+          loading={Boolean(refreshing[item.download_id])}
+          onClick={() => handleRefreshLink(item)}
           data-testid={`refresh-link-${item.download_id}`}
         >
           {t('downloads.refreshLink')}
@@ -226,7 +256,8 @@ export function DownloadCenterDrawer({ open, onClose }: DownloadCenterDrawerProp
           />
           <List
             dataSource={visibleItems}
-            locale={{ emptyText: null }}
+            // Per-tab empty hint (the whole-drawer empty state is above).
+            locale={{ emptyText: <Typography.Text type="secondary">{t('downloads.emptyTab')}</Typography.Text> }}
             renderItem={(item) => {
               const meta = statusMeta(item.status);
               const active = item.status === 'pending' || item.status === 'downloading';

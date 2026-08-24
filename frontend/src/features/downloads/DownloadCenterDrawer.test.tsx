@@ -11,16 +11,20 @@ vi.mock('../../services/api', () => ({
   downloadApi: { submit: vi.fn(), getProgress: vi.fn(), getFileUrl: vi.fn((pathOrUrl: string) => pathOrUrl) },
 }));
 
-// Retry re-submits → the store opens a WS client; mock it so no poll timer
-// interferes with the assertions.
-vi.mock('../../services/wsClient', () => ({
-  DownloadWsClient: class {
+// Retry/refresh re-open a WS client; drive it through the hoisted mock so the
+// end-to-end refresh test can emit a fresh complete event.
+const wsMock = vi.hoisted(() => {
+  class MockWsClient {
+    static instances: MockWsClient[] = [];
     url: string;
-    status = 'open';
+    status = 'idle';
+    private listeners: Array<(event: unknown) => void> = [];
     constructor(options: { url: string }) {
       this.url = options.url;
+      MockWsClient.instances.push(this);
     }
-    subscribe(): () => void {
+    subscribe(listener: (event: unknown) => void): () => void {
+      this.listeners.push(listener);
       return () => undefined;
     }
     connect(): void {
@@ -29,8 +33,19 @@ vi.mock('../../services/wsClient', () => ({
     close(): void {
       this.status = 'closed';
     }
-  },
-  buildWsUrl: vi.fn((downloadId: string) => `ws://test/ws/download/${downloadId}`),
+    emit(event: unknown): void {
+      for (const listener of [...this.listeners]) listener(event);
+    }
+  }
+  return {
+    MockWsClient,
+    buildWsUrl: vi.fn((downloadId: string) => `ws://test/ws/download/${downloadId}`),
+  };
+});
+
+vi.mock('../../services/wsClient', () => ({
+  DownloadWsClient: wsMock.MockWsClient,
+  buildWsUrl: wsMock.buildWsUrl,
 }));
 
 function seedItem(partial: Partial<DownloadItem> & Pick<DownloadItem, 'download_id' | 'task_id' | 'status'>): DownloadItem {
@@ -64,6 +79,10 @@ describe('DownloadCenterDrawer', () => {
     vi.clearAllMocks();
     useDownloadsStore.setState({ items: [], submitting: {} });
     __resetDownloadStreams();
+    wsMock.MockWsClient.instances = [];
+    // jsdom has no WebSocket; stub one so refresh/retry actually create the
+    // (mocked) socket client instead of falling back to polling.
+    vi.stubGlobal('WebSocket', class {});
   });
 
   afterEach(() => {
@@ -102,6 +121,19 @@ describe('DownloadCenterDrawer', () => {
     // 已完成 tab.
     await user.click(screen.getByRole('tab', { name: /已完成/ }));
     expect(screen.getByTestId('download-item-d2')).toBeInTheDocument();
+    expect(screen.queryByTestId('download-item-d1')).not.toBeInTheDocument();
+  });
+
+  it('shows a per-tab empty hint when a category has no tasks', async () => {
+    const user = userEvent.setup();
+    useDownloadsStore.setState({
+      items: [seedItem({ download_id: 'd1', task_id: 't1', status: 'completed', title: 'Video A' })],
+    });
+    renderDrawer();
+
+    // The drawer itself is non-empty, but the 进行中 category is not.
+    await user.click(screen.getByRole('tab', { name: /进行中/ }));
+    expect(screen.getByText('该分类下暂无任务')).toBeInTheDocument();
     expect(screen.queryByTestId('download-item-d1')).not.toBeInTheDocument();
   });
 
@@ -173,6 +205,37 @@ describe('DownloadCenterDrawer', () => {
     expect(within(item).getByText(/链接已过期/)).toBeInTheDocument();
     expect(within(item).getByTestId('refresh-link-d1')).toBeInTheDocument();
     expect(within(item).queryByTestId('get-file-d1')).not.toBeInTheDocument();
+  });
+
+  it('refreshing a missing link reconnects the socket and captures a fresh link end-to-end', async () => {
+    const user = userEvent.setup();
+    useDownloadsStore.setState({
+      items: [
+        seedItem({ download_id: 'd1', task_id: 't1', status: 'completed', title: 'Video A', download_url: null }),
+      ],
+    });
+    renderDrawer();
+
+    const refresh = screen.getByTestId('refresh-link-d1');
+    await user.click(refresh);
+    // Loading feedback while the fresh link is being captured.
+    expect(refresh).toHaveClass('ant-btn-loading');
+    expect(wsMock.MockWsClient.instances).toHaveLength(1);
+    expect(wsMock.buildWsUrl).toHaveBeenCalledWith('d1');
+
+    // The reconnected socket delivers a fresh complete event with a new token.
+    wsMock.MockWsClient.instances[0].emit({
+      type: 'complete',
+      data: {
+        download_id: 'd1', status: 'completed', progress: 1, speed: null,
+        downloaded_bytes: 10, total_bytes: 10, remaining_time: 0,
+        download_url: '/api/download/file/d1?token=fresh', token_expire_at: FUTURE,
+      },
+    });
+
+    await waitFor(() => expect(screen.getByTestId('get-file-d1')).toBeInTheDocument());
+    expect(useDownloadsStore.getState().items[0].download_url).toBe('/api/download/file/d1?token=fresh');
+    expect(screen.queryByTestId('refresh-link-d1')).not.toBeInTheDocument();
   });
 
   it('retry re-submits a failed item and moves it back to pending', async () => {
