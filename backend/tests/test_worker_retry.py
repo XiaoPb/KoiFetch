@@ -4,103 +4,24 @@ Design (documented in ``app.workers.worker``): the worker re-queues a failed
 download (``failed -> pending`` via the domain transition) while
 ``retry_count < MAX_RETRIES`` (3); at the cap the task stays ``failed`` with
 ``error_message`` set. ``retry_count`` increments exactly once per download
-attempt, and only the *terminal* failure publishes a WS ``error`` event
-(automatic retries are silent — the client reconciles via the progress
-endpoint).
+attempt; a re-queued pending row returns clean (``error_message`` cleared, so
+the progress endpoint never shows a stale error); only the *terminal* failure
+publishes a WS ``error`` event (automatic retries are silent — the client
+reconciles via the progress endpoint).
 """
 
-import uuid
 from pathlib import Path
 
-import pytest
-
-from app.adapters.factory import get_one_time_token_provider, get_storage
-from app.domain import DownloadProgress, DownloadResult, DownloadStatus, MediaType
-from app.infrastructure import seed
-from app.infrastructure.config import Settings
-from app.infrastructure.database import Base, build_engine, session_scope
-from app.infrastructure.models import DownloadTask, ParseTask
+from app.domain import DownloadProgress, DownloadResult, DownloadStatus
+from app.infrastructure.database import session_scope
+from app.infrastructure.models import DownloadTask
 from app.workers.worker import MAX_RETRIES, run_once
-
-SECRET = "test-secret-key-0123456789abcdef"
-PASSWORD = "admin-s3cret-pass"
-
-VIDEO_URL = "https://www.bilibili.com/video/av123"
-
-
-def make_settings(**overrides) -> Settings:
-    return Settings(admin_password=PASSWORD, secret_key=SECRET, **overrides)
-
-
-@pytest.fixture
-def env(tmp_path):
-    settings = make_settings(
-        database_url=f"sqlite:///{tmp_path / 'worker-retry.db'}",
-        video_storage_path=tmp_path / "pond/video",
-        image_storage_path=tmp_path / "pond/image",
-        music_storage_path=tmp_path / "pond/music",
-        temp_video_path=tmp_path / "bubble/video",
-        temp_image_path=tmp_path / "bubble/image",
-        temp_music_path=tmp_path / "bubble/music",
-    )
-    engine = build_engine(settings.database_url)
-    Base.metadata.create_all(engine)
-    assert seed.seed_admin(settings=settings, engine=engine) is True
-    storage = get_storage(settings)
-    token_provider = get_one_time_token_provider(settings)
-    return settings, engine, storage, token_provider
-
-
-class FakeHub:
-    def __init__(self):
-        self.events = []
-
-    async def publish(self, download_id: str, event: dict) -> None:
-        self.events.append((download_id, event))
-
-    def for_download(self, download_id: str) -> list[dict]:
-        return [event for did, event in self.events if did == download_id]
-
-
-def seed_parse_task(engine, *, task_id=None) -> str:
-    task_id = task_id or str(uuid.uuid4())
-    with session_scope(engine) as session:
-        session.add(
-            ParseTask(
-                task_id=task_id,
-                url=VIDEO_URL,
-                platform="bilibili",
-                media_type=MediaType.VIDEO,
-                title="示例视频",
-                format="mp4",
-                metadata_={},
-            )
-        )
-    return task_id
-
-
-def seed_download(engine, *, task_id, retry_count=0, **kwargs) -> str:
-    download_id = kwargs.pop("download_id", None) or str(uuid.uuid4())
-    with session_scope(engine) as session:
-        session.add(
-            DownloadTask(
-                download_id=download_id,
-                task_id=task_id,
-                title="示例视频",
-                format=kwargs.pop("format", "mp4"),
-                quality=kwargs.pop("quality", "1080p"),
-                status=DownloadStatus.PENDING,
-                progress=0.0,
-                retry_count=retry_count,
-                **kwargs,
-            )
-        )
-    return download_id
-
-
-def load_download(engine, download_id) -> DownloadTask:
-    with session_scope(engine) as session:
-        return session.get(DownloadTask, download_id)
+from tests.conftest import (
+    FakeHub,
+    load_download,
+    seed_download,
+    seed_parse_task,
+)
 
 
 class FailingDownloader:
@@ -180,7 +101,7 @@ class TestRetryPolicy:
         row = load_download(engine, download_id)
         assert row.status is DownloadStatus.PENDING  # re-queued for retry
         assert row.retry_count == 1  # exactly one per attempt
-        assert row.error_message == "simulated download failure"
+        assert row.error_message is None  # a pending row carries no stale error
         # an automatic retry is not announced as a terminal error
         assert hub.for_download(download_id) == []
 

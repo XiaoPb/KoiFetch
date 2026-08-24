@@ -33,7 +33,7 @@ import signal
 import threading
 from collections.abc import Callable
 
-from sqlalchemy import Engine
+from sqlalchemy import Engine, inspect
 
 from app.adapters.factory import (
     get_downloader,
@@ -45,9 +45,10 @@ from app.application.download_events import event_hub
 from app.application.download_service import DownloadService
 from app.infrastructure.config import Settings, get_settings
 from app.infrastructure.database import get_engine
+from app.infrastructure.models import DownloadTask, ParseTask
 from app.workers.worker import MAX_RETRIES, run_once
 
-__all__ = ["build_worker_deps", "main", "run_forever"]
+__all__ = ["build_worker_deps", "main", "run_forever", "schema_ready"]
 
 logger = logging.getLogger(__name__)
 
@@ -98,14 +99,38 @@ def run_forever(
             break
 
 
+def schema_ready(engine: Engine) -> bool:
+    """True when the worker's core tables exist (migrations were run).
+
+    The worker's queries touch ``download_tasks`` (claim/execute) and
+    ``parse_tasks`` (media type join); on a fresh database that never ran
+    ``alembic upgrade head`` both are absent and every poll round would fail
+    with a SQLAlchemy traceback — :func:`main` checks this once at startup and
+    exits with a clear message instead of spamming the log forever.
+    """
+    inspector = inspect(engine)
+    return inspector.has_table(DownloadTask.__tablename__) and inspector.has_table(
+        ParseTask.__tablename__
+    )
+
+
 def main() -> None:
-    """Start the worker daemon: wire deps, install signal handlers, poll."""
+    """Start the worker daemon: wire deps, verify schema, install handlers, poll."""
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     settings = get_settings()
     engine, downloader, storage, service = build_worker_deps(settings)
+    if not schema_ready(engine):
+        logger.error(
+            "worker database %s is missing required tables (%s, %s); "
+            "run migrations first (alembic upgrade head) and restart the worker",
+            settings.database_url,
+            DownloadTask.__tablename__,
+            ParseTask.__tablename__,
+        )
+        raise SystemExit(1)
     stop = threading.Event()
 
     def _on_signal(signum: int, _frame: object) -> None:

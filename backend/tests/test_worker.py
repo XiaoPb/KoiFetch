@@ -4,153 +4,55 @@ hub events, and the polling-loop wiring.
 Covers :mod:`app.workers.worker` and :mod:`app.workers.main`:
 
 * ``claim_pending_tasks`` — atomically claims ``pending`` rows up to a limit,
-  never touches ``downloading`` rows, and never over-claims.
+  never touches ``downloading`` rows, never over-claims, and claims disjointly
+  from concurrent claimers.
 * ``run_once`` — executes claimed tasks through the downloader adapter, writing
   the bubble file, persisting progress/speed/bytes during the download,
   recording completion (status/progress/bubble_path/completed_at) and issuing a
-  one-time token in the WS ``complete`` event.
+  one-time token in the WS ``complete`` event. A DB outage during progress
+  writes must not abort the transfer.
 * Main-loop wiring — ``build_worker_deps`` pipes ``download_speed_limit`` into
   the stub downloader; ``run_forever`` polls until the stop event fires and
-  survives transient iteration errors.
+  survives transient iteration errors; ``schema_ready`` fails fast on an
+  un-migrated database.
+* ``_publish`` — reuses one per-thread event loop and delivers to real
+  :class:`DownloadEventHub` subscribers.
 
 The happy path uses the real :class:`StubDownloaderAdapter` with small
-size/chunk parameters; deterministic mid-flight observation uses a small fake
-downloader (see the ``app.workers.worker`` module docstring for why the worker
-processes one batch sequentially).
+size/chunk parameters; deterministic mid-flight observation, failure and
+expiry scenarios use small fake downloaders (see the ``app.workers.worker``
+module docstring for why the worker processes one batch sequentially).
 """
 
+import asyncio
 import hashlib
+import sqlite3
 import threading
-import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
 from app.adapters.downloader_stub import StubDownloaderAdapter
-from app.adapters.factory import get_one_time_token_provider, get_storage
 from app.api.responses import CODE_FILE_TOKEN_INVALID
+from app.application.download_events import DownloadEventHub
 from app.application.download_service import DownloadService
-from app.domain import DownloadProgress, DownloadResult, DownloadStatus, MediaType
-from app.infrastructure import seed
-from app.infrastructure.config import Settings
+from app.domain import DownloadProgress, DownloadResult, DownloadStatus
 from app.infrastructure.database import Base, build_engine, session_scope
-from app.infrastructure.models import DownloadTask, ParseTask
-from app.workers.main import build_worker_deps, run_forever
-from app.workers.worker import claim_pending_tasks, run_once
-
-SECRET = "test-secret-key-0123456789abcdef"
-PASSWORD = "admin-s3cret-pass"
-
-VIDEO_URL = "https://www.bilibili.com/video/av123"
+from app.infrastructure.models import DownloadTask
+from app.workers import worker as worker_module
+from app.workers.main import build_worker_deps, run_forever, schema_ready
+from app.workers.worker import _publish, claim_pending_tasks, run_once
+from tests.conftest import (
+    FakeHub,
+    load_download,
+    make_settings,
+    seed_download,
+    seed_parse_task,
+)
 
 STUB_TOTAL = 4096
 STUB_CHUNK = 1024
-
-
-def make_settings(**overrides) -> Settings:
-    return Settings(admin_password=PASSWORD, secret_key=SECRET, **overrides)
-
-
-@pytest.fixture
-def env(tmp_path):
-    settings = make_settings(
-        database_url=f"sqlite:///{tmp_path / 'worker.db'}",
-        video_storage_path=tmp_path / "pond/video",
-        image_storage_path=tmp_path / "pond/image",
-        music_storage_path=tmp_path / "pond/music",
-        temp_video_path=tmp_path / "bubble/video",
-        temp_image_path=tmp_path / "bubble/image",
-        temp_music_path=tmp_path / "bubble/music",
-    )
-    engine = build_engine(settings.database_url)
-    Base.metadata.create_all(engine)
-    assert seed.seed_admin(settings=settings, engine=engine) is True
-    storage = get_storage(settings)
-    token_provider = get_one_time_token_provider(settings)
-    return settings, engine, storage, token_provider
-
-
-@pytest.fixture
-def engine(env):
-    return env[1]
-
-
-@pytest.fixture
-def storage(env):
-    return env[2]
-
-
-@pytest.fixture
-def token_provider(env):
-    return env[3]
-
-
-class FakeHub:
-    """In-process stand-in for :class:`DownloadEventHub` that records events."""
-
-    def __init__(self):
-        self.events = []
-
-    async def publish(self, download_id: str, event: dict) -> None:
-        self.events.append((download_id, event))
-
-    def for_download(self, download_id: str) -> list[dict]:
-        return [event for did, event in self.events if did == download_id]
-
-
-def seed_parse_task(
-    engine, *, task_id=None, title="示例视频", media_type=MediaType.VIDEO,
-    metadata=None,
-) -> str:
-    """Insert a ParseTask row; return its task_id."""
-    task_id = task_id or str(uuid.uuid4())
-    with session_scope(engine) as session:
-        session.add(
-            ParseTask(
-                task_id=task_id,
-                url=VIDEO_URL,
-                platform="bilibili",
-                media_type=media_type,
-                title=title,
-                format="mp4",
-                metadata_=metadata if metadata is not None else {},
-            )
-        )
-    return task_id
-
-
-def seed_download(
-    engine,
-    *,
-    task_id,
-    status=DownloadStatus.PENDING,
-    download_id=None,
-    retry_count=0,
-    progress=0.0,
-    **kwargs,
-) -> str:
-    """Insert a DownloadTask row; return its download_id."""
-    download_id = download_id or str(uuid.uuid4())
-    with session_scope(engine) as session:
-        session.add(
-            DownloadTask(
-                download_id=download_id,
-                task_id=task_id,
-                title="示例视频",
-                format=kwargs.pop("format", "mp4"),
-                quality=kwargs.pop("quality", "1080p"),
-                status=status,
-                progress=progress,
-                retry_count=retry_count,
-                **kwargs,
-            )
-        )
-    return download_id
-
-
-def load_download(engine, download_id) -> DownloadTask:
-    with session_scope(engine) as session:
-        return session.get(DownloadTask, download_id)
 
 
 def expected_stub_bytes(download_id: str, title: str, total_bytes: int) -> bytes:
@@ -271,6 +173,34 @@ class TestClaiming:
         assert claim_pending_tasks(engine, limit=0) == []
         assert claim_pending_tasks(engine, limit=-1) == []
 
+    def test_concurrent_claims_are_disjoint(self, engine):
+        task_id = seed_parse_task(engine)
+        ids = [seed_download(engine, task_id=task_id) for _ in range(6)]
+        results: list[list[str]] = []
+        errors: list[Exception] = []
+
+        def claim():
+            try:
+                results.append(claim_pending_tasks(engine, limit=3))
+            except Exception as exc:  # pragma: no cover - surfaces flakiness
+                errors.append(exc)
+
+        threads = [threading.Thread(target=claim) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert errors == []
+        claimed = [download_id for batch in results for download_id in batch]
+        assert len(claimed) == 6
+        assert len(set(claimed)) == 6  # disjoint: no row claimed twice
+        assert set(claimed) == set(ids)
+        assert all(
+            load_download(engine, d).status is DownloadStatus.DOWNLOADING
+            for d in ids
+        )
+
 
 class TestRunOnce:
     def test_happy_path_downloads_and_completes(self, engine, storage, token_provider):
@@ -352,6 +282,155 @@ class TestRunOnce:
             assert 0 < progress < 100
             assert speed == 2048.0
             assert downloaded == int(progress / 100.0 * downloader.total_bytes)
+
+    def test_progress_db_failure_does_not_abort_download(
+        self, engine, storage, token_provider, monkeypatch
+    ):
+        # The progress callback must never abort the transfer (adapter
+        # protocol): a DB outage during a progress write is logged and skipped,
+        # and the terminal update still reconciles the row.
+        task_id = seed_parse_task(engine)
+        download_id = seed_download(engine, task_id=task_id)
+        hub = FakeHub()
+        fail = False
+
+        real_scope = worker_module.session_scope
+
+        @contextmanager
+        def flaky_scope(engine=None):
+            if fail:
+                raise sqlite3.OperationalError("simulated db outage during progress")
+            with real_scope(engine) as session:
+                yield session
+
+        monkeypatch.setattr(worker_module, "session_scope", flaky_scope)
+
+        class FlakyProgressDownloader:
+            total_bytes = 2048
+            chunk_size = 1024
+
+            def download(self, request):
+                nonlocal fail
+                target = Path(request.target_path)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                fail = True
+                try:
+                    with target.open("wb") as out:
+                        written = 0
+                        while written < self.total_bytes:
+                            count = min(
+                                self.chunk_size, self.total_bytes - written
+                            )
+                            out.write(b"q" * count)
+                            written += count
+                            if request.progress_callback is not None:
+                                request.progress_callback(
+                                    DownloadProgress(
+                                        download_id=request.download_id,
+                                        status=DownloadStatus.DOWNLOADING,
+                                        progress=written / self.total_bytes * 100.0,
+                                        speed=1024.0,
+                                        downloaded_bytes=written,
+                                        total_bytes=self.total_bytes,
+                                    )
+                                )
+                finally:
+                    fail = False
+                return DownloadResult(
+                    download_id=request.download_id,
+                    task_id=request.command.task_id,
+                    title=request.title,
+                    media_type=request.media_type,
+                    format=request.command.format,
+                    quality=request.command.quality,
+                    status=DownloadStatus.COMPLETED,
+                    progress=100.0,
+                    speed=1024.0,
+                    total_bytes=self.total_bytes,
+                    downloaded_bytes=self.total_bytes,
+                    retry_count=0,
+                    error_message=None,
+                )
+
+        handled = run_once(
+            engine, FlakyProgressDownloader(), storage, hub,
+            token_provider=token_provider,
+        )
+
+        assert handled == 1
+        row = load_download(engine, download_id)
+        assert row.status is DownloadStatus.COMPLETED
+        assert row.progress == 100.0
+        assert row.downloaded_bytes == 2048
+
+    def test_row_leaving_downloading_midflight_not_completed(
+        self, engine, storage, token_provider
+    ):
+        # A row that leaves DOWNLOADING mid-flight (e.g. cleanup swept it to
+        # expired) must not be completed by this worker — recovery is Task 12's
+        # job, and the domain graph forbids downloading -> completed from any
+        # other state.
+        task_id = seed_parse_task(engine)
+        download_id = seed_download(engine, task_id=task_id)
+        hub = FakeHub()
+
+        class ExpireThenCompleteDownloader:
+            def __init__(self, engine):
+                self.engine = engine
+
+            def download(self, request):
+                with session_scope(self.engine) as session:
+                    row = session.get(DownloadTask, request.download_id)
+                    row.status = DownloadStatus.EXPIRED
+                target = Path(request.target_path)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(b"x" * 1024)
+                return DownloadResult(
+                    download_id=request.download_id,
+                    task_id=request.command.task_id,
+                    title=request.title,
+                    media_type=request.media_type,
+                    format=request.command.format,
+                    quality=request.command.quality,
+                    status=DownloadStatus.COMPLETED,
+                    progress=100.0,
+                    speed=1024.0,
+                    total_bytes=1024,
+                    downloaded_bytes=1024,
+                    retry_count=0,
+                    error_message=None,
+                )
+
+        run_once(
+            engine, ExpireThenCompleteDownloader(engine), storage, hub,
+            token_provider=token_provider,
+        )
+
+        row = load_download(engine, download_id)
+        assert row.status is DownloadStatus.EXPIRED
+        assert row.bubble_path is None
+        assert row.completed_at is None
+        assert hub.for_download(download_id) == []  # no complete event
+
+    def test_bubble_filename_uses_sanitized_extension(self, engine, storage, token_provider):
+        # "mp4.webm" keeps the last dot segment (webm), never the slug "mp4-webm";
+        # a row without a format falls back to the media type's default extension.
+        task_id = seed_parse_task(engine)
+        multi_ext = seed_download(engine, task_id=task_id, format="mp4.webm")
+        no_format = seed_download(engine, task_id=task_id, format=None)
+        hub = FakeHub()
+
+        run_once(
+            engine, stub_downloader(), storage, hub,
+            max_concurrent=2, token_provider=token_provider,
+        )
+
+        names = {
+            Path(load_download(engine, d).bubble_path).name
+            for d in (multi_ext, no_format)
+        }
+        assert any(name.endswith(".webm") for name in names)
+        assert any(name.endswith(".mp4") for name in names)
 
     def test_respects_max_concurrent(self, engine, storage, token_provider):
         task_a = seed_parse_task(engine, title="a")
@@ -452,3 +531,65 @@ class TestMainLoop:
 
         run_forever(run_once_fn, stop, poll_interval=0.01)
         assert len(calls) == 2
+
+
+class TestSchemaCheck:
+    def test_schema_ready_false_before_migrations(self, tmp_path):
+        engine = build_engine(f"sqlite:///{tmp_path / 'fresh.db'}")
+
+        assert schema_ready(engine) is False
+
+    def test_schema_ready_true_after_create_all(self, tmp_path):
+        engine = build_engine(f"sqlite:///{tmp_path / 'ready.db'}")
+        Base.metadata.create_all(engine)
+
+        assert schema_ready(engine) is True
+
+
+class TestPublish:
+    def test_publish_reuses_one_per_thread_event_loop(self, monkeypatch):
+        created = []
+        real_new_event_loop = asyncio.new_event_loop
+
+        def counting_new_event_loop():
+            loop = real_new_event_loop()
+            created.append(loop)
+            return loop
+
+        monkeypatch.setattr(asyncio, "new_event_loop", counting_new_event_loop)
+        result = {}
+
+        def worker():
+            hub = FakeHub()
+            _publish(hub, "d-1", {"type": "progress"})
+            _publish(hub, "d-1", {"type": "complete"})
+            result["events"] = [event for _, event in hub.events]
+
+        # A fresh thread starts with empty thread-local state, so the loop
+        # count is deterministic regardless of other tests' publish calls.
+        thread = threading.Thread(target=worker)
+        thread.start()
+        thread.join()
+
+        assert len(created) == 1  # created once, reused for the second publish
+        assert result["events"] == [{"type": "progress"}, {"type": "complete"}]
+
+    def test_publish_delivers_to_real_hub_subscribers(self):
+        hub = DownloadEventHub()
+        loop = asyncio.new_event_loop()
+        try:
+            queue = loop.run_until_complete(hub.subscribe("d-1"))
+
+            _publish(hub, "d-1", {"type": "progress", "data": {"p": 1}})
+            _publish(hub, "d-1", {"type": "complete", "data": {"p": 2}})
+
+            async def drain():
+                return [await queue.get() for _ in range(2)]
+
+            events = loop.run_until_complete(drain())
+            assert events == [
+                {"type": "progress", "data": {"p": 1}},
+                {"type": "complete", "data": {"p": 2}},
+            ]
+        finally:
+            loop.close()

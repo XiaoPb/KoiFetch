@@ -26,21 +26,26 @@ Design decisions (stable contract for Tasks 12+):
   ``expired`` by cleanup) is left alone.
 * **Sequential batch processing.** :func:`run_once` claims up to
   ``max_concurrent`` tasks and processes them one at a time in the calling
-  thread. ``MAX_CONCURRENT`` therefore caps how many tasks are claimed/in
-  flight at once — the documented v1 meaning — while a thread pool is
-  deliberately avoided: SQLite writes stay single-connection (no
-  session-per-thread juggling), the stub downloader is I/O-tiny, and progress
-  callbacks are naturally ordered. A parallel engine can move the per-task
-  execution to threads later behind the same interface.
-* **Retry policy (documented): re-queue while under the cap.** On failure the
-  worker increments ``retry_count`` exactly once, then re-queues the task
-  (``failed -> pending`` via the domain graph) while
+  thread. ``MAX_CONCURRENT`` is a **per-process** in-flight cap: ``N`` worker
+  processes can therefore have up to ``N * max_concurrent`` tasks downloading
+  at once (the claims themselves remain disjoint — SQLite serializes writers).
+  A thread pool is deliberately avoided: SQLite writes stay single-connection
+  (no session-per-thread juggling), the stub downloader is I/O-tiny, and
+  progress callbacks are naturally ordered. A parallel engine can move the
+  per-task execution to threads later behind the same interface.
+* **Retry policy (documented): re-queue while under the cap, no backoff.** On
+  failure the worker increments ``retry_count`` exactly once, then re-queues
+  the task (``failed -> pending`` via the domain graph) while
   ``retry_count < MAX_RETRIES`` — so a task gets at most
   :data:`MAX_RETRIES` download attempts total. At the cap it stays ``failed``
   with ``error_message`` set. ``failed -> pending`` is always legal in the
-  domain graph; the cap is this worker's policy layered on top. Only the
-  *terminal* failure publishes a WS ``error`` event; automatic retries are
-  silent (the client reconciles via ``GET /api/download/progress/{id}``).
+  domain graph; the cap is this worker's policy layered on top. Retries are
+  **immediate**: a re-queued row is eligible for the very next poll round —
+  v1 deliberately has no backoff (the plan specifies only the cap); a delay
+  can be layered onto the re-queue later if transient failures become common.
+  Only the *terminal* failure publishes a WS ``error`` event; automatic
+  retries are silent (the client reconciles via
+  ``GET /api/download/progress/{id}``).
 * **Progress persistence per callback.** The stub fires one callback per
   64 KiB chunk, so writing the row on every callback is cheap and keeps the
   HTTP progress endpoint live; a real engine can throttle on its own. The
@@ -48,14 +53,16 @@ Design decisions (stable contract for Tasks 12+):
   and skipped — progress is lossy by design (see ``download_events.py``) and
   the terminal update below always reconciles the row.
 * **Events via the in-process hub.** ``_publish`` runs
-  ``await hub.publish(...)`` through :func:`asyncio.run` — safe because the
-  worker thread runs a plain sync loop with no event loop of its own. The hub
+  ``await hub.publish(...)`` on a single per-thread event loop created lazily
+  and reused across calls (never a fresh loop per progress chunk). The hub
   delivers to *this process's* WebSocket subscribers; a cross-process worker
   would need a different transport behind the same ``publish`` signature
   (documented in ``download_events.py``). The event payloads mirror the shapes
   ``app.api.download`` documents (``progress`` / ``complete`` / ``error``),
   with the ``complete`` event's ``download_url`` minted by
-  :meth:`DownloadService.issue_download_token`.
+  :meth:`DownloadService.issue_download_token`. Terminal events are published
+  only after the row update is committed, so a publish failure can never
+  roll back a recorded completion/failure.
 * **The downloader writes the bubble file.** ``DownloadRequest.target_path``
   is resolved here through the storage adapter (a contained absolute bubble
   path); the adapter writes bytes there and returns a ``COMPLETED``
@@ -68,6 +75,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
+import threading
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -119,6 +128,10 @@ _DEFAULT_EXT_BY_TYPE = {
     MediaType.MUSIC: "mp3",
     MediaType.IMAGE: "jpg",
 }
+
+# Everything that is not a lowercase alphanumeric is stripped from an
+# extension (mirrors domain.paths._clean_extension's charset).
+_EXT_UNSAFE = re.compile(r"[^a-z0-9]+")
 
 
 def claim_pending_tasks(engine: Engine, limit: int) -> list[str]:
@@ -322,11 +335,17 @@ def _record_failure(
     """Record one failed attempt: increment the budget, re-queue or fail.
 
     Re-queues (``failed -> pending`` via the domain graph) while
-    ``retry_count < max_retries``, resetting progress/bytes for a fresh
-    attempt; at the cap the row stays ``failed`` and a WS ``error`` event is
-    published. The partial target file is removed best-effort so a re-queue
-    starts clean.
+    ``retry_count < max_retries``, resetting progress/bytes and clearing
+    ``error_message`` for a fresh attempt; at the cap the row stays ``failed``
+    with ``error_message`` set. The WS ``error`` event for a terminal failure
+    is published *after* the row update commits — a publish failure must never
+    roll back the recorded state (same rule as :func:`_record_completion`).
+    The partial target file is removed best-effort so a re-queue starts clean.
+
+    Note for real engines: ``error_message = str(error)`` may surface adapter
+    internals (paths, exception text); map to user-facing messages there.
     """
+    failure_event: dict | None = None
     with session_scope(engine) as session:
         row = session.get(DownloadTask, download_id)
         if row is None:
@@ -344,7 +363,7 @@ def _record_failure(
         row.error_message = str(error)
         if row.retry_count >= max_retries:
             row.status = transition(row.status, DownloadStatus.FAILED)
-            _publish(event_hub, download_id, _failed_event(row))
+            failure_event = _failed_event(row)
         else:
             row.status = transition(row.status, DownloadStatus.FAILED)
             row.status = transition(DownloadStatus.FAILED, DownloadStatus.PENDING)
@@ -352,6 +371,11 @@ def _record_failure(
             row.speed = None
             row.downloaded_bytes = None
             row.total_bytes = None
+            # A re-queued pending row returns clean: the previous attempt's
+            # error is not shown as a stale error on the progress endpoint.
+            row.error_message = None
+    if failure_event is not None:
+        _publish(event_hub, download_id, failure_event)
     if target is not None:
         try:
             target.unlink(missing_ok=True)
@@ -369,12 +393,31 @@ def _bubble_filename(row: DownloadTask, media_type: MediaType) -> str:
 
     ``<title-slug>_<download-id-prefix>.<ext>`` — the download id suffix keeps
     concurrent variants of the same task (different format/quality) from
-    colliding on one bubble path, and everything is slugified so hostile
+    colliding on one bubble path, and every component is slugified so hostile
     titles/formats cannot escape the bubble root.
     """
-    ext = (row.format or "").strip().lstrip(".") or _DEFAULT_EXT_BY_TYPE[media_type]
     title = row.title or "untitled"
-    return f"{slugify(title)}_{row.download_id[:8]}.{slugify(ext)}"
+    return f"{slugify(title)}_{row.download_id[:8]}.{_extension_for(row, media_type)}"
+
+
+def _extension_for(row: DownloadTask, media_type: MediaType) -> str:
+    """A sanitized file extension for a download row.
+
+    Takes the segment after the last dot of the row's format (so ``mp4.webm``
+    yields ``webm``, not the slugified ``mp4-webm``), restricted to lowercase
+    alphanumerics; falls back to the media type's default when the format is
+    blank or yields nothing usable. An unknown media type raises a clear
+    ``ValueError`` instead of a bare ``KeyError``.
+    """
+    ext = (row.format or "").strip().lstrip(".")
+    if ext:
+        cleaned = _EXT_UNSAFE.sub("", ext.rsplit(".", 1)[-1].lower())
+        if cleaned:
+            return cleaned
+    try:
+        return _DEFAULT_EXT_BY_TYPE[media_type]
+    except KeyError:
+        raise ValueError(f"no default extension for media type {media_type!r}") from None
 
 
 def _progress_event(progress: DownloadProgress) -> dict:
@@ -441,11 +484,19 @@ def _failed_event(row: DownloadTask) -> dict:
     }
 
 
-def _publish(event_hub: DownloadEventHub, download_id: str, event: dict) -> None:
-    """Publish a hub event from the sync worker thread via a throwaway loop.
+# One reusable event loop per thread (the worker thread creates it lazily on
+# the first publish and reuses it for every subsequent one — progress chunks
+# must not spin up a fresh loop each time). `run_until_complete` may be called
+# repeatedly on a non-running loop; the worker's sync polling thread never has
+# a running loop of its own. The hub delivers thread-safely to each
+# subscriber's own loop, so the loop here is only a transport shim.
+_loop_local = threading.local()
 
-    Requires no running event loop in the calling thread (true for the worker
-    loop and for sync tests); the hub delivers thread-safely to each
-    subscriber's own loop.
-    """
-    asyncio.run(event_hub.publish(download_id, event))
+
+def _publish(event_hub: DownloadEventHub, download_id: str, event: dict) -> None:
+    """Publish a hub event from the sync worker thread on a reused loop."""
+    loop = getattr(_loop_local, "loop", None)
+    if loop is None or loop.is_closed():
+        loop = asyncio.new_event_loop()
+        _loop_local.loop = loop
+    loop.run_until_complete(event_hub.publish(download_id, event))
