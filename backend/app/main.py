@@ -6,13 +6,27 @@ data}`` response envelope (``app.api.responses``), the admin auth router
 (``POST /api/parse``), the preview router (``GET /api/preview/{task_id}``),
 the download routers (submit/progress/file under ``/api/download`` and the
 progress WebSocket at ``/ws/download/{id}``), the NAS router
-(``POST /api/nas/save``), and the readiness endpoint
-``GET /api/health`` that reports service and storage readiness.
+(``POST /api/nas/save``), the readiness endpoint ``GET /api/health``, and the
+built frontend served at "/" with a client-side-routing fallback (the v1
+no-Nginx arrangement: ``/api`` and ``/ws`` are same-origin, so no reverse
+proxy is needed).
 
 ``create_app`` accepts an explicit settings object for tests; the module-level
 ``app`` (imported by uvicorn as ``app.main:app``) is built from the process
 environment, which fails fast when ``ADMIN_PASSWORD``/``SECRET_KEY`` are
 missing — a misconfigured service must not start.
+
+**Static frontend.** When ``settings.frontend_dist_path`` (default
+``frontend/dist``) exists, the SPA is served at "/" through
+:class:`_FrontendMiddleware` — a middleware that runs the application first and
+only answers the app's *404 responses*: a plain GET/HEAD outside ``/api`` and
+``/ws`` is answered from the dist (real file, else ``index.html`` so
+client-side routing works), an unknown ``/api/*`` path keeps its envelope 404
+instead of being swallowed by the SPA fallback, and a missing hashed asset
+under ``/assets`` is an honest 404 too. When the build is missing (fresh
+clone, tests) the same paths get an honest "frontend not built" placeholder —
+``/api/health`` stays fully independent either way. See
+:func:`_add_frontend_serving`.
 
 **DI wiring.** ``create_app`` builds the access-token provider from ``settings``
 and stores it alongside an :class:`app.application.auth_service.AuthService` on
@@ -28,8 +42,14 @@ temp database and secret.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
+from starlette.exceptions import HTTPException
+from starlette.staticfiles import StaticFiles
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.adapters.factory import (
     get_access_token_provider,
@@ -71,6 +91,123 @@ STORAGE_ROOT_FIELDS = (
     "temp_image_path",
     "temp_music_path",
 )
+
+
+def _is_api_or_ws_path(path: str) -> bool:
+    """True for paths owned by the API/WebSocket routers.
+
+    The frontend fallback must never answer these: an unknown ``/api/*`` path
+    keeps its envelope 404 (a client bug must not silently receive the SPA)
+    and ``/ws`` belongs to the WebSocket router.
+    """
+    return path.startswith(("/api", "/ws"))
+
+
+class _FrontendMiddleware:
+    """Serve the built frontend at "/" for requests the app answers with 404.
+
+    The application runs first, so every registered route — the API routers,
+    ``/api/health``, the download WebSocket, the auto-generated docs, and any
+    route added after ``create_app`` (e.g. test-only routes) — keeps
+    precedence. A plain GET/HEAD that the app 404s on, outside ``/api`` and
+    ``/ws``, is answered from the built frontend: the real file when it
+    exists, else ``index.html`` so client-side routing works. When no build
+    exists the same paths get an honest "frontend not built" placeholder.
+    API/WebSocket 404s and stale ``/assets`` hashes are never swallowed: they
+    keep the app's envelope 404.
+
+    Being a middleware (not a catch-all route or a "/" mount) also means
+    non-404 responses pass through untouched — including streamed download
+    bodies, which are never buffered.
+    """
+
+    def __init__(self, app: ASGIApp, dist_dir: Path) -> None:
+        self.app = app
+        self.dist_dir = dist_dir
+        # Constructed only when the build exists: StaticFiles(check_dir=True)
+        # raises for a missing directory, and the placeholder path needs none.
+        self._static = (
+            StaticFiles(directory=dist_dir, html=True) if dist_dir.is_dir() else None
+        )
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        path = scope["path"]
+        method = scope["method"]
+        replaced = False
+
+        async def send_override(message: Message) -> None:
+            nonlocal replaced
+            if (
+                message["type"] == "http.response.start"
+                and message["status"] == 404
+                and method in ("GET", "HEAD")
+                and not _is_api_or_ws_path(path)
+            ):
+                if await self._serve_fallback(scope, receive, send, path):
+                    replaced = True
+                    return
+            if not replaced:
+                await send(message)
+
+        await self.app(scope, receive, send_override)
+
+    async def _serve_fallback(
+        self, scope: Scope, receive: Receive, send: Send, path: str
+    ) -> bool:
+        """Answer a 404'd GET/HEAD from the dist (or the placeholder).
+
+        Returns True when a replacement response was sent (the app's 404 body
+        is then suppressed), False when the app's own 404 should be forwarded.
+        """
+        if self._static is None:
+            response = HTMLResponse(
+                _FRONTEND_NOT_BUILT_HTML.format(dist=self.dist_dir),
+                status_code=200,
+            )
+            await response(scope, receive, send)
+            return True
+        try:
+            response = await self._static.get_response(
+                self._static.get_path(scope), scope
+            )
+        except HTTPException as exc:
+            if exc.status_code != 404:
+                raise
+            if path.startswith("/assets") or not (self.dist_dir / "index.html").is_file():
+                # Stale hashed asset (the old Nginx did try_files $uri =404)
+                # or a broken build: keep the app's honest 404.
+                return False
+            response = await self._static.get_response("index.html", scope)
+        await response(scope, receive, send)
+        return True
+
+
+_FRONTEND_NOT_BUILT_HTML = """<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Koi Fetch — frontend not built</title></head>
+<body style="font-family: sans-serif; margin: 2rem; line-height: 1.6">
+<h1>Koi Fetch frontend not built</h1>
+<p>The API is running, but no frontend build was found at <code>{dist}</code>.</p>
+<p>Build it with <code>npm run build --prefix frontend</code> and reload, or
+use the Vite dev server for development.</p>
+</body>
+</html>
+"""
+
+
+def _add_frontend_serving(app: FastAPI, settings: Settings) -> None:
+    """Wrap the app so the built frontend is served at "/".
+
+    See :class:`_FrontendMiddleware`: a middleware (not a mount or catch-all
+    route) so the API/WebSocket routers keep precedence AND routes registered
+    after ``create_app`` keep working — the application runs first and the
+    fallback only ever sees 404 responses.
+    """
+    app.add_middleware(_FrontendMiddleware, dist_dir=settings.frontend_dist_path)
 
 
 def _check_storage_roots(settings: Settings) -> tuple[dict[str, str], bool]:
@@ -178,6 +315,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "storage_roots": roots,
             },
         )
+
+    _add_frontend_serving(app, settings)
 
     return app
 
