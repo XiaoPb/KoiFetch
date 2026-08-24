@@ -128,6 +128,13 @@ export interface DownloadsState {
    */
   refreshFileLink: (downloadId: string) => void;
   /**
+   * Remove an item from the task list (e.g. after a successful NAS save, the
+   * backend MOVED the bubble file into the pond — the item's file link and a
+   * re-save would both fail, so it must no longer be offered anywhere).
+   * Terminal items have no live socket, so no stream cleanup is needed.
+   */
+  remove: (downloadId: string) => void;
+  /**
    * Tear down the session-local download state: close every live socket,
    * stop the polling timer and clear the task list. Called on logout so the
    * next admin (or the same one) starts from a clean slate — the store has
@@ -351,6 +358,9 @@ export const useDownloadsStore = create<DownloadsState>()((set, get) => ({
     releaseWs(downloadId);
     get().connectWs(downloadId);
   },
+
+  remove: (downloadId) =>
+    set((state) => ({ items: state.items.filter((i) => i.download_id !== downloadId) })),
 
   teardown: () => {
     __resetDownloadStreams();

@@ -478,6 +478,21 @@ describe('downloadsStore', () => {
     expect(useDownloadsStore.getState().items[0].status).toBe('completed');
   });
 
+  it('remove deletes only the requested item (NAS save removes the moved file)', () => {
+    useDownloadsStore.setState({
+      items: [
+        seedItem({ download_id: 'd1', task_id: 't1', status: 'completed', title: 'Video A' }),
+        seedItem({ download_id: 'd2', task_id: 't2', status: 'downloading', title: 'Video B' }),
+      ],
+    });
+
+    useDownloadsStore.getState().remove('d1');
+
+    const items = useDownloadsStore.getState().items;
+    expect(items).toHaveLength(1);
+    expect(items[0].download_id).toBe('d2');
+  });
+
   // -------------------------------------------------------------------------
   // Teardown (Task 16 — logout cleanup)
   // -------------------------------------------------------------------------

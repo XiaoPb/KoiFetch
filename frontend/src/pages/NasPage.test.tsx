@@ -15,9 +15,27 @@ vi.mock('../services/api', () => ({
   downloadApi: { submit: vi.fn(), getProgress: vi.fn(), getFileUrl: vi.fn() },
 }));
 
+// A healthy /api/health payload — all six roots OK. A root can only be
+// "error" inside the DEGRADED envelope (code 1), not here: the backend's
+// health handler returns code 0 only when every root is ready (main.py).
 const healthy = {
   status: 'ok',
   services: { api: 'ok', storage: 'ok' },
+  storage_roots: {
+    video_storage_path: 'ok',
+    image_storage_path: 'ok',
+    music_storage_path: 'ok',
+    temp_video_path: 'ok',
+    temp_image_path: 'ok',
+    temp_music_path: 'ok',
+  },
+};
+
+// The degraded wire payload healthApi.getHealth now resolves thanks to the
+// tolerateErrorEnvelope flag (apiClient + api.ts).
+const degraded = {
+  status: 'degraded',
+  services: { api: 'ok', storage: 'degraded' },
   storage_roots: {
     video_storage_path: 'ok',
     image_storage_path: 'ok',
@@ -73,7 +91,19 @@ describe('NasPage', () => {
     // All six pond/bubble roots with their statuses.
     expect(screen.getByTestId('storage-root-video_storage_path')).toHaveTextContent('视频池塘');
     expect(screen.getByTestId('storage-root-temp_music_path')).toHaveTextContent('音乐临时区');
+    expect(screen.getByTestId('storage-root-temp_music_path')).toHaveTextContent('正常');
+    expect(screen.queryByTestId('storage-degraded')).not.toBeInTheDocument();
+  });
+
+  it('renders the degraded panel when /api/health reports degraded storage', async () => {
+    (healthApi.getHealth as Mock).mockResolvedValue(degraded);
+    renderWithProviders(<NasPage />);
+
+    expect(await screen.findByTestId('storage-degraded')).toBeInTheDocument();
+    expect(screen.getByTestId('storage-service-storage')).toHaveTextContent('降级');
+    // The failed root is exactly the information the admin needs.
     expect(screen.getByTestId('storage-root-temp_music_path')).toHaveTextContent('异常');
+    expect(screen.getByTestId('storage-root-video_storage_path')).toHaveTextContent('正常');
   });
 
   it('shows a loading state while the health check is in flight', () => {
@@ -128,7 +158,7 @@ describe('NasPage', () => {
     expect(screen.queryByTestId('nas-save-d2')).not.toBeInTheDocument();
   });
 
-  it('saves a completed item: modal opens with default "/", submits the path, and reports the nas_path', async () => {
+  it('saves a completed item: modal opens with an empty target field, submits the path, reports the nas_path and removes the item', async () => {
     const user = userEvent.setup();
     useDownloadsStore.setState({
       items: [seedItem({ download_id: 'd1', task_id: 't1', status: 'completed', title: 'Video A' })],
@@ -144,18 +174,44 @@ describe('NasPage', () => {
 
     const modal = await screen.findByTestId('nas-save-modal');
     expect(modal).toBeInTheDocument();
-    // Default target directory is "/" (PRD §3.4.3), leading "/" optional.
-    expect(screen.getByTestId('nas-target-input')).toHaveValue('/');
+    // PRD §3.4.3 says default "/", but the backend rejects a root-only
+    // target — the field opens empty with an example placeholder instead.
+    expect(screen.getByTestId('nas-target-input')).toHaveValue('');
 
-    await user.clear(screen.getByTestId('nas-target-input'));
     await user.type(screen.getByTestId('nas-target-input'), '/视频/抖音');
     await user.click(screen.getByTestId('nas-save-confirm'));
 
     await waitFor(() => expect(nasApi.save).toHaveBeenCalledWith('d1', '/视频/抖音'));
     expect(await screen.findByText('🎉 锦鲤已游入池塘!')).toBeInTheDocument();
     expect(screen.getByText('已保存到 /视频/抖音/2026-01-01_x.mp4')).toBeInTheDocument();
-    // The modal closes after a successful save.
+    // The modal closes after a successful save...
     expect(screen.queryByTestId('nas-save-modal')).not.toBeInTheDocument();
+    // ...and the item is REMOVED from the store: the backend moved its bubble
+    // file into the pond, so neither this page nor the download-center drawer
+    // may keep offering a dead save/file action.
+    await waitFor(() => expect(screen.queryByTestId('nas-completed-d1')).not.toBeInTheDocument());
+    expect(screen.getByText('暂无已完成的下载')).toBeInTheDocument();
+    expect(useDownloadsStore.getState().items).toHaveLength(0);
+  });
+
+  it('guards against double submission while a save is in flight', async () => {
+    const user = userEvent.setup();
+    useDownloadsStore.setState({
+      items: [seedItem({ download_id: 'd1', task_id: 't1', status: 'completed', title: 'Video A' })],
+    });
+    let resolveSave!: (value: unknown) => void;
+    (nasApi.save as Mock).mockReturnValue(new Promise((resolve) => { resolveSave = resolve; }));
+    renderWithProviders(<NasPage />);
+
+    await user.click(await screen.findByTestId('nas-save-d1'));
+    await user.type(screen.getByTestId('nas-target-input'), '/视频');
+    // Enter while the first request is still in flight must not POST again.
+    await user.keyboard('{Enter}');
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(nasApi.save).toHaveBeenCalledTimes(1));
+
+    resolveSave({ nas_path: '/视频/x.mp4', file_size: 10, saved_at: '2026-01-02T00:00:00Z' });
+    await waitFor(() => expect(nasApi.save).toHaveBeenCalledTimes(1));
   });
 
   it('surfaces the backend error message when the save is refused (5002 not completed)', async () => {

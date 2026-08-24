@@ -32,10 +32,12 @@ import type { HealthData } from '../types/api';
  *    download-center's completed items (this session only — the v1 backend
  *    has no download-list endpoint, same documented constraint as the Task 15
  *    drawer) each get an admin-only [存入NAS] button that opens a modal asking
- *    for a target directory (default "/", leading "/" optional) and calls
- *    POST /api/nas/save. Success shows "🎉 锦鲤已游入池塘!" with the returned
- *    `nas_path`; backend errors (3001/5001/5002/400) surface their bilingual
- *    messages.
+ *    for a target directory (leading "/" optional; see the empty-default note
+ *    below) and calls POST /api/nas/save. Success shows "🎉 锦鲤已游入池塘!"
+ *    with the returned `nas_path` and REMOVES the item from the store (the
+ *    backend moved its bubble file into the pond, so the item's file link and
+ *    a re-save would both fail); backend errors (3001/5001/5002/400) surface
+ *    their bilingual messages.
  *
  * **Design choice (documented):** the save action lives on the NAS page, not
  * in the download-center Drawer. Rationale: the PRD flow starts from a
@@ -44,6 +46,11 @@ import type { HealthData } from '../types/api';
  * surface for pond operations and has direct access to the same
  * downloadsStore items. The deferred NAS browser (browse/list/delete/rename)
  * is NOT built — the backend has no such endpoints.
+ *
+ * **Degraded storage (Task 16 review):** /api/health reports degraded storage
+ * as HTTP 200 + code 1 + data.status "degraded"; `healthApi.getHealth`
+ * tolerates that envelope (per-request `tolerateErrorEnvelope`), so this page
+ * can render exactly which root failed instead of a generic error.
  *
  * The v1 "no download list endpoint" constraint means a page reload loses the
  * in-session items; the page says so honestly via the empty state.
@@ -101,6 +108,7 @@ export default function NasPage(): JSX.Element {
   const { t } = useTranslation();
   const { message } = App.useApp();
   const items = useDownloadsStore((state) => state.items);
+  const removeItem = useDownloadsStore((state) => state.remove);
 
   // Only completed downloads are saveable (backend: 5002 otherwise).
   const completedItems = useMemo(
@@ -131,16 +139,20 @@ export default function NasPage(): JSX.Element {
 
   // --- save-to-NAS ----------------------------------------------------------
   const [saveTarget, setSaveTarget] = useState<DownloadItem | null>(null);
-  const [targetPath, setTargetPath] = useState('/');
+  // PRD §3.4.3 says the modal defaults to "/", but the backend rejects a
+  // root-only target (nas_service._parse_target_path requires ≥1 segment) —
+  // a genuine PRD-vs-backend conflict. The field therefore opens EMPTY with
+  // an example placeholder; typing "/" alone still gets a clear message.
+  const [targetPath, setTargetPath] = useState('');
   const [saving, setSaving] = useState(false);
 
   const openSaveModal = (item: DownloadItem) => {
-    setTargetPath('/');
+    setTargetPath('');
     setSaveTarget(item);
   };
 
   const handleSave = async () => {
-    if (!saveTarget) return;
+    if (!saveTarget || saving) return;
     const invalidKey = validateNasTargetPath(targetPath);
     if (invalidKey) {
       void message.error(t(invalidKey));
@@ -150,6 +162,10 @@ export default function NasPage(): JSX.Element {
     try {
       const data = await nasApi.save(saveTarget.download_id, targetPath);
       setSaveTarget(null);
+      // The backend MOVED the bubble file into the pond: the item is no
+      // longer downloadable or re-saveable — remove it so neither the NAS
+      // list nor the download-center drawer offers dead actions.
+      removeItem(saveTarget.download_id);
       void message.success(t('nas.save.success'));
       void message.success(t('nas.save.successPath', { path: data.nas_path }));
     } catch (error) {
@@ -193,7 +209,13 @@ export default function NasPage(): JSX.Element {
         {health && !healthLoading && (
           <div data-testid="storage-content">
             {health.status === 'degraded' && (
-              <Alert type="warning" showIcon message={t('nas.storage.degraded')} style={{ marginBottom: 12 }} />
+              <Alert
+                type="warning"
+                showIcon
+                message={t('nas.storage.degraded')}
+                style={{ marginBottom: 12 }}
+                data-testid="storage-degraded"
+              />
             )}
             <Typography.Paragraph type="secondary">{t('nas.storage.hint')}</Typography.Paragraph>
             <Row gutter={[16, 8]}>
@@ -287,6 +309,8 @@ export default function NasPage(): JSX.Element {
                 onChange={(event) => setTargetPath(event.target.value)}
                 onPressEnter={() => void handleSave()}
                 placeholder={t('nas.save.targetPlaceholder')}
+                // Backend cap (NasSaveRequest.target_path max_length=1024).
+                maxLength={1024}
               />
               <Typography.Text type="secondary">{t('nas.save.targetHint')}</Typography.Text>
             </Form.Item>
