@@ -127,16 +127,49 @@ export class DownloadWsClient {
   private parse(raw: string): WsEvent | null {
     try {
       const value: unknown = JSON.parse(raw);
-      if (
-        typeof value === 'object' &&
-        value !== null &&
-        typeof (value as { type?: unknown }).type === 'string'
-      ) {
-        return value as WsEvent;
-      }
+      if (isWsEvent(value)) return value;
     } catch {
       // Ignore malformed frames; the socket stays open for the next event.
     }
     return null;
   }
+}
+
+/**
+ * Validate a parsed frame against the wire contract so subscribers never see
+ * half-shaped events:
+ * - `error` must carry {code: number, message: string} (protocol errors carry
+ *   ONLY those two fields — no snapshot state);
+ * - `progress` must carry the snapshot state (download_id/status/progress);
+ * - `complete` must additionally carry download_url + token_expire_at.
+ */
+function isWsEvent(value: unknown): value is WsEvent {
+  if (typeof value !== 'object' || value === null) return false;
+  const { type, data } = value as { type?: unknown; data?: unknown };
+  if (type !== 'progress' && type !== 'complete' && type !== 'error') return false;
+  if (typeof data !== 'object' || data === null) return false;
+
+  if (type === 'error') {
+    const { code, message } = data as { code?: unknown; message?: unknown };
+    return typeof code === 'number' && typeof message === 'string';
+  }
+
+  const state = data as {
+    download_id?: unknown;
+    status?: unknown;
+    progress?: unknown;
+    download_url?: unknown;
+    token_expire_at?: unknown;
+  };
+  if (
+    typeof state.download_id !== 'string' ||
+    typeof state.status !== 'string' ||
+    typeof state.progress !== 'number'
+  ) {
+    return false;
+  }
+  if (type === 'complete') {
+    return typeof state.download_url === 'string' && typeof state.token_expire_at === 'string';
+  }
+  return true;
 }

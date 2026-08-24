@@ -101,6 +101,57 @@ describe('DownloadWsClient', () => {
     expect(client.status).toBe('open');
   });
 
+  it('delivers protocol error events that carry only code and message', () => {
+    const client = new DownloadWsClient({ url: URL });
+    const events: WsEvent[] = [];
+    client.subscribe((event) => events.push(event));
+    client.connect();
+    MockWebSocket.open(MockWebSocket.instances[0]);
+    // Backend protocol failures (invalid/unknown download id) send only
+    // {code, message} — no snapshot state fields.
+    MockWebSocket.message(MockWebSocket.instances[0], {
+      type: 'error',
+      data: { code: 3001, message: '任务不存在 / Task not found' },
+    });
+
+    expect(events).toHaveLength(1);
+    const event = events[0];
+    expect(event.type).toBe('error');
+    if (event.type === 'error') {
+      expect(event.data.code).toBe(3001);
+      expect(event.data.message).toContain('Task not found');
+      // No phantom snapshot fields on protocol-level errors.
+      expect(event.data.status).toBeUndefined();
+      expect(event.data.progress).toBeUndefined();
+    }
+    expect(client.status).toBe('closed');
+  });
+
+  it('drops frames that do not match the wire contract', () => {
+    const client = new DownloadWsClient({ url: URL });
+    const events: WsEvent[] = [];
+    client.subscribe((event) => events.push(event));
+    client.connect();
+    const ws = MockWebSocket.instances[0];
+    MockWebSocket.open(ws);
+
+    const malformed: unknown[] = [
+      { type: 'error', data: { message: 'missing code' } },
+      { type: 'error', data: { code: '5002', message: 'string code' } },
+      { type: 'progress', data: { download_id: '1' } }, // missing status/progress
+      { type: 'complete', data: { download_id: '1', status: 'completed', progress: 1 } }, // missing download_url
+      { type: 'progress', data: null },
+      { type: 'unknown', data: {} },
+      { data: { code: 400, message: 'no type' } },
+    ];
+    for (const frame of malformed) {
+      MockWebSocket.message(ws, frame);
+    }
+
+    expect(events).toHaveLength(0);
+    expect(client.status).toBe('open');
+  });
+
   it('closes the socket on a terminal complete event and stops reconnecting', () => {
     const client = new DownloadWsClient({ url: URL });
     client.connect();

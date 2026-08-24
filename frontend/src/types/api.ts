@@ -137,8 +137,7 @@ export type DownloadStatus =
   | 'downloading'
   | 'completed'
   | 'failed'
-  | 'expired'
-  | 'canceled';
+  | 'expired';
 
 export interface SubmitData {
   download_id: string;
@@ -169,8 +168,15 @@ export interface WsCompleteData extends DownloadProgress {
   token_expire_at: string;
 }
 
-/** Error event: state fields plus a stable envelope code/message. */
-export interface WsErrorData extends DownloadProgress {
+/**
+ * Error event payload. The backend sends TWO shapes:
+ * - task-state errors (failed/expired) carry the snapshot state fields PLUS
+ *   code/message, and
+ * - protocol errors (invalid/unknown download id) carry ONLY {code, message}.
+ * Every field except code/message is therefore optional; consumers must treat
+ * missing state fields as "no snapshot available", not as a stalled download.
+ */
+export interface WsErrorData extends Partial<DownloadProgress> {
   code: number;
   message: string;
 }
