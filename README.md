@@ -5,7 +5,7 @@ storage) through a Bubble (temporary staging area) with an admin panel.
 
 ## Stack
 
-- **Backend:** FastAPI (ports-and-adapters) + SQLite
+- **Backend:** FastAPI (ports-and-adapters) + SQLite — serves the built frontend at `/` (no container-internal Nginx; `/api` and `/ws` are same-origin)
 - **Frontend:** React 18 / TypeScript / Ant Design
 - **Infrastructure:** Docker Compose
 
@@ -37,6 +37,7 @@ real `.env`; the example file contains safe local-development values only.
 | `DEBUG` | `false` | Debug mode |
 | `TZ` | `Asia/Shanghai` | Application timezone (validated against the IANA database) |
 | `DATABASE_URL` | `sqlite:///./data/db/koifetch.db` | SQLAlchemy database URL |
+| `FRONTEND_DIST_PATH` | `frontend/dist` | Built frontend (Vite `dist`) the backend serves at `/`; resolved against the process CWD (run uvicorn from the repo root for the default to work), and set to `/app/static` by the Docker image |
 
 ## Smoke testing
 
@@ -102,20 +103,22 @@ The automated smoke mints and consumes this link deterministically.
 
 **With Docker.** The compose stack is authored for this flow and statically
 validated by `backend/tests/test_compose.py` (backend runs
-`alembic upgrade head && seed && uvicorn`, worker runs `app.workers.main`,
-Nginx proxies `/api` + `/ws` to the backend):
+`alembic upgrade head && seed && uvicorn`, worker runs `app.workers.main`).
+The backend image builds the frontend and serves it at `/`, so there is no
+Nginx: the SPA, the API, and the WebSocket share one origin on port 8000
+(no reverse proxy, and the served app needs no CORS setup):
 
 ```bash
 docker compose up --build
-curl -s http://localhost:5173/api/health          # frontend Nginx proxies /api
+curl -s http://localhost:8000/api/health
 ```
 
-then repeat the same curl flow against `http://localhost:5173`. The Nginx
-proxy also forwards `/ws`, but note the v1 limitation: under compose the worker
-is a separate process and the WebSocket event hub is process-local, so live
-progress pushes do not cross processes — the WS still serves its snapshot-on-
-connect event and the client reconciles live progress via HTTP polling
-(`GET /api/download/progress/{id}`, as the frontend does).
+The SPA itself is at `http://localhost:8000/`; repeat the same curl flow
+against `http://localhost:8000` for the API hops. The v1 WS limitation still
+applies: the worker is a separate process and the WebSocket event hub is
+process-local, so live progress pushes do not cross processes — the WS still
+serves its snapshot-on-connect event and the client reconciles live progress
+via HTTP polling (`GET /api/download/progress/{id}`, as the frontend does).
 
 ## Docs
 
