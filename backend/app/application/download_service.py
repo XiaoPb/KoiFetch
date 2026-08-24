@@ -38,8 +38,9 @@ Design decisions (stable contract for Tasks 10-12):
   and the file is verified *before* the token is consumed, so a failed attempt
   never burns the link.
 * **Containment at resolution and at I/O.** The stored ``bubble_path`` is
-  re-derived through :func:`app.domain.paths.build_path` against the live
-  bubble root (traversal/corrupt paths → ``5001``), and
+  re-derived against the live bubble root via
+  :func:`app.application.stored_paths.resolve_bubble_path` (traversal/corrupt
+  paths → ``5001``), and
   :meth:`app.adapters.protocols.StorageAdapter.exists` re-verifies containment
   right before the API serves — the Task 5 TOCTOU rule applied to serving, not
   just writing.
@@ -52,7 +53,6 @@ Design decisions (stable contract for Tasks 10-12):
 
 from __future__ import annotations
 
-import os
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -88,6 +88,7 @@ from app.api.responses import (
     CODE_TASK_NOT_FOUND,
     ApiError,
 )
+from app.application.stored_paths import resolve_bubble_path
 from app.domain import (
     DownloadCommand,
     DownloadProgress,
@@ -95,7 +96,6 @@ from app.domain import (
     DownloadStatus,
     MediaType,
 )
-from app.domain.paths import PathOutsideRootError, build_path, is_within
 from app.infrastructure.database import session_scope
 from app.infrastructure.models import DownloadTask, ParseTask
 
@@ -315,7 +315,7 @@ class DownloadService:
                 raise ApiError(
                     HTTP_404_NOT_FOUND, CODE_FILE_NOT_FOUND, _MESSAGE_FILE_NOT_FOUND
                 )
-            path = self._resolve_bubble_path(media_type, row.bubble_path)
+            path = resolve_bubble_path(self._storage, media_type, row.bubble_path)
             if not self._storage.exists(path):
                 raise ApiError(
                     HTTP_404_NOT_FOUND, CODE_FILE_NOT_FOUND, _MESSAGE_FILE_NOT_FOUND
@@ -386,32 +386,6 @@ class DownloadService:
         token = self._token_provider.issue(download_id=download_id)
         claims = self._token_provider.validate(token)
         return IssuedDownloadToken(token=token, expires_at=claims.expires_at)
-
-    # -- internals -------------------------------------------------------------
-
-    def _resolve_bubble_path(self, media_type: MediaType, stored_path: str) -> Path:
-        """Re-derive ``stored_path`` inside the live bubble root, refusing escapes.
-
-        Relative stored paths are joined under the root; absolute ones are
-        re-derived from their relative form. Any traversal or corruption
-        surfaces as ``5001`` (file not found) — the escape itself is never
-        disclosed to the client.
-        """
-        bubble_root = self._storage.bubble_root(media_type)
-        raw = Path(stored_path)
-        try:
-            if not raw.is_absolute():
-                return build_path(bubble_root, *raw.parts)
-            if not is_within(bubble_root, raw):
-                raise PathOutsideRootError(
-                    f"stored bubble path escapes the bubble root: {stored_path!r}"
-                )
-            relative = os.path.relpath(raw, bubble_root)
-            return build_path(bubble_root, relative)
-        except (ValueError, PathOutsideRootError):
-            raise ApiError(
-                HTTP_404_NOT_FOUND, CODE_FILE_NOT_FOUND, _MESSAGE_FILE_NOT_FOUND
-            ) from None
 
 
 def _progress_from_row(row: DownloadTask) -> DownloadProgress:
