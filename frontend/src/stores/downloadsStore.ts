@@ -50,12 +50,25 @@ import type {
  * - **No cancel.** The v1 backend contract has no cancel endpoint and the
  *   state graph has no cancelling transition, so the drawer renders a disabled
  *   cancel control (never a live one).
+ * - **Refresh limitation (accepted for v1).** There is NO download-list HTTP
+ *   endpoint (the backend contract is submit/progress/file/WS only), so the
+ *   store starts empty on page load: after an F5, in-flight/completed
+ *   downloads disappear from the UI even though the server-side work
+ *   continues. This is a known, accepted v1 constraint — recovery would need
+ *   a v1.1 `GET /api/downloads` endpoint (see TODO below).
+ * - **Terminal reconciliation.** A late snapshot (poll tick or stale socket
+ *   event) can never move a terminal item back to an active state — see
+ *   `applySnapshot`.
  *
  * The header badge is NOT stored — `selectActiveCount` derives it from
  * `items`, so it can never drift from the task list.
  *
  * `submit()` maps 3001/3002/3003 failures to a rejection carrying the
  * backend's bilingual ApiError message — the caller toasts it.
+ *
+ * TODO(v1.1): the reconciler (wsClients map + poll timer + pollTick) is
+ * module-scope plumbing inside this file; if it grows, extract it into a
+ * dedicated module so the store stays a pure state container.
  */
 
 export interface DownloadItem {
@@ -164,10 +177,21 @@ function isActiveStatus(status: DownloadStatus): boolean {
   return status === 'pending' || status === 'downloading';
 }
 
-/** A socket counts as "live" while it is connecting or open. */
+/** completed/failed/expired — once reached, the item stops being reconciled. */
+function isTerminalStatus(status: DownloadStatus): boolean {
+  return status === 'completed' || status === 'failed' || status === 'expired';
+}
+
+/**
+ * A socket counts as "live" only while OPEN. A CONNECTING socket delivers no
+ * events yet, so polling must cover that window (otherwise a black-holed
+ * handshake — which the client abandons after `connectTimeoutMs` — would
+ * starve the item of updates). Snapshots are idempotent, so the duplicate
+ * poll during the brief normal connecting phase is harmless.
+ */
 function hasLiveSocket(downloadId: string): boolean {
   const client = wsClients.get(downloadId);
-  return client !== undefined && (client.status === 'connecting' || client.status === 'open');
+  return client !== undefined && client.status === 'open';
 }
 
 function needsPolling(items: DownloadItem[]): boolean {
@@ -214,9 +238,11 @@ async function pollTick(): Promise<void> {
         useDownloadsStore.getState().applySnapshot(item.download_id, snapshot);
       } catch (err) {
         // A task-level failure (3001 unknown download) means the server no
-        // longer knows this download → mark failed honestly. Transient
-        // transport failures leave the item active; the next tick (or a
-        // reconnecting socket) retries.
+        // longer knows this download → mark failed honestly. Non-3001 poll
+        // errors are transient by nature (network blip, race with the
+        // reconnecting socket) and are deliberately swallowed: the next tick
+        // or a fresh socket snapshot reconciles — accepted for v1, no
+        // failure counter.
         if (err instanceof ApiError && err.code === ApiCodes.TASK_NOT_FOUND) {
           useDownloadsStore.getState().applyError(item.download_id, {
             code: err.code,
@@ -321,22 +347,29 @@ export const useDownloadsStore = create<DownloadsState>()((set, get) => ({
 
   applySnapshot: (downloadId, snapshot) =>
     set((state) => ({
-      items: state.items.map((item) =>
-        item.download_id === downloadId
-          ? {
-              ...item,
-              status: snapshot.status,
-              progress: snapshot.progress ?? item.progress,
-              speed: snapshot.speed ?? null,
-              downloaded_bytes: snapshot.downloaded_bytes ?? null,
-              total_bytes: snapshot.total_bytes ?? null,
-              remaining_time: snapshot.remaining_time ?? null,
-              // Progress snapshots carry no link; keep any captured URL.
-              error_code: null,
-              error_message: snapshot.error_message ?? null,
-            }
-          : item,
-      ),
+      items: state.items.map((item) => {
+        if (item.download_id !== downloadId) return item;
+        // Terminal reconciliation guard: a late snapshot (an in-flight poll
+        // that read the pre-terminal DB row, or a stale socket event) must
+        // never move a completed/failed/expired item back to an active state.
+        // The WS `complete` can land before such a poll resolves; without
+        // this guard the item's status, badge and progress would regress.
+        if (isTerminalStatus(item.status) && !isTerminalStatus(snapshot.status)) {
+          return item;
+        }
+        return {
+          ...item,
+          status: snapshot.status,
+          progress: snapshot.progress ?? item.progress,
+          speed: snapshot.speed ?? null,
+          downloaded_bytes: snapshot.downloaded_bytes ?? null,
+          total_bytes: snapshot.total_bytes ?? null,
+          remaining_time: snapshot.remaining_time ?? null,
+          // Progress snapshots carry no link; keep any captured URL.
+          error_code: null,
+          error_message: snapshot.error_message ?? null,
+        };
+      }),
     })),
 
   applyComplete: (downloadId, data) =>
@@ -370,7 +403,10 @@ export const useDownloadsStore = create<DownloadsState>()((set, get) => ({
               // errors carry only {code, message} → treat as failed.
               status: data.status === 'expired' ? 'expired' : 'failed',
               error_code: data.code,
-              error_message: data.message,
+              // The backend's task-state failed event carries BOTH the
+              // generic 5002 message AND the real cause in `error_message`
+              // (e.g. "404 from upstream") — surface the specific reason.
+              error_message: data.error_message ?? data.message,
             }
           : item,
       ),

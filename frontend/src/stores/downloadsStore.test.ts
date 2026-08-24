@@ -30,7 +30,9 @@ const wsMock = vi.hoisted(() => {
       };
     }
     connect(): void {
-      this.status = 'open';
+      // Realistic: the handshake takes a moment — the store must cover the
+      // connecting window with polling (hasLiveSocket only counts OPEN).
+      this.status = 'connecting';
     }
     close(): void {
       this.closeCalls += 1;
@@ -246,6 +248,81 @@ describe('downloadsStore', () => {
     expect(useDownloadsStore.getState().items[0].status).toBe('expired');
   });
 
+  it('surfaces the specific error_message from a task-state failed event', async () => {
+    (downloadApi.submit as Mock).mockResolvedValue(submitData);
+    await useDownloadsStore.getState().submit('t1');
+    const client = lastClient();
+
+    // Backend failed events carry the generic 5002 message PLUS the real
+    // cause in error_message (e.g. "404 from upstream").
+    client.emit({
+      type: 'error',
+      data: {
+        code: 5002, message: '文件未下载完成 / File not fully downloaded', status: 'failed',
+        download_id: 'd1', progress: 0.2, speed: null, downloaded_bytes: 20, total_bytes: 100, remaining_time: null,
+        error_message: '404 from upstream',
+      },
+    });
+
+    expect(useDownloadsStore.getState().items[0].error_message).toBe('404 from upstream');
+  });
+
+  // -------------------------------------------------------------------------
+  // Terminal reconciliation (IMPORTANT: late snapshots must not regress)
+  // -------------------------------------------------------------------------
+
+  it('never regresses a terminal item from a late snapshot (WS/polling race)', () => {
+    useDownloadsStore.setState({
+      items: [
+        seedItem({
+          download_id: 'd1', task_id: 't1', status: 'completed', progress: 1,
+          download_url: '/api/download/file/d1?token=t', token_expire_at: '2099-01-01T00:00:00Z',
+        }),
+      ],
+    });
+
+    // A poll tick read the pre-terminal DB row and resolves AFTER the WS
+    // complete already moved the item to completed.
+    useDownloadsStore.getState().applySnapshot('d1', {
+      download_id: 'd1', status: 'downloading', progress: 0.4, speed: null,
+      downloaded_bytes: 40, total_bytes: 100, remaining_time: null,
+    });
+
+    const item = useDownloadsStore.getState().items[0];
+    expect(item.status).toBe('completed');
+    expect(item.progress).toBe(1);
+    expect(item.download_url).toBe('/api/download/file/d1?token=t');
+    expect(selectActiveCount(useDownloadsStore.getState())).toBe(0);
+  });
+
+  it('a late poll snapshot cannot regress a terminal state reached via WS', async () => {
+    vi.stubGlobal('WebSocket', undefined);
+    vi.useFakeTimers();
+    (downloadApi.submit as Mock).mockResolvedValue(submitData);
+    let resolvePoll!: (value: unknown) => void;
+    (downloadApi.getProgress as Mock).mockReturnValue(new Promise((resolve) => { resolvePoll = resolve; }));
+
+    await useDownloadsStore.getState().submit('t1');
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS); // a poll is now in flight
+
+    // The WS complete lands first (socket had opened, event delivered).
+    useDownloadsStore.getState().applyComplete('d1', {
+      download_id: 'd1', status: 'completed', progress: 1, speed: null,
+      downloaded_bytes: 100, total_bytes: 100, remaining_time: 0,
+      download_url: '/api/download/file/d1?token=t', token_expire_at: '2099-01-01T00:00:00Z',
+    });
+    resolvePoll({
+      download_id: 'd1', status: 'downloading', progress: 0.4, speed: null,
+      downloaded_bytes: 40, total_bytes: 100, remaining_time: null,
+    });
+    await vi.advanceTimersByTimeAsync(0); // flush the stale poll resolution
+
+    const item = useDownloadsStore.getState().items[0];
+    expect(item.status).toBe('completed');
+    expect(item.progress).toBe(1);
+    expect(item.download_url).toBe('/api/download/file/d1?token=t');
+  });
+
   // -------------------------------------------------------------------------
   // Polling fallback (WS primary, polling every POLL_INTERVAL_MS)
   // -------------------------------------------------------------------------
@@ -266,6 +343,31 @@ describe('downloadsStore', () => {
     await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
     expect(downloadApi.getProgress).toHaveBeenCalledWith('d1');
     expect(useDownloadsStore.getState().items[0].progress).toBe(0.5);
+  });
+
+  it('covers the connecting window with polling and stops once the socket opens', async () => {
+    vi.useFakeTimers();
+    (downloadApi.submit as Mock).mockResolvedValue(submitData);
+    (downloadApi.getProgress as Mock).mockResolvedValue({
+      download_id: 'd1', status: 'pending', progress: 0, speed: null,
+      downloaded_bytes: null, total_bytes: null, remaining_time: null,
+    });
+
+    await useDownloadsStore.getState().submit('t1');
+    const client = lastClient();
+    // Handshake in progress — hasLiveSocket only counts OPEN, so the poll
+    // loop must cover this window (a black-holed socket otherwise starves
+    // the item; the client abandons it after connectTimeoutMs).
+    expect(client.status).toBe('connecting');
+
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+    expect(downloadApi.getProgress).toHaveBeenCalledWith('d1');
+
+    // Socket opens → polling stops for this item.
+    client.status = 'open';
+    const callCount = (downloadApi.getProgress as Mock).mock.calls.length;
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 3);
+    expect(downloadApi.getProgress).toHaveBeenCalledTimes(callCount);
   });
 
   it('stops polling once a terminal state is reached via polling (no link from polling)', async () => {
