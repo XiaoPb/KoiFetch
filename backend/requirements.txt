@@ -17,6 +17,12 @@ tzdata>=2023.3
 httpx>=0.27
 pytest>=8.4
 
+# Test dependency: backend/tests/test_compose.py parses docker-compose.yml with
+# PyYAML (Docker itself is absent in CI, so the compose contract is validated
+# statically). Declared explicitly so a fresh install never silently skips the
+# compose suite because PyYAML arrived only as a transitive dependency.
+PyYAML>=6.0
+
 # Persistence: SQLAlchemy ORM (app/infrastructure/models.py), Alembic
 # migrations (backend/alembic, run via `alembic upgrade head` at deploy time),
 # and bcrypt for the admin password hash (app/infrastructure/seed.py).
