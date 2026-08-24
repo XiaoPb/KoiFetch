@@ -1,9 +1,10 @@
-import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { AppHeader } from './AppHeader';
 import { renderWithProviders } from '../test/utils';
 import { healthApi } from '../services/api';
+import { useAppStore } from '../stores/appStore';
 import { useAuthStore } from '../stores/authStore';
 
 vi.mock('../services/api', () => ({
@@ -12,11 +13,39 @@ vi.mock('../services/api', () => ({
 
 const healthy = { status: 'ok', services: { api: 'ok' }, storage_roots: {} };
 
+// A matchMedia that reports no breakpoints — i.e. a small/mobile viewport.
+function mobileMatchMedia(): () => {
+  matches: boolean;
+  media: string;
+  onchange: null;
+  addListener: ReturnType<typeof vi.fn>;
+  removeListener: ReturnType<typeof vi.fn>;
+  addEventListener: ReturnType<typeof vi.fn>;
+  removeEventListener: ReturnType<typeof vi.fn>;
+  dispatchEvent: ReturnType<typeof vi.fn>;
+} {
+  return () => ({
+    matches: false,
+    media: '',
+    onchange: null,
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  });
+}
+
 describe('AppHeader', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     useAuthStore.setState({ token: null, username: null, expiresAt: null });
+    useAppStore.setState({ mediaMode: 'video' });
     (healthApi.getHealth as Mock).mockResolvedValue(healthy);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it('renders the logo, status indicator, login button and download center', async () => {
@@ -31,30 +60,28 @@ describe('AppHeader', () => {
 
   it('shows the video/music mode switch on desktop', async () => {
     renderWithProviders(<AppHeader />);
+    expect(screen.getByTestId('mode-switch-desktop')).toBeInTheDocument();
     expect(screen.getByText('视频')).toBeInTheDocument();
     expect(screen.getByText('音乐')).toBeInTheDocument();
   });
 
-  it('hides the mode switch on a mobile viewport', () => {
-    const original = window.matchMedia;
-    Object.defineProperty(window, 'matchMedia', {
-      writable: true,
-      value: () => ({
-        matches: false,
-        media: '',
-        onchange: null,
-        addListener: vi.fn(),
-        removeListener: vi.fn(),
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-        dispatchEvent: vi.fn(),
-      }),
-    });
-
+  it('replaces the segmented mode switch with a compact control on mobile', () => {
+    vi.stubGlobal('matchMedia', mobileMatchMedia());
     renderWithProviders(<AppHeader />);
-    expect(screen.queryByText('视频')).not.toBeInTheDocument();
 
-    window.matchMedia = original;
+    expect(screen.queryByTestId('mode-switch-desktop')).not.toBeInTheDocument();
+    expect(screen.getByTestId('mode-switch-mobile')).toBeInTheDocument();
+  });
+
+  it('lets mobile users switch the media mode', async () => {
+    vi.stubGlobal('matchMedia', mobileMatchMedia());
+    const user = userEvent.setup();
+    renderWithProviders(<AppHeader />);
+
+    await user.click(screen.getByTestId('mode-switch-mobile'));
+    await user.click(await screen.findByRole('menuitem', { name: '音乐' }));
+
+    expect(useAppStore.getState().mediaMode).toBe('music');
   });
 
   it('toggles between Chinese and English', async () => {

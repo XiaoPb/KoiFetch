@@ -1,5 +1,11 @@
 import { App, Badge, Button, Dropdown, Grid, Layout, Segmented, Tooltip } from 'antd';
-import { InboxOutlined, LogoutOutlined, UserOutlined } from '@ant-design/icons';
+import {
+  AudioOutlined,
+  InboxOutlined,
+  LogoutOutlined,
+  UserOutlined,
+  VideoCameraOutlined,
+} from '@ant-design/icons';
 import { Link } from 'react-router-dom';
 import { StatusIndicator } from './StatusIndicator';
 import { useTranslation } from '../services/i18n';
@@ -9,9 +15,9 @@ import { useDownloadsStore } from '../stores/downloadsStore';
 
 /**
  * PRD header: logo 🎏 Koi Fetch / mode switch / status indicator / login
- * button (or admin dropdown) / download-center icon with badge. The mode
- * switch collapses on mobile viewports; the language toggle is always
- * available.
+ * button (or admin dropdown) / download-center icon with badge. The segmented
+ * mode switch collapses into a compact dropdown on mobile viewports so mobile
+ * users keep the video/music control; the language toggle is always visible.
  */
 export function AppHeader(): JSX.Element {
   const { t, language, toggleLanguage } = useTranslation();
@@ -25,6 +31,13 @@ export function AppHeader(): JSX.Element {
   const username = useAuthStore((state) => state.username);
   const logout = useAuthStore((state) => state.logout);
   const activeCount = useDownloadsStore((state) => state.activeCount);
+
+  const modeOptions: { label: string; value: MediaMode }[] = [
+    { label: t('header.modeVideo'), value: 'video' },
+    { label: t('header.modeMusic'), value: 'music' },
+  ];
+  // Dropdown menu items use `key`, the Segmented options use `value`.
+  const modeMenuItems = modeOptions.map(({ label, value }) => ({ key: value, label }));
 
   const onDownloadCenterClick = () => {
     void message.info(t('downloadCenter.comingSoon'));
@@ -45,16 +58,30 @@ export function AppHeader(): JSX.Element {
         {!isMobile && (
           <Segmented<MediaMode>
             className="app-mode-switch"
-            options={[
-              { label: t('header.modeVideo'), value: 'video' },
-              { label: t('header.modeMusic'), value: 'music' },
-            ]}
+            data-testid="mode-switch-desktop"
+            options={modeOptions}
             value={mediaMode}
             onChange={setMediaMode}
           />
         )}
 
         <div className="app-header-actions">
+          {isMobile && (
+            <Dropdown
+              menu={{
+                items: modeMenuItems,
+                selectable: true,
+                selectedKeys: [mediaMode],
+                onClick: ({ key }) => setMediaMode(key as MediaMode),
+              }}
+            >
+              <Button size="small" data-testid="mode-switch-mobile">
+                {mediaMode === 'video' ? <VideoCameraOutlined /> : <AudioOutlined />}{' '}
+                {mediaMode === 'video' ? t('header.modeVideo') : t('header.modeMusic')}
+              </Button>
+            </Dropdown>
+          )}
+
           <StatusIndicator />
 
           <Tooltip title={t('header.language')}>
