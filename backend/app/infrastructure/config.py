@@ -78,6 +78,17 @@ class Settings(BaseModel):
     # --- Persistence (consumed by the DB session task) ---
     database_url: str = "sqlite:///./data/db/koifetch.db"
 
+    # --- Frontend static serving ---
+    # The backend serves the built frontend (Vite `dist`) at "/", replacing the
+    # container-internal Nginx: /api and /ws are same-origin, so no reverse
+    # proxy is needed. Defaults to ``frontend/dist`` **relative to the process
+    # CWD** — run uvicorn from the repo root (the documented dev command) or
+    # set an absolute path; the container image builds the frontend and copies
+    # it to /app/static, with FRONTEND_DIST_PATH set accordingly. When the
+    # directory does not exist the app still boots and serves an honest
+    # placeholder instead of the SPA (the API stays fully independent).
+    frontend_dist_path: Path = Path("frontend/dist")
+
     @field_validator(
         "video_storage_path",
         "image_storage_path",
@@ -91,6 +102,13 @@ class Settings(BaseModel):
     def _reject_empty_storage_path(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
             raise ValueError("storage path must not be empty")
+        return value
+
+    @field_validator("frontend_dist_path", mode="before")
+    @classmethod
+    def _reject_empty_frontend_dist_path(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            raise ValueError("frontend dist path must not be empty")
         return value
 
     @field_validator("cors_origins", mode="before")

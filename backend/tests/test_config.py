@@ -61,6 +61,12 @@ class TestDefaults:
     def test_database_url_default(self, clean_env):
         assert build().database_url == "sqlite:///./data/db/koifetch.db"
 
+    def test_frontend_dist_path_default(self, clean_env):
+        # The backend serves the built frontend at "/"; natively the build
+        # lives at the repo-local frontend/dist (the container image copies
+        # the build to /app/static and sets FRONTEND_DIST_PATH instead).
+        assert build().frontend_dist_path == Path("frontend/dist")
+
 
 class TestEnvOverrides:
     def test_env_vars_override_defaults(self, clean_env, monkeypatch):
@@ -75,6 +81,7 @@ class TestEnvOverrides:
         monkeypatch.setenv("TZ", "UTC")
         monkeypatch.setenv("DATABASE_URL", "sqlite:///other.db")
         monkeypatch.setenv("VIDEO_STORAGE_PATH", "C:\\nas\\videos")
+        monkeypatch.setenv("FRONTEND_DIST_PATH", "C:\\app\\static")
 
         settings = Settings.from_env()
 
@@ -89,6 +96,7 @@ class TestEnvOverrides:
         assert settings.tz == "UTC"
         assert settings.database_url == "sqlite:///other.db"
         assert settings.video_storage_path == Path("C:\\nas\\videos")
+        assert settings.frontend_dist_path == Path("C:\\app\\static")
 
     def test_unset_optional_vars_fall_back_to_defaults(self, clean_env, monkeypatch):
         monkeypatch.setenv("ADMIN_PASSWORD", "pw")
@@ -223,6 +231,11 @@ class TestValidation:
     def test_empty_storage_path_rejected(self, clean_env, field):
         with pytest.raises(ValidationError):
             build(**{field: ""})
+
+    def test_empty_frontend_dist_path_rejected(self, clean_env):
+        # An empty FRONTEND_DIST_PATH would silently serve "/" from the CWD.
+        with pytest.raises(ValidationError):
+            build(frontend_dist_path="")
 
     def test_invalid_env_value_rejected(self, clean_env, monkeypatch):
         monkeypatch.setenv("ADMIN_PASSWORD", "pw")
