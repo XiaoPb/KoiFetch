@@ -120,7 +120,7 @@ reverse proxy (production deployments sit behind their own external proxy).
 
 | Command | What it does |
 | --- | --- |
-| `docker compose up --build` | Build both images (including the frontend node stage) and start the stack. The first build is slow (npm ci + vite build inside the image) |
+| `docker compose up --build` | Build the shared image (including the frontend node stage) and start the stack. The first build is slow (npm ci + vite build inside the image) |
 | `docker compose up -d` | Start detached |
 | `docker compose logs -f backend` / `docker compose logs -f worker` | Follow one service's logs (both log to stdout) |
 | `docker compose ps` | Show container status |
@@ -254,7 +254,7 @@ The alembic environment works from any working directory:
 # from backend/:
 ..\.venv\Scripts\python.exe -m alembic upgrade head
 # from the repo root:
-..\.venv\Scripts\python.exe -m alembic -c backend/alembic.ini upgrade head
+.venv\Scripts\python.exe -m alembic -c backend/alembic.ini upgrade head
 # in the image (WORKDIR /app):
 alembic upgrade head
 ```
@@ -280,9 +280,9 @@ and tests invoke migrations in-process. Do not revert this flag.
 
 ### 5.3 Seed behavior
 
-`python -m app.infrastructure.seed` (or `python -m app.infrastructure.seed`
-from `backend/`; part of the Compose backend startup command) creates the
-single administrator from `ADMIN_PASSWORD`:
+`python -m app.infrastructure.seed` (run from `backend/`; also part of the
+Compose backend startup command) creates the single administrator from
+`ADMIN_PASSWORD`:
 
 - **Idempotent and atomic**: an `INSERT ... ON CONFLICT (username) DO NOTHING`
   upsert means running it any number of times yields exactly one `admin` row;
