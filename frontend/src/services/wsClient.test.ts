@@ -7,6 +7,8 @@ import type { WsEvent } from '../types/api';
 class MockWebSocket {
   static instances: MockWebSocket[] = [];
   static OPEN = 1; // matches the real WebSocket constant used by the client
+  static CLOSING = 2;
+  static CLOSED = 3;
   url: string;
   readyState = 0;
   closeCalls = 0;
@@ -222,6 +224,42 @@ describe('DownloadWsClient', () => {
     expect(ws.closeCalls).toBe(1);
     vi.advanceTimersByTime(60_000);
     expect(MockWebSocket.instances).toHaveLength(1);
+  });
+
+  it('close() closes a socket that is still connecting (no hung handshake survives)', () => {
+    const client = new DownloadWsClient({ url: URL });
+    client.connect();
+    expect(client.status).toBe('connecting');
+    const ws = MockWebSocket.instances[0];
+    client.close();
+    expect(client.status).toBe('closed');
+    expect(ws.closeCalls).toBe(1);
+    vi.advanceTimersByTime(60_000);
+    expect(MockWebSocket.instances).toHaveLength(1);
+  });
+
+  it('abandons a socket that never opens within the connect timeout', () => {
+    const client = new DownloadWsClient({ url: URL, connectTimeoutMs: 5000 });
+    client.connect();
+    expect(client.status).toBe('connecting');
+    expect(MockWebSocket.instances).toHaveLength(1);
+
+    vi.advanceTimersByTime(5000);
+    expect(MockWebSocket.instances[0].closeCalls).toBe(1);
+    expect(client.status).toBe('closed');
+    // Manual close → no reconnect.
+    vi.advanceTimersByTime(60_000);
+    expect(MockWebSocket.instances).toHaveLength(1);
+  });
+
+  it('does not fire the connect timeout once the socket opened', () => {
+    const client = new DownloadWsClient({ url: URL, connectTimeoutMs: 5000 });
+    client.connect();
+    const ws = MockWebSocket.instances[0];
+    MockWebSocket.open(ws);
+    vi.advanceTimersByTime(60_000);
+    expect(ws.closeCalls).toBe(0);
+    expect(client.status).toBe('open');
   });
 
   it('unsubscribe stops future delivery', () => {

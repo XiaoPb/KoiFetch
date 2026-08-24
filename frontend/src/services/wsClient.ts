@@ -16,12 +16,20 @@ export interface WsClientOptions {
   reconnectDelayMs?: number;
   /** Reconnect delay cap (ms). */
   maxReconnectDelayMs?: number;
+  /**
+   * Abandon a socket that has not opened within this window (ms). Guards
+   * against a black-holed handshake that would otherwise leave the download
+   * with neither WS events nor polling (the store only counts an OPEN socket
+   * as a live stream).
+   */
+  connectTimeoutMs?: number;
 }
 
 type Listener = (event: WsEvent) => void;
 
 const DEFAULT_RECONNECT_DELAY_MS = 1000;
 const DEFAULT_MAX_RECONNECT_DELAY_MS = 10_000;
+const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
 
 /**
  * Derive the WebSocket URL for a download. Uses `VITE_WS_BASE_URL` when set;
@@ -41,12 +49,14 @@ export class DownloadWsClient {
   readonly url: string;
   readonly reconnectDelayMs: number;
   readonly maxReconnectDelayMs: number;
+  readonly connectTimeoutMs: number;
 
   status: WsClientStatus = 'idle';
 
   private socket: WebSocket | null = null;
   private listeners = new Set<Listener>();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private connectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectAttempts = 0;
   private manuallyClosed = false;
 
@@ -54,6 +64,7 @@ export class DownloadWsClient {
     this.url = options.url;
     this.reconnectDelayMs = options.reconnectDelayMs ?? DEFAULT_RECONNECT_DELAY_MS;
     this.maxReconnectDelayMs = options.maxReconnectDelayMs ?? DEFAULT_MAX_RECONNECT_DELAY_MS;
+    this.connectTimeoutMs = options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
   }
 
   connect(): void {
@@ -62,8 +73,10 @@ export class DownloadWsClient {
     this.status = 'connecting';
     const socket = new WebSocket(this.url);
     this.socket = socket;
+    this.startConnectTimeout();
 
     socket.onopen = () => {
+      this.clearConnectTimeout();
       this.status = 'open';
       this.reconnectAttempts = 0;
     };
@@ -83,6 +96,7 @@ export class DownloadWsClient {
     };
 
     socket.onclose = () => {
+      this.clearConnectTimeout();
       if (this.manuallyClosed) return;
       this.status = 'closed';
       this.scheduleReconnect();
@@ -97,17 +111,30 @@ export class DownloadWsClient {
     };
   }
 
-  /** Close the socket and stop any reconnect schedule. */
+  /**
+   * Close the socket and stop any reconnect schedule. Closes in ANY state —
+   * including CONNECTING: a hung handshake must not leave a socket alive whose
+   * late events would still mutate the store after the caller moved on. Event
+   * handlers are detached so no late frame can fire post-close.
+   */
   close(): void {
     this.manuallyClosed = true;
+    this.clearConnectTimeout();
     if (this.reconnectTimer !== null) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
-    if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-      this.socket.close();
-    }
+    const socket = this.socket;
     this.socket = null;
+    if (socket) {
+      if (socket.readyState !== WebSocket.CLOSED && socket.readyState !== WebSocket.CLOSING) {
+        socket.close();
+      }
+      socket.onopen = null;
+      socket.onmessage = null;
+      socket.onerror = null;
+      socket.onclose = null;
+    }
     this.status = 'closed';
   }
 
@@ -122,6 +149,28 @@ export class DownloadWsClient {
       this.reconnectTimer = null;
       this.connect();
     }, delay);
+  }
+
+  /**
+   * Abandon the socket if the handshake never completes within
+   * `connectTimeoutMs`: the browser gives no connect timeout of its own, and
+   * a socket stuck in CONNECTING would starve both WS events and the store's
+   * polling fallback (only OPEN sockets count as a live stream).
+   */
+  private startConnectTimeout(): void {
+    this.clearConnectTimeout();
+    this.connectTimer = setTimeout(() => {
+      this.connectTimer = null;
+      // Manual close → no reconnect; the caller's polling takes over.
+      this.close();
+    }, this.connectTimeoutMs);
+  }
+
+  private clearConnectTimeout(): void {
+    if (this.connectTimer !== null) {
+      clearTimeout(this.connectTimer);
+      this.connectTimer = null;
+    }
   }
 
   private parse(raw: string): WsEvent | null {
