@@ -53,6 +53,9 @@ class Settings(BaseModel):
     max_concurrent: int = Field(default=3, ge=1)
     download_speed_limit: int = Field(default=0, ge=0)  # MB/s; 0 = unlimited
     bubble_expire_hours: int = Field(default=24, ge=1)
+    # Seconds the worker (Task 11) sleeps between idle polling rounds; batches
+    # that claimed work poll again immediately (see app/workers/main.py).
+    worker_poll_interval: float = Field(default=1.0, ge=0.1)
 
     # --- Web/app behavior ---
     cors_origins: list[str] = Field(default_factory=list)

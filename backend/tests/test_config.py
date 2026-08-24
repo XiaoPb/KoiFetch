@@ -40,6 +40,7 @@ class TestDefaults:
         assert settings.max_concurrent == 3
         assert settings.download_speed_limit == 0
         assert settings.bubble_expire_hours == 24
+        assert settings.worker_poll_interval == 1.0
         assert settings.debug is False
         assert settings.tz == "Asia/Shanghai"
 

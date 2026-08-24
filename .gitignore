@@ -17,6 +17,9 @@ __pycache__/
 
 # Runtime data (bubble/pond/db) — downloaded media and local databases
 /data/
+# A worker run from the backend directory (CWD=backend) resolves the default
+# relative roots under ./data, i.e. backend/data — keep that out of Git too.
+/backend/data/
 
 # SQLite database files (wherever they appear)
 *.db
