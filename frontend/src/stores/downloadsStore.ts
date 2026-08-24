@@ -80,7 +80,11 @@ export interface DownloadItem {
   title: string | null;
   format: string | null;
   quality: string | null;
-  /** 0..1 fraction (progress events / polling snapshots). */
+  /**
+   * 0..1 fraction (INTERNAL scale). The backend wire scale is 0..100 (see
+   * `DownloadProgress`); `applySnapshot` normalizes it at the single ingest
+   * point so every consumer here and in the drawer works with 0..1.
+   */
   progress: number;
   /** bytes/second (null until the worker reports one). */
   speed: number | null;
@@ -382,7 +386,10 @@ export const useDownloadsStore = create<DownloadsState>()((set, get) => ({
         return {
           ...item,
           status: snapshot.status,
-          progress: snapshot.progress ?? item.progress,
+          // Normalize the backend wire scale (0..100) to the store's internal
+          // 0..1 fraction at the single ingest point. `applyComplete` writes
+          // the normalized 1 directly and must NOT be re-divided.
+          progress: (snapshot.progress ?? 0) / 100,
           speed: snapshot.speed ?? null,
           downloaded_bytes: snapshot.downloaded_bytes ?? null,
           total_bytes: snapshot.total_bytes ?? null,

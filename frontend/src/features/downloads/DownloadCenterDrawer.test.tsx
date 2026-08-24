@@ -158,6 +158,30 @@ describe('DownloadCenterDrawer', () => {
     expect(text).toHaveTextContent('约 2 分钟');
   });
 
+  it('renders the internal 0..1 progress on the 0-100 percent scale', async () => {
+    useDownloadsStore.setState({
+      items: [
+        seedItem({ download_id: 'd1', task_id: 't1', status: 'downloading', title: 'Video A', progress: 0.65 }),
+      ],
+    });
+    renderDrawer();
+
+    const progressEl = screen.getByTestId('download-progress-d1');
+    // 0.65 internal → 65% on the bar, still in-progress (not success).
+    expect(progressEl.querySelector('.ant-progress-bg')).toHaveStyle('width: 65%');
+    expect(progressEl.querySelector('.ant-progress')).not.toHaveClass('ant-progress-status-success');
+
+    // 1.0 internal (backend 100) → 100% + success styling.
+    useDownloadsStore.setState({
+      items: [
+        seedItem({ download_id: 'd1', task_id: 't1', status: 'downloading', title: 'Video A', progress: 1 }),
+      ],
+    });
+    const done = screen.getByTestId('download-progress-d1');
+    await waitFor(() => expect(done.querySelector('.ant-progress-bg')).toHaveStyle('width: 100%'));
+    expect(done.querySelector('.ant-progress')).toHaveClass('ant-progress-status-success');
+  });
+
   it('opens the tokenized file link for a completed item with a valid token', async () => {
     const open = vi.fn();
     vi.stubGlobal('open', open);

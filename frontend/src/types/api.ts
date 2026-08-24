@@ -150,7 +150,11 @@ export interface SubmitData {
 export interface DownloadProgress {
   download_id: string;
   status: DownloadStatus;
-  /** 0..1 fraction. */
+  /**
+   * Backend WIRE scale: 0..100 (PRD §3.3.5 — `domain.models.DownloadProgress`
+   * constrains it to [0.0, 100.0]). Consumers that keep a normalized 0..1
+   * fraction (the downloads store) must divide by 100 at ingest.
+   */
   progress: number;
   /** bytes/second. */
   speed: number | null;

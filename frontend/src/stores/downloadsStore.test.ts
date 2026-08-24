@@ -173,7 +173,8 @@ describe('downloadsStore', () => {
 
     client.emit({
       type: 'progress',
-      data: { download_id: 'd1', status: 'downloading', progress: 0.5, speed: 1024, downloaded_bytes: 50, total_bytes: 100, remaining_time: 2 },
+      // Backend wire scale is 0..100 — the store must normalize to 0..1.
+      data: { download_id: 'd1', status: 'downloading', progress: 50, speed: 1024, downloaded_bytes: 50, total_bytes: 100, remaining_time: 2 },
     });
 
     const item = useDownloadsStore.getState().items[0];
@@ -183,6 +184,28 @@ describe('downloadsStore', () => {
     expect(item.downloaded_bytes).toBe(50);
     expect(item.remaining_time).toBe(2);
     expect(selectActiveCount(useDownloadsStore.getState())).toBe(1);
+  });
+
+  it('normalizes the backend 0-100 progress scale to the internal 0..1 at ingest', () => {
+    useDownloadsStore.setState({
+      items: [seedItem({ download_id: 'd1', task_id: 't1', status: 'downloading' })],
+    });
+
+    // A real backend snapshot (e.g. the downloader reporting 65 of 100).
+    useDownloadsStore.getState().applySnapshot('d1', {
+      download_id: 'd1', status: 'downloading', progress: 65, speed: null,
+      downloaded_bytes: 650, total_bytes: 1000, remaining_time: null,
+    });
+
+    const item = useDownloadsStore.getState().items[0];
+    expect(item.progress).toBe(0.65);
+    // A 100 wire value must normalize to exactly 1 (the same value
+    // applyComplete writes directly — never 100 * 100 = 10000%).
+    useDownloadsStore.getState().applySnapshot('d1', {
+      download_id: 'd1', status: 'completed', progress: 100, speed: null,
+      downloaded_bytes: 1000, total_bytes: 1000, remaining_time: null,
+    });
+    expect(useDownloadsStore.getState().items[0].progress).toBe(1);
   });
 
   it('captures download_url from the complete event and closes the socket', async () => {
@@ -259,7 +282,7 @@ describe('downloadsStore', () => {
       type: 'error',
       data: {
         code: 5002, message: '文件未下载完成 / File not fully downloaded', status: 'failed',
-        download_id: 'd1', progress: 0.2, speed: null, downloaded_bytes: 20, total_bytes: 100, remaining_time: null,
+        download_id: 'd1', progress: 20, speed: null, downloaded_bytes: 20, total_bytes: 100, remaining_time: null,
         error_message: '404 from upstream',
       },
     });
@@ -284,7 +307,7 @@ describe('downloadsStore', () => {
     // A poll tick read the pre-terminal DB row and resolves AFTER the WS
     // complete already moved the item to completed.
     useDownloadsStore.getState().applySnapshot('d1', {
-      download_id: 'd1', status: 'downloading', progress: 0.4, speed: null,
+      download_id: 'd1', status: 'downloading', progress: 40, speed: null,
       downloaded_bytes: 40, total_bytes: 100, remaining_time: null,
     });
 
@@ -312,7 +335,7 @@ describe('downloadsStore', () => {
       download_url: '/api/download/file/d1?token=t', token_expire_at: '2099-01-01T00:00:00Z',
     });
     resolvePoll({
-      download_id: 'd1', status: 'downloading', progress: 0.4, speed: null,
+      download_id: 'd1', status: 'downloading', progress: 40, speed: null,
       downloaded_bytes: 40, total_bytes: 100, remaining_time: null,
     });
     await vi.advanceTimersByTimeAsync(0); // flush the stale poll resolution
@@ -332,7 +355,7 @@ describe('downloadsStore', () => {
     vi.useFakeTimers();
     (downloadApi.submit as Mock).mockResolvedValue(submitData);
     (downloadApi.getProgress as Mock).mockResolvedValue({
-      download_id: 'd1', status: 'downloading', progress: 0.5, speed: 100,
+      download_id: 'd1', status: 'downloading', progress: 50, speed: 100,
       downloaded_bytes: 50, total_bytes: 100, remaining_time: 1,
     });
 
@@ -376,11 +399,11 @@ describe('downloadsStore', () => {
     (downloadApi.submit as Mock).mockResolvedValue(submitData);
     (downloadApi.getProgress as Mock)
       .mockResolvedValueOnce({
-        download_id: 'd1', status: 'downloading', progress: 0.9, speed: null,
+        download_id: 'd1', status: 'downloading', progress: 90, speed: null,
         downloaded_bytes: 90, total_bytes: 100, remaining_time: null,
       })
       .mockResolvedValueOnce({
-        download_id: 'd1', status: 'completed', progress: 1, speed: null,
+        download_id: 'd1', status: 'completed', progress: 100, speed: null,
         downloaded_bytes: 100, total_bytes: 100, remaining_time: null,
       });
 

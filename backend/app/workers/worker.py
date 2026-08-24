@@ -344,6 +344,12 @@ def _record_failure(
 
     Note for real engines: ``error_message = str(error)`` may surface adapter
     internals (paths, exception text); map to user-facing messages there.
+
+    v1 decision (documented): the raw exception text IS forwarded to the
+    client — the row's ``error_message`` feeds the terminal WS ``error`` event
+    (see :func:`_failed_event`) and the progress endpoint. This is accepted
+    because the stub downloader's exceptions contain no secrets; a real
+    engine must switch to stable, mapped messages here instead.
     """
     failure_event: dict | None = None
     with session_scope(engine) as session:
