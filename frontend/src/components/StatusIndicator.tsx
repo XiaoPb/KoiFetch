@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { healthApi } from '../services/api';
 import { useTranslation } from '../services/i18n';
-import type { HealthStatus } from '../stores/appStore';
+
+type HealthStatus = 'online' | 'offline' | 'unknown';
 
 const POLL_INTERVAL_MS = 30_000;
 

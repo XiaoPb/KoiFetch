@@ -50,6 +50,10 @@ export function createAuthStore() {
       }),
       {
         name: AUTH_STORAGE_KEY,
+        // Bump when the persisted session shape changes (see zustand's
+        // migrate option) so stale data from an older shape cannot corrupt
+        // rehydration in later tasks.
+        version: 1,
         // Only the session triple is persisted — actions are recreated.
         partialize: (state) => ({
           token: state.token,

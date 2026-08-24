@@ -37,6 +37,13 @@ describe('i18n', () => {
     expect(translate('en', 'header.login')).toBe('Log in');
   });
 
+  it('interpolates params into templates (Task 15 progress strings)', () => {
+    expect(translate('zh', 'download.progress', { percent: 45 })).toBe('下载进度 45%');
+    expect(translate('en', 'download.progress', { percent: 45 })).toBe('Download progress 45%');
+    // Unknown params are left as-is rather than silently dropped.
+    expect(translate('en', 'download.progress', { other: 1 })).toBe('Download progress {percent}%');
+  });
+
   it('toggles the active language through the hook', async () => {
     const user = userEvent.setup();
     render(<LanguageProbe />);

@@ -23,9 +23,13 @@ export const authApi = {
 };
 
 export const healthApi = {
-  /** GET /api/health → {status, services, storage_roots}. */
+  /**
+   * GET /api/health → {status, services, storage_roots}. Polled on a
+   * background interval, so it opts out of the global loading counter to
+   * avoid flashing the shell's loading bar on every poll.
+   */
   async getHealth(): Promise<HealthData> {
-    const { data } = await apiClient.get<HealthData>('/health');
+    const { data } = await apiClient.get<HealthData>('/health', { skipGlobalLoading: true });
     return data;
   },
 };

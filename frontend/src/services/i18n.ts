@@ -24,6 +24,8 @@ const zh = {
   'header.adminMenu.nas': 'NAS 管理',
   'downloadCenter.comingSoon': '下载中心将在后续版本开放 / Download center comes in a later version',
 
+  'download.progress': '下载进度 {percent}%',
+
   'home.title': '解析工作台',
   'home.placeholder': '粘贴链接，每行一个...',
   'home.parse': '解析',
@@ -68,6 +70,8 @@ const en: Record<TranslationKey, string> = {
   'header.adminMenu.nas': 'NAS Admin',
   'downloadCenter.comingSoon': 'Download center comes in a later version',
 
+  'download.progress': 'Download progress {percent}%',
+
   'home.title': 'Parser Workspace',
   'home.placeholder': 'Paste links, one per line...',
   'home.parse': 'Parse',
@@ -97,12 +101,26 @@ const en: Record<TranslationKey, string> = {
 
 export const translations: Record<Language, Record<TranslationKey, string>> = { zh, en };
 
-export function translate(language: Language, key: TranslationKey): string {
-  return translations[language][key] ?? translations.zh[key] ?? key;
+/**
+ * Translate a key for the active language, interpolating `{name}` tokens with
+ * `params` (e.g. `translate('zh', 'download.progress', { percent: 45 })` →
+ * "下载进度 45%"). Missing params are left as the literal `{name}` token so
+ * a missing argument never silently renders a blank.
+ */
+export function translate(
+  language: Language,
+  key: TranslationKey,
+  params?: Record<string, string | number>,
+): string {
+  const template = translations[language][key] ?? translations.zh[key] ?? key;
+  if (!params) return template;
+  return template.replace(/\{(\w+)\}/g, (match, name: string) =>
+    name in params ? String(params[name]) : match,
+  );
 }
 
 export function useTranslation(): {
-  t: (key: TranslationKey) => string;
+  t: (key: TranslationKey, params?: Record<string, string | number>) => string;
   language: Language;
   setLanguage: (language: Language) => void;
   toggleLanguage: () => void;
@@ -110,7 +128,10 @@ export function useTranslation(): {
   const language = useAppStore((state) => state.language);
   const setLanguage = useAppStore((state) => state.setLanguage);
 
-  const t = useCallback((key: TranslationKey) => translate(language, key), [language]);
+  const t = useCallback(
+    (key: TranslationKey, params?: Record<string, string | number>) => translate(language, key, params),
+    [language],
+  );
   const toggleLanguage = useCallback(
     () => setLanguage(language === 'zh' ? 'en' : 'zh'),
     [language, setLanguage],

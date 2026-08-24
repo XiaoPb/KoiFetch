@@ -2,7 +2,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
 import { App } from './app/App';
-import { setOnUnauthorized } from './services/apiClient';
+import { setOnUnauthorized, setTokenGetter } from './services/apiClient';
 import { useAuthStore } from './stores/authStore';
 import './styles/app.css';
 
@@ -14,6 +14,10 @@ setOnUnauthorized(() => {
     window.location.assign('/login');
   }
 });
+
+// Wire the bearer-token source into the API client (keeps the dependency
+// direction one-way: apiClient ← api ← authStore).
+setTokenGetter(() => useAuthStore.getState().token);
 
 const rootElement = document.getElementById('root');
 if (!rootElement) {

@@ -1,6 +1,5 @@
 import axios, { AxiosError } from 'axios';
 import { useAppStore } from '../stores/appStore';
-import { useAuthStore } from '../stores/authStore';
 import {
   ApiCodes,
   ApiError,
@@ -8,6 +7,14 @@ import {
   NETWORK_ERROR_MESSAGE,
   type ApiEnvelope,
 } from '../types/api';
+
+// Opt-out flag for the global loading counter, e.g. background health polls
+// that should not flash the shell's loading bar. Used via per-request config.
+declare module 'axios' {
+  export interface AxiosRequestConfig {
+    skipGlobalLoading?: boolean;
+  }
+}
 
 /**
  * Base URL of the backend REST API. Defaults to the same-origin `/api`
@@ -43,6 +50,18 @@ export function setOnUnauthorized(handler: (() => void) | null): void {
   unauthorizedHandler = handler;
 }
 
+/**
+ * Bearer-token source. Injected by the app shell
+ * (`setTokenGetter(() => useAuthStore.getState().token)`) so this module does
+ * not import the auth store — keeping the dependency direction one-way
+ * (apiClient ← api ← authStore) and avoiding an import cycle.
+ */
+let tokenGetter: () => string | null = () => null;
+
+export function setTokenGetter(getter: () => string | null): void {
+  tokenGetter = getter;
+}
+
 function isSessionAuthFailure(code: number): boolean {
   return (
     code === ApiCodes.UNAUTHORIZED ||
@@ -65,17 +84,21 @@ export const apiClient = axios.create({
 });
 
 apiClient.interceptors.request.use((config) => {
-  const token = useAuthStore.getState().token;
+  const token = tokenGetter();
   if (token) {
     config.headers.set('Authorization', `Bearer ${token}`);
   }
-  useAppStore.getState().beginRequest();
+  if (!config.skipGlobalLoading) {
+    useAppStore.getState().beginRequest();
+  }
   return config;
 });
 
 apiClient.interceptors.response.use(
   (response) => {
-    useAppStore.getState().endRequest();
+    if (!response.config.skipGlobalLoading) {
+      useAppStore.getState().endRequest();
+    }
     if (isEnvelope(response.data)) {
       const envelope = response.data;
       if (envelope.code !== 0) {
@@ -92,7 +115,9 @@ apiClient.interceptors.response.use(
     return response;
   },
   (error: unknown) => {
-    useAppStore.getState().endRequest();
+    if (!(axios.isAxiosError(error) ? error.config?.skipGlobalLoading : false)) {
+      useAppStore.getState().endRequest();
+    }
     const apiError = toApiError(error);
     maybeNotifyUnauthorized(apiError);
     return Promise.reject(apiError);

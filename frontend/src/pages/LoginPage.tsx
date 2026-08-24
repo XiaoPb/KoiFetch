@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { App, Button, Card, Form, Input, Typography } from 'antd';
 import { LockOutlined, UserOutlined } from '@ant-design/icons';
-import { useNavigate, Link } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from '../services/i18n';
 import { useAuthStore } from '../stores/authStore';
 import { getErrorMessage } from '../services/apiClient';
@@ -11,23 +11,31 @@ interface LoginFormValues {
   password: string;
 }
 
+interface LoginLocationState {
+  from?: string;
+}
+
 /**
  * Admin login page (PRD §3.4): renders standalone (no app header). Submits to
- * POST /api/auth/login via the auth store and navigates home on success.
+ * POST /api/auth/login via the auth store and navigates back to the page the
+ * user originally requested (or home) on success.
  */
 export default function LoginPage(): JSX.Element {
   const { t } = useTranslation();
   const { message } = App.useApp();
   const navigate = useNavigate();
+  const location = useLocation();
   const login = useAuthStore((state) => state.login);
   const [submitting, setSubmitting] = useState(false);
+
+  const from = (location.state as LoginLocationState | null)?.from ?? '/';
 
   const onFinish = async (values: LoginFormValues) => {
     setSubmitting(true);
     try {
       await login(values.username, values.password);
       void message.success(t('login.success'));
-      navigate('/', { replace: true });
+      navigate(from, { replace: true });
     } catch (error) {
       void message.error(getErrorMessage(error, t('login.failed')));
     } finally {

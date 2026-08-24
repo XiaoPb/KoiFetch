@@ -1,21 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AxiosAdapter, InternalAxiosRequestConfig } from 'axios';
 import { authApi, healthApi } from './api';
-import { apiClient, setOnUnauthorized } from './apiClient';
+import { apiClient, setOnUnauthorized, setTokenGetter } from './apiClient';
+import { useAppStore } from '../stores/appStore';
 import { useAuthStore } from '../stores/authStore';
 import { ApiError, CODE_NETWORK_ERROR } from '../types/api';
 
 // A test adapter that answers API calls with synthetic envelope bodies, so the
 // axios interceptors (unwrapping, error normalization, 401 handling) run
 // against real client code without any network.
-type Responder = (config: InternalAxiosRequestConfig) => {
-  status?: number;
-  body: unknown;
-};
+type Responder = (config: InternalAxiosRequestConfig) => { status?: number; body: unknown } | Promise<{ status?: number; body: unknown }>;
 
 function stubAdapter(responder: Responder): void {
   const adapter: AxiosAdapter = async (config) => {
-    const { status = 200, body } = responder(config);
+    const { status = 200, body } = await responder(config);
     return {
       data: body,
       status,
@@ -34,10 +32,16 @@ const okEnvelope = (data: unknown) => ({ code: 0, message: 'ok', data });
 describe('apiClient', () => {
   beforeEach(() => {
     useAuthStore.setState({ token: null, username: null, expiresAt: null });
+    useAppStore.setState({ pendingRequests: 0 });
+    // main.tsx registers this getter in the real app; mirror it here so the
+    // bearer-token behavior is exercised end to end.
+    setTokenGetter(() => useAuthStore.getState().token);
     setOnUnauthorized(null);
   });
 
   afterEach(() => {
+    setTokenGetter(() => null);
+    setOnUnauthorized(null);
     apiClient.defaults.adapter = undefined;
   });
 
@@ -107,5 +111,35 @@ describe('apiClient', () => {
     stubAdapter(() => ({ body: { type: 'application/octet-stream' } }));
     const response = await apiClient.get('/download/file/abc?token=t');
     expect(response.data).toEqual({ type: 'application/octet-stream' });
+  });
+
+  it('tracks in-flight requests in the global loading counter by default', async () => {
+    let resolveRequest!: (value: { status?: number; body: unknown }) => void;
+    stubAdapter(() => new Promise((resolve) => { resolveRequest = resolve; }));
+
+    const pending = authApi.login({ username: 'a', password: 'b' });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(useAppStore.getState().pendingRequests).toBe(1);
+
+    resolveRequest({ body: okEnvelope({ username: 'admin' }) });
+    await pending;
+    expect(useAppStore.getState().pendingRequests).toBe(0);
+  });
+
+  it('does not touch the loading counter for skipGlobalLoading requests', async () => {
+    let resolveRequest!: (value: { status?: number; body: unknown }) => void;
+    stubAdapter(() => new Promise((resolve) => { resolveRequest = resolve; }));
+
+    // healthApi polls on a background interval — it opts out of the global
+    // loading bar so the shell does not flash on every poll.
+    const pending = healthApi.getHealth();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(useAppStore.getState().pendingRequests).toBe(0);
+
+    resolveRequest({ body: okEnvelope({ status: 'ok' }) });
+    await pending;
+    expect(useAppStore.getState().pendingRequests).toBe(0);
   });
 });

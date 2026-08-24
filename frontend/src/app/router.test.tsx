@@ -1,7 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { App } from './App';
+import { authApi } from '../services/api';
 import { useAuthStore } from '../stores/authStore';
 
 vi.mock('../services/api', () => ({
@@ -48,5 +50,21 @@ describe('router', () => {
   it('renders the 404 page for unknown routes', async () => {
     renderAt('/no-such-route');
     expect(await screen.findByText('页面不存在')).toBeInTheDocument();
+  });
+
+  it('returns to the originating protected page after login', async () => {
+    (authApi.login as Mock).mockResolvedValue({ token: 'tok', username: 'admin', expires_at: '2099-01-01T00:00:00Z' });
+    const user = userEvent.setup();
+
+    renderAt('/nas');
+    await screen.findByText(/管理员登录/);
+
+    await user.type(screen.getByPlaceholderText('用户名'), 'admin');
+    await user.type(screen.getByPlaceholderText('密码'), 'secret');
+    await user.click(screen.getByRole('button', { name: /登\s*录/ }));
+
+    // Login lands back on the originally requested admin page, not home.
+    expect(await screen.findByText('NAS 管理')).toBeInTheDocument();
+    expect(authApi.login).toHaveBeenCalledWith({ username: 'admin', password: 'secret' });
   });
 });
