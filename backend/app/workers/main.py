@@ -1,9 +1,11 @@
-"""Worker entrypoint: ``python -m app.workers.main`` (Task 11).
+"""Worker entrypoint: ``python -m app.workers.main`` (Tasks 11-12).
 
 The long-running polling loop that turns the pure-ish :func:`run_once` batch
 execution into a daemon: builds the production dependencies from settings,
-polls for pending downloads on a configurable interval, and shuts down
-gracefully on SIGTERM/SIGINT (finishes the current batch, then exits).
+polls for pending downloads on a configurable interval, runs the Task 12
+bubble-cleanup / stale-task-expiry pass on an APScheduler interval job, and
+shuts down gracefully on SIGTERM/SIGINT (finishes the current batch and the
+scheduler, then exits).
 
 Design decisions:
 
@@ -16,6 +18,16 @@ Design decisions:
   idle polls. After a batch that claimed nothing the loop sleeps the interval;
   after a batch that did work it polls again immediately, so a queue drains
   without artificial delay.
+* **Cleanup scheduler lives here, not in a separate container.** compose
+  defines exactly one worker service running this module (asserted by
+  ``test_compose.py``), so the Task 12 cleanup pass runs as an APScheduler
+  ``interval`` job inside this daemon, every
+  ``settings.cleanup_interval_minutes`` (default 60 — the PRD's hourly
+  cleanup). The job function/interval wiring lives in ``app.workers.cleanup``
+  (``build_cleanup_scheduler``); a standalone
+  ``python -m app.workers.cleanup --once`` entrypoint exists for ops/testing.
+  The scheduler is shut down with ``wait=False`` on exit so a running cleanup
+  pass never blocks the daemon from stopping.
 * **Resilience.** A raised iteration (e.g. a transient DB error) is logged and
   the loop continues — a long-running daemon must not die on one hiccup.
 * **In-process event hub.** The worker publishes WS progress/complete events
@@ -46,6 +58,7 @@ from app.application.download_service import DownloadService
 from app.infrastructure.config import Settings, get_settings
 from app.infrastructure.database import get_engine
 from app.infrastructure.models import DownloadTask, ParseTask
+from app.workers.cleanup import build_cleanup_scheduler
 from app.workers.worker import MAX_RETRIES, run_once
 
 __all__ = ["build_worker_deps", "main", "run_forever", "schema_ready"]
@@ -148,6 +161,26 @@ def main() -> None:
         MAX_RETRIES,
     )
 
+    # Cleanup scheduling (Task 12): an APScheduler interval job runs the
+    # bubble-cleanup / stale-task-expiry pass every
+    # ``cleanup_interval_minutes`` (default 60, per the PRD's hourly cleanup),
+    # alongside the poll loop. ``coalesce``/``max_instances`` are handled by
+    # build_cleanup_scheduler; the job is idempotent, so a missed tick is
+    # harmless. Shutdown order on SIGTERM/SIGINT: finish the current batch,
+    # then stop the scheduler (``wait=False`` — do not block on a running job).
+    scheduler = build_cleanup_scheduler(
+        engine,
+        storage,
+        expire_hours=settings.bubble_expire_hours,
+        stale_minutes=settings.stale_download_minutes,
+        interval_minutes=settings.cleanup_interval_minutes,
+    )
+    scheduler.start()
+    logger.info(
+        "cleanup scheduler started (every %d minutes)",
+        settings.cleanup_interval_minutes,
+    )
+
     def _run_once() -> int:
         return run_once(
             engine,
@@ -163,6 +196,7 @@ def main() -> None:
         stop,
         poll_interval=settings.worker_poll_interval,
     )
+    scheduler.shutdown(wait=False)
     logger.info("worker stopped")
 
 
