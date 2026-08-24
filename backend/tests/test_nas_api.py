@@ -16,6 +16,8 @@ Covers the wire contract for ``POST /api/nas/save``:
 
 import uuid
 
+from datetime import timedelta
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -28,6 +30,7 @@ from app.api.responses import (
     CODE_INVALID_TOKEN,
     CODE_OK,
     CODE_TASK_NOT_FOUND,
+    CODE_TOKEN_EXPIRED,
     CODE_UNAUTHORIZED,
 )
 from app.domain import DownloadStatus, MediaType
@@ -102,7 +105,7 @@ def auth_headers(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
-def seed_parse_task(engine, *, task_id=None, title="示例视频") -> str:
+def seed_parse_task(engine, *, task_id=None, title="示例视频", metadata=None) -> str:
     task_id = task_id or str(uuid.uuid4())
     with session_scope(engine) as session:
         session.add(
@@ -113,7 +116,7 @@ def seed_parse_task(engine, *, task_id=None, title="示例视频") -> str:
                 media_type=MediaType.VIDEO,
                 title=title,
                 format="mp4",
-                metadata_={},
+                metadata_=metadata or {},
             )
         )
     return task_id
@@ -144,8 +147,10 @@ def seed_download(
     return download_id
 
 
-def seed_completed_with_file(engine, *, task_id, storage) -> str:
-    path = storage.save_bytes(MediaType.VIDEO, BUBBLE_FILENAME, BUBBLE_DATA)
+def seed_completed_with_file(
+    engine, *, task_id, storage, filename=BUBBLE_FILENAME, data=BUBBLE_DATA,
+) -> str:
+    path = storage.save_bytes(MediaType.VIDEO, filename, data)
     return seed_download(
         engine,
         task_id=task_id,
@@ -183,6 +188,18 @@ class TestAuth:
         )
         assert response.status_code == 401
         assert response.json()["code"] == CODE_INVALID_TOKEN
+
+    def test_save_rejects_expired_token(self, client):
+        expired = JwtAccessTokenProvider(
+            SECRET, ttl=timedelta(seconds=-5)
+        ).issue(user_id=1, username="admin")
+        response = client.post(
+            "/api/nas/save",
+            json={"download_id": str(uuid.uuid4()), "target_path": "/视频"},
+            headers=auth_headers(expired),
+        )
+        assert response.status_code == 401
+        assert response.json()["code"] == CODE_TOKEN_EXPIRED
 
 
 class TestSaveApi:
@@ -327,6 +344,48 @@ class TestSaveApi:
         )
         assert response.status_code == 400
         assert response.json()["code"] == CODE_BAD_REQUEST
+
+    def test_save_second_variant_same_target_returns_400_no_data_loss(
+        self, client, engine, storage
+    ):
+        # Two completed variants of one task: metadata-driven naming collides
+        # in the pond, so the second save must 400 — never overwrite the first.
+        task_id = seed_parse_task(
+            engine, title="示例视频",
+            metadata={"published_at": "2026-01-01", "source_id": "av123"},
+        )
+        first_id = seed_completed_with_file(
+            engine, task_id=task_id, storage=storage, filename="720p.mp4",
+            data=b"720p-bytes",
+        )
+        second_id = seed_completed_with_file(
+            engine, task_id=task_id, storage=storage, filename="1080p.mp4",
+            data=b"1080p-bytes",
+        )
+        token = login(client)
+        headers = auth_headers(token)
+
+        first = client.post(
+            "/api/nas/save",
+            json={"download_id": first_id, "target_path": "/视频"},
+            headers=headers,
+        )
+        assert first.status_code == 200
+
+        second = client.post(
+            "/api/nas/save",
+            json={"download_id": second_id, "target_path": "/视频"},
+            headers=headers,
+        )
+        assert second.status_code == 400
+        body = second.json()
+        assert body["code"] == CODE_BAD_REQUEST
+        assert "已存在" in body["message"]
+        # No silent data loss: exactly one pond file with the first bytes.
+        pond_dir = storage.pond_root(MediaType.VIDEO) / "视频"
+        pond_files = [p for p in pond_dir.rglob("*") if p.is_file()]
+        assert len(pond_files) == 1
+        assert pond_files[0].read_bytes() == b"720p-bytes"
 
 
 class TestNoBrowsing:

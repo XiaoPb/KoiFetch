@@ -33,18 +33,37 @@ Design decisions (stable contract for Tasks 11-12 and the frontend):
   (e.g. ``"视频/抖音/2026-01-01_x.mp4"``); the response ``nas_path`` is the
   NAS-style form with a leading slash. ``target_path`` segments that are
   ``.``/``..``, blank, backslash-separated or drive-letter-prefixed are
-  rejected up front; containment is additionally enforced by ``build_path``
-  and the adapter's write-time TOCTOU re-check, so the file can never land
-  outside the pond root.
+  rejected up front; at most ``_MAX_TARGET_DEPTH`` segments and
+  ``_MAX_POND_RELATIVE_LENGTH`` joined characters are allowed (clear 400s
+  instead of filesystem-limit OSErrors); containment is additionally enforced
+  by ``build_path`` and the adapter's write-time TOCTOU re-check, so the file
+  can never land outside the pond root.
+* **Collision guard — no silent data loss (documented).** The one-to-many
+  model allows several COMPLETED variants per task (3003 only blocks
+  *identical* format+quality), and metadata-driven naming gives them the
+  SAME pond filename. ``save`` therefore resolves the exact pond target and
+  refuses with a stable ``400`` 目标文件已存在 when it already exists, instead
+  of letting ``shutil.move`` silently overwrite the earlier variant (POSIX)
+  or raising an unhandled ``FileExistsError`` (Windows). A concurrent
+  same-target save that wins the race between the pre-check and the move
+  surfaces as the same 400 via ``FileExistsError``; the POSIX
+  rename-overwrite race is a documented, accepted residual (saves serialize
+  on SQLite in one process, so it is a non-issue in practice). To put both
+  variants in one directory a caller must choose different target paths —
+  a v1 constraint that a later version can relax.
 * **Move semantics and ordering.** The bubble file is *moved* through
   :meth:`app.adapters.protocols.StorageAdapter.move_to_pond` (with the
   computed pond-relative target), which re-verifies the source inside the
   bubble root and the target inside the pond root at I/O time (Task 5 TOCTOU
-  rule). The move happens first, then the row is updated (``pond_path``,
-  ``completed_at``) in the same session; the two are not in one transaction —
-  if the DB update failed after a successful move, the pond file would exist
-  while the row keeps its old state (accepted for v1: the file is present and
-  correct, and a retry would surface ``5001`` on the stale bubble path).
+  rule). Move failures map to stable errors: containment escape →
+  ``400`` (logged as an integrity event), ``FileExistsError`` (race) → same
+  400, ``FileNotFoundError``/adapter source guard → ``5001``, any other
+  ``OSError`` → ``9001`` (logged). The move happens first, then the row is
+  updated (``pond_path``, ``completed_at``) in the same session; the two are
+  not in one transaction — if the DB update failed after a successful move,
+  the pond file would exist while the row keeps its old state (accepted for
+  v1: the file is present and correct, and a retry would surface ``5001`` on
+  the stale bubble path).
 * **DI over globals.** The constructor takes an optional storage adapter
   (``None`` = degraded-storage mode, mirroring :class:`DownloadService`) and
   an optional ``engine``; ``create_app`` wires the production instance and
@@ -53,7 +72,7 @@ Design decisions (stable contract for Tasks 11-12 and the frontend):
 
 from __future__ import annotations
 
-import os
+import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -75,26 +94,34 @@ from app.api.responses import (
     CODE_TASK_NOT_FOUND,
     ApiError,
 )
+from app.application.stored_paths import resolve_bubble_path
 from app.domain import DownloadStatus, MediaType
-from app.domain.paths import (
-    PathOutsideRootError,
-    build_path,
-    is_within,
-    safe_media_filename,
-    slugify,
-)
+from app.domain.paths import PathOutsideRootError, safe_media_filename, slugify
 from app.infrastructure.database import session_scope
 from app.infrastructure.models import DownloadTask, ParseTask
 
 __all__ = ["NasSaveResult", "NasService"]
 
+logger = logging.getLogger(__name__)
+
 _MESSAGE_TASK_NOT_FOUND = "任务不存在 / Task not found"
 _MESSAGE_FILE_NOT_DOWNLOADED = "文件未下载完成 / File not fully downloaded"
 _MESSAGE_FILE_NOT_FOUND = "文件不存在 / File not found"
 _MESSAGE_INVALID_TARGET = "目标路径无效 / Invalid target path"
+_MESSAGE_TARGET_EXISTS = "目标文件已存在 / Target file already exists"
+_MESSAGE_TARGET_TOO_DEEP = "目标路径层级过深 / Target path too deep"
+_MESSAGE_TARGET_TOO_LONG = "目标路径过长 / Target path too long"
 _MESSAGE_STORAGE_NOT_READY = "存储未就绪 / Storage not ready"
+_MESSAGE_STORAGE_ERROR = "存储操作失败 / Storage operation failed"
 
 _DRIVE_LETTER = re.compile(r"^[A-Za-z]:")
+
+# Documented target-path caps (v1): at most 16 directory segments, and the
+# joined pond-relative path (directories + filename) at most 260 characters —
+# far below typical filesystem limits, so an over-long slugified path is
+# rejected with a clear 400 instead of surfacing as a storage OSError (9001).
+_MAX_TARGET_DEPTH = 16
+_MAX_POND_RELATIVE_LENGTH = 260
 
 
 @dataclass(frozen=True)
@@ -168,30 +195,85 @@ class NasService:
                 raise ApiError(
                     HTTP_404_NOT_FOUND, CODE_FILE_NOT_FOUND, _MESSAGE_FILE_NOT_FOUND
                 )
-            bubble = self._resolve_bubble_path(media_type, row.bubble_path)
+            bubble = resolve_bubble_path(self._storage, media_type, row.bubble_path)
             if not self._storage.exists(bubble):
                 raise ApiError(
                     HTTP_404_NOT_FOUND, CODE_FILE_NOT_FOUND, _MESSAGE_FILE_NOT_FOUND
                 )
 
+            if len(segments) > _MAX_TARGET_DEPTH:
+                raise ApiError(
+                    HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_TARGET_TOO_DEEP
+                )
             filename = self._pond_filename(row, parse_task, bubble.name)
             pond_relative = "/".join([*segments, filename])
+            if len(pond_relative) > _MAX_POND_RELATIVE_LENGTH:
+                raise ApiError(
+                    HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_TARGET_TOO_LONG
+                )
+
+            # Collision guard (data-loss prevention): the one-to-many model
+            # allows several COMPLETED variants per task, and metadata-driven
+            # naming gives them the SAME pond filename — shutil.move would
+            # silently overwrite on POSIX. Refuse with a stable 400 instead;
+            # the move below still re-checks containment (TOCTOU). A
+            # concurrent same-target save that wins the race between this
+            # pre-check and the move surfaces as the same 400 via
+            # FileExistsError (Windows); the POSIX rename-overwrite race is
+            # accepted and documented (SQLite-serialized saves in one process
+            # make it a non-issue in practice).
+            target_path_abs = self._storage.resolve_pond(
+                media_type, *segments, filename
+            )
+            if self._storage.exists(target_path_abs):
+                raise ApiError(
+                    HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_TARGET_EXISTS
+                )
+
             try:
                 pond_path = self._storage.move_to_pond(
                     media_type, bubble, target=pond_relative
                 )
             except PathOutsideRootError as exc:
-                # Defense in depth: slugified segments cannot escape, but a
-                # swapped root/symlink at move time must surface as a clean
-                # 400, never a traceback.
+                # Integrity event: slugified segments cannot escape, but a
+                # swapped root/symlink at move time must be logged and surface
+                # as a clean 400, never a traceback.
+                logger.warning(
+                    "nas save containment failure for download %s target %r: %s",
+                    download_id, pond_relative, exc,
+                )
                 raise ApiError(
                     HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_INVALID_TARGET
                 ) from exc
-            except ValueError as exc:
+            except FileExistsError as exc:
+                # A concurrent same-target save won the race after the
+                # pre-check — same stable "already exists" contract.
+                raise ApiError(
+                    HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_TARGET_EXISTS
+                ) from exc
+            except FileNotFoundError as exc:
                 # The source vanished (or is no longer a file) between the
                 # exists() check and the move — same "file not found" contract.
                 raise ApiError(
                     HTTP_404_NOT_FOUND, CODE_FILE_NOT_FOUND, _MESSAGE_FILE_NOT_FOUND
+                ) from exc
+            except ValueError as exc:
+                # The adapter's own source guard (``is_file``) fired — the
+                # path is no longer a regular file. Same 5001 contract.
+                raise ApiError(
+                    HTTP_404_NOT_FOUND, CODE_FILE_NOT_FOUND, _MESSAGE_FILE_NOT_FOUND
+                ) from exc
+            except OSError as exc:
+                # Any other storage failure (permissions, disk, path length)
+                # is a genuine server error: log it, return a stable 500.
+                logger.exception(
+                    "nas save storage failure for download %s target %r",
+                    download_id, pond_relative,
+                )
+                raise ApiError(
+                    HTTP_500_INTERNAL_SERVER_ERROR,
+                    CODE_INTERNAL_ERROR,
+                    _MESSAGE_STORAGE_ERROR,
                 ) from exc
 
             saved_at = datetime.now(timezone.utc)
@@ -235,6 +317,13 @@ class NasService:
             raise ApiError(
                 HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_INVALID_TARGET
             )
+        # A drive-letter prefix anywhere (e.g. "/C:/evil", "a/C:/b") is an
+        # absolute-path form and is rejected per the documented rule — not
+        # just at the start of the whole string.
+        if any(_DRIVE_LETTER.match(segment) for segment in segments):
+            raise ApiError(
+                HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_INVALID_TARGET
+            )
         return [slugify(segment) for segment in segments]
 
     @staticmethod
@@ -252,9 +341,14 @@ class NasService:
         if not ext:
             return bubble_basename
         title = row.title or parse_task.title or "untitled"
-        metadata = parse_task.metadata_ or {}
         media_type = parse_task.media_type
         try:
+            metadata = parse_task.metadata_ or {}
+            if not isinstance(metadata, dict):
+                # The metadata JSON column is unconstrained; a corrupt
+                # (non-dict) value is treated exactly like absent metadata —
+                # the fallback below, never an AttributeError → 9001.
+                raise ValueError("parse task metadata must be a dict")
             if media_type is MediaType.IMAGE:
                 index = metadata.get("index")
                 if index is None:
@@ -280,30 +374,6 @@ class NasService:
             # Missing/ill-formed metadata or an undecodable index → keep the
             # worker's PRD-style bubble basename.
             return bubble_basename
-
-    def _resolve_bubble_path(self, media_type: MediaType, stored_path: str) -> Path:
-        """Re-derive ``stored_path`` inside the live bubble root, refusing escapes.
-
-        Mirrors :meth:`app.application.download_service.DownloadService._resolve_bubble_path`
-        (the two services share the same bubble-path contract); relative stored
-        paths are joined under the root, absolute ones re-derived from their
-        relative form. Any traversal or corruption surfaces as ``5001``.
-        """
-        bubble_root = self._storage.bubble_root(media_type)
-        raw = Path(stored_path)
-        try:
-            if not raw.is_absolute():
-                return build_path(bubble_root, *raw.parts)
-            if not is_within(bubble_root, raw):
-                raise PathOutsideRootError(
-                    f"stored bubble path escapes the bubble root: {stored_path!r}"
-                )
-            relative = os.path.relpath(raw, bubble_root)
-            return build_path(bubble_root, relative)
-        except (ValueError, PathOutsideRootError):
-            raise ApiError(
-                HTTP_404_NOT_FOUND, CODE_FILE_NOT_FOUND, _MESSAGE_FILE_NOT_FOUND
-            ) from None
 
 
 def _extension_of(basename: str) -> str:

@@ -41,7 +41,11 @@ code          meaning                 HTTP        notes
                                                     PRD — no 2003/2004 split here)
 5004          文件已过期              410         download file: task expired
 2001          未登录 / Not logged in  401         missing/malformed Authorization
-2002          权限不足 / Forbidden    403         admin-only endpoints (Task 10)
+2002          权限不足 / Forbidden    403         reserved for a future role
+                                                    system: v1 has a single
+                                                    admin, so a valid access
+                                                    token IS authorization
+                                                    (never raised in v1)
 2003          Token无效 / Invalid     401         malformed/tampered/mis-signed
 2004          Token已过期 / Expired   401         well-formed but past expiry
 2005          用户名或密码错误        401         *v1 addition*: the PRD defines

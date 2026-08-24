@@ -89,8 +89,11 @@ def service(env):
 
 
 @pytest.fixture
-def storage(env):
-    return get_storage(env[0])
+def storage(service):
+    # The exact adapter instance the service was wired with (get_storage is
+    # not cached, so a fresh instance would share roots but not identity —
+    # the race tests monkeypatch the service's own adapter).
+    return service._storage
 
 
 def seed_parse_task(
@@ -369,6 +372,8 @@ class TestSaveErrors:
             "a/./b",
             "C:\\evil",
             "C:/evil",
+            "/C:/evil",
+            "a/C:/b",
             "视频\\抖音",
         ],
     )
@@ -419,3 +424,171 @@ class TestSaveErrors:
             service.save(str(uuid.uuid4()), "../evil")
         exc = api_error(excinfo.value)
         assert exc.code == CODE_BAD_REQUEST
+
+
+class TestSaveCollision:
+    """Pinned behavior (code review, Task 10): a pond filename collision must
+    never silently overwrite — the save fails with a stable 400 instead."""
+
+    def test_save_second_variant_to_same_target_raises_400_without_data_loss(
+        self, service, engine, storage
+    ):
+        # One task, two completed variants (720p / 1080p): metadata-driven
+        # naming yields the IDENTICAL pond filename for both, so the second
+        # save must fail instead of overwriting the first variant's bytes.
+        task_id = seed_parse_task(
+            engine,
+            title="示例视频",
+            metadata={"published_at": "2026-01-01", "source_id": "av123"},
+        )
+        first_id = seed_completed_with_file(
+            engine, storage, task_id=task_id, filename="720p.mp4", data=b"720p-bytes"
+        )
+        second_id = seed_completed_with_file(
+            engine, storage, task_id=task_id, filename="1080p.mp4", data=b"1080p-bytes"
+        )
+
+        first = service.save(first_id, "/视频/抖音")
+        assert first.file_size == 10
+
+        with pytest.raises(ApiError) as excinfo:
+            service.save(second_id, "/视频/抖音")
+        exc = api_error(excinfo.value)
+        assert exc.http_status == HTTP_400_BAD_REQUEST
+        assert exc.code == CODE_BAD_REQUEST
+        assert "已存在" in exc.message
+
+        # No silent data loss: exactly one pond file, holding the first bytes.
+        pond_dir = storage.pond_root(MediaType.VIDEO) / "视频" / "抖音"
+        pond_files = [p for p in pond_dir.rglob("*") if p.is_file()]
+        assert pond_files == [
+            storage.pond_root(MediaType.VIDEO) / "视频" / "抖音"
+            / "2026-01-01_示例视频_av123.mp4"
+        ]
+        assert pond_files[0].read_bytes() == b"720p-bytes"
+        # The second variant's bubble file is untouched (still saveable later).
+        assert (
+            storage.bubble_root(MediaType.VIDEO) / "1080p.mp4"
+        ).read_bytes() == b"1080p-bytes"
+        with session_scope(engine) as session:
+            row = session.get(DownloadTask, second_id)
+        assert row.pond_path is None
+
+    def test_save_preexisting_pond_file_raises_400(self, service, engine, storage):
+        # The pre-check itself: a file already at the computed target (e.g. an
+        # operator-placed copy) is reported, never overwritten.
+        task_id = seed_parse_task(engine)
+        download_id = seed_completed_with_file(engine, storage, task_id=task_id)
+        storage.save_bytes(
+            MediaType.VIDEO, "视频/抖音/2026-01-01_shili-shipin_av123.mp4",
+            b"existing-bytes", to_pond=True,
+        )
+        with pytest.raises(ApiError) as excinfo:
+            service.save(download_id, "/视频/抖音")
+        exc = api_error(excinfo.value)
+        assert exc.http_status == HTTP_400_BAD_REQUEST
+        assert exc.code == CODE_BAD_REQUEST
+        assert "已存在" in exc.message
+        assert (
+            storage.pond_root(MediaType.VIDEO) / "视频" / "抖音"
+            / "2026-01-01_shili-shipin_av123.mp4"
+        ).read_bytes() == b"existing-bytes"  # untouched
+
+    def test_save_file_exists_race_maps_to_400(self, service, engine, storage, monkeypatch):
+        # A concurrent same-target save that wins the race between our
+        # pre-check and the move raises FileExistsError (Windows shutil.move);
+        # it must surface as the same stable 400, not a traceback.
+        task_id = seed_parse_task(engine)
+        download_id = seed_completed_with_file(engine, storage, task_id=task_id)
+
+        def race(media_type, bubble, *, target=None):
+            raise FileExistsError(target)
+
+        monkeypatch.setattr(storage, "move_to_pond", race)
+        with pytest.raises(ApiError) as excinfo:
+            service.save(download_id, "/视频/抖音")
+        exc = api_error(excinfo.value)
+        assert exc.http_status == HTTP_400_BAD_REQUEST
+        assert exc.code == CODE_BAD_REQUEST
+        assert "已存在" in exc.message
+
+    def test_save_source_vanished_race_maps_to_5001(
+        self, service, engine, storage, monkeypatch
+    ):
+        # The bubble file disappearing between exists() and the move raises
+        # FileNotFoundError (an OSError) — same "file not found" contract.
+        task_id = seed_parse_task(engine)
+        download_id = seed_completed_with_file(engine, storage, task_id=task_id)
+
+        def race(media_type, bubble, *, target=None):
+            raise FileNotFoundError(bubble)
+
+        monkeypatch.setattr(storage, "move_to_pond", race)
+        with pytest.raises(ApiError) as excinfo:
+            service.save(download_id, "/视频/抖音")
+        exc = api_error(excinfo.value)
+        assert exc.http_status == HTTP_404_NOT_FOUND
+        assert exc.code == CODE_FILE_NOT_FOUND
+
+    def test_save_other_move_oserror_maps_to_9001(
+        self, service, engine, storage, monkeypatch
+    ):
+        # Any other storage failure at move time is a genuine server error —
+        # a stable 500 envelope (logged), never an unhandled traceback.
+        task_id = seed_parse_task(engine)
+        download_id = seed_completed_with_file(engine, storage, task_id=task_id)
+
+        def boom(media_type, bubble, *, target=None):
+            raise PermissionError("disk read-only")
+
+        monkeypatch.setattr(storage, "move_to_pond", boom)
+        with pytest.raises(ApiError) as excinfo:
+            service.save(download_id, "/视频/抖音")
+        exc = api_error(excinfo.value)
+        assert exc.http_status == HTTP_500_INTERNAL_SERVER_ERROR
+        assert exc.code == CODE_INTERNAL_ERROR
+
+
+class TestSaveCorruptMetadata:
+    def test_save_non_dict_metadata_falls_back_to_bubble_basename(
+        self, service, engine, storage
+    ):
+        # The metadata JSON column is unconstrained; a corrupt (non-dict)
+        # value must be treated like absent metadata (fallback to the bubble
+        # basename) — a stable result, never an AttributeError → 9001.
+        task_id = seed_parse_task(
+            engine, title="示例视频", metadata=["not", "a", "dict"]
+        )
+        download_id = seed_completed_with_file(engine, storage, task_id=task_id)
+        result = service.save(download_id, "/视频/抖音")
+        assert result.nas_path == f"/视频/抖音/{BUBBLE_FILENAME}"
+        assert (
+            storage.pond_root(MediaType.VIDEO) / "视频" / "抖音" / BUBBLE_FILENAME
+        ).is_file()
+
+
+class TestSaveTargetCaps:
+    """Documented caps: depth and joined length keep hostile/over-long target
+    paths from reaching the filesystem (where they would OSError → 9001)."""
+
+    def test_save_target_too_deep_raises_400(self, service, engine, storage):
+        task_id = seed_parse_task(engine)
+        download_id = seed_completed_with_file(engine, storage, task_id=task_id)
+        deep = "/".join([f"d{i}" for i in range(17)])
+        with pytest.raises(ApiError) as excinfo:
+            service.save(download_id, deep)
+        exc = api_error(excinfo.value)
+        assert exc.http_status == HTTP_400_BAD_REQUEST
+        assert exc.code == CODE_BAD_REQUEST
+        assert "层级" in exc.message
+
+    def test_save_target_too_long_raises_400(self, service, engine, storage):
+        task_id = seed_parse_task(engine)
+        download_id = seed_completed_with_file(engine, storage, task_id=task_id)
+        long_segments = "/".join(["a" * 60 for _ in range(16)])
+        with pytest.raises(ApiError) as excinfo:
+            service.save(download_id, long_segments)
+        exc = api_error(excinfo.value)
+        assert exc.http_status == HTTP_400_BAD_REQUEST
+        assert exc.code == CODE_BAD_REQUEST
+        assert "过长" in exc.message
