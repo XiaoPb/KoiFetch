@@ -34,7 +34,12 @@ from app.infrastructure.database import Base, sqlite_db_path  # noqa: E402
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # disable_existing_loggers=False: the ini only configures root/sqlalchemy/
+    # alembic, and the fileConfig default (True) would permanently DISABLE every
+    # other existing logger (e.g. app.main) for the rest of the process. That
+    # silently kills application logging after any in-process `alembic` run
+    # (tests invoke migrations in-process; deploy runs alembic standalone).
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 database_url = os.environ.get("DATABASE_URL") or get_settings().database_url
 config.set_main_option("sqlalchemy.url", database_url)
