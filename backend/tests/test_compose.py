@@ -143,6 +143,10 @@ class TestNginxProxy:
         conf = NGINX_CONF.read_text(encoding="utf-8")
         block = self._nginx_block(conf, "/api/")
         assert "proxy_pass http://backend:8000;" in block
+        # The block must end at its own indented closing brace — a capture
+        # that swallows the following /ws block would let a missing /api
+        # proxy_pass pass as long as /ws still has one.
+        assert "location /ws" not in block
 
     def test_ws_location_proxies_to_backend_with_upgrade(self):
         conf = NGINX_CONF.read_text(encoding="utf-8")
@@ -158,11 +162,15 @@ class TestNginxProxy:
 
         Regex-based so a renamed/missing location fails with a clear assertion
         message instead of an obscure IndexError from naive string splitting.
+        The block terminates at its own *indented* closing brace
+        (``^\s*\}`` under MULTILINE): nginx indents every block's ``}``, so a
+        bare ``\n\}`` terminator would over-capture through to the first
+        column-0 brace and swallow following blocks.
         """
         match = re.search(
-            rf"location {re.escape(location)} \{{(.*?)\n\}}",
+            rf"location {re.escape(location)} \{{(.*?)^\s*\}}",
             conf,
-            re.DOTALL,
+            re.DOTALL | re.MULTILINE,
         )
         assert match is not None, (
             f"nginx.conf is missing the 'location {location}' block"
