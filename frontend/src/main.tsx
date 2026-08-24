@@ -3,13 +3,15 @@ import ReactDOM from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
 import { App } from './app/App';
 import { setOnUnauthorized, setTokenGetter } from './services/apiClient';
+import { logoutSession } from './services/session';
 import { useAuthStore } from './stores/authStore';
 import './styles/app.css';
 
-// Session expiry / auth failure: clear the stored session and bounce to the
-// login page (full reload resets any half-open sockets/stores cleanly).
+// Session expiry / auth failure: clear the session (auth + session-local
+// download state) and bounce to the login page. The full reload resets any
+// half-open sockets/stores cleanly; logoutSession covers the pre-reload ticks.
 setOnUnauthorized(() => {
-  useAuthStore.getState().logout();
+  logoutSession();
   if (window.location.pathname !== '/login') {
     window.location.assign('/login');
   }

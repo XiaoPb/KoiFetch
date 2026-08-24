@@ -1,12 +1,13 @@
 import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { Route, Routes } from 'react-router-dom';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { App as AntdApp, ConfigProvider } from 'antd';
-import { MemoryRouter } from 'react-router-dom';
-import LoginPage from './LoginPage';import { authApi } from '../services/api';
+import LoginPage from './LoginPage';
+import { authApi } from '../services/api';
 import { ApiError } from '../types/api';
 import { useAuthStore } from '../stores/authStore';
+import { useDownloadsStore, type DownloadItem } from '../stores/downloadsStore';
 
 vi.mock('../services/api', () => ({
   authApi: { login: vi.fn() },
@@ -14,6 +15,25 @@ vi.mock('../services/api', () => ({
 
 const FUTURE = '2099-01-01T00:00:00Z';
 const PAST = '2020-01-01T00:00:00Z';
+
+function seedDownloadItem(partial: Partial<DownloadItem> & Pick<DownloadItem, 'download_id' | 'task_id' | 'status'>): DownloadItem {
+  return {
+    title: null,
+    format: null,
+    quality: null,
+    created_at: '2026-01-01T00:00:00Z',
+    progress: 0,
+    speed: null,
+    downloaded_bytes: null,
+    total_bytes: null,
+    remaining_time: null,
+    error_code: null,
+    error_message: null,
+    download_url: null,
+    token_expire_at: null,
+    ...partial,
+  };
+}
 
 /**
  * Render the login page inside a real router so the post-login navigation
@@ -55,6 +75,7 @@ describe('LoginPage', () => {
     localStorage.clear();
     vi.clearAllMocks();
     useAuthStore.setState({ token: null, username: null, expiresAt: null });
+    useDownloadsStore.setState({ items: [], submitting: {} });
   });
 
   it('renders the login form with bilingual placeholders', () => {
@@ -132,8 +153,13 @@ describe('LoginPage', () => {
   });
 
   it('shows an expired-session notice and clears the stale session on mount', () => {
-    // A rehydrated session whose token has already expired.
+    // A rehydrated session whose token has already expired, with session-local
+    // download state still around (e.g. the user was redirected here from
+    // /nas by ProtectedRoute).
     useAuthStore.setState({ token: 'stale', username: 'admin', expiresAt: PAST });
+    useDownloadsStore.setState({
+      items: [seedDownloadItem({ download_id: 'd1', task_id: 't1', status: 'downloading', title: 'Video A' })],
+    });
 
     renderLogin();
 
@@ -141,6 +167,9 @@ describe('LoginPage', () => {
     // The stale session is cleared so the next login starts clean.
     expect(useAuthStore.getState().token).toBeNull();
     expect(useAuthStore.getState().expiresAt).toBeNull();
+    // ...and the downloads state is torn down too: stale items and live
+    // sockets must not survive the session boundary (Task 16 review).
+    expect(useDownloadsStore.getState().items).toHaveLength(0);
   });
 
   it('does not show the expired notice for a fresh login page', () => {

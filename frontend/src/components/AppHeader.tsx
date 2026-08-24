@@ -12,8 +12,9 @@ import { StatusIndicator } from './StatusIndicator';
 import { DownloadCenterDrawer } from '../features/downloads/DownloadCenterDrawer';
 import { useTranslation } from '../services/i18n';
 import { useAppStore, type MediaMode } from '../stores/appStore';
-import { useAuthStore, selectIsAuthenticated } from '../stores/authStore';
+import { selectIsAuthenticated, useAuthStore } from '../stores/authStore';
 import { selectActiveCount, useDownloadsStore } from '../stores/downloadsStore';
+import { logoutSession } from '../services/session';
 
 /**
  * PRD header: logo 🎏 Koi Fetch / mode switch / status indicator / login
@@ -33,9 +34,7 @@ export function AppHeader(): JSX.Element {
   const setMediaMode = useAppStore((state) => state.setMediaMode);
   const isAuthenticated = useAuthStore(selectIsAuthenticated);
   const username = useAuthStore((state) => state.username);
-  const logout = useAuthStore((state) => state.logout);
   const activeCount = useDownloadsStore(selectActiveCount);
-  const teardownDownloads = useDownloadsStore((state) => state.teardown);
 
   const modeOptions: { label: string; value: MediaMode }[] = [
     { label: t('header.modeVideo'), value: 'video' },
@@ -49,11 +48,9 @@ export function AppHeader(): JSX.Element {
   };
 
   const onLogout = () => {
-    logout();
-    // Drop the session-local download state (live sockets, poll timer, task
-    // list) so the next admin starts clean — downloadsStore has no
-    // server-side list to rehydrate from (Task 16, from the Task 15 review).
-    teardownDownloads();
+    // One logout entry point: clears the auth session AND tears down the
+    // session-local download state (live sockets, poll timer, task list).
+    logoutSession();
     void message.info(t('header.logout'));
   };
 

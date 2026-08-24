@@ -4,6 +4,7 @@ import { LockOutlined, UserOutlined } from '@ant-design/icons';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from '../services/i18n';
 import { isExpired, useAuthStore } from '../stores/authStore';
+import { logoutSession } from '../services/session';
 import { getErrorMessage } from '../services/apiClient';
 
 interface LoginFormValues {
@@ -23,7 +24,8 @@ interface LoginLocationState {
  * Expired-session handling (Task 16): when the page mounts with a rehydrated
  * session whose token already expired (e.g. ProtectedRoute sent an
  * authenticated-but-expired visitor here), it shows a clear "会话已过期" notice
- * and drops the stale session so the next login starts clean.
+ * and runs the full logout (auth session + session-local download state) so
+ * the next login starts clean.
  */
 export default function LoginPage(): JSX.Element {
   const { t } = useTranslation();
@@ -33,16 +35,18 @@ export default function LoginPage(): JSX.Element {
   const login = useAuthStore((state) => state.login);
   const token = useAuthStore((state) => state.token);
   const expiresAt = useAuthStore((state) => state.expiresAt);
-  const logout = useAuthStore((state) => state.logout);
   const [submitting, setSubmitting] = useState(false);
   const [sessionExpired, setSessionExpired] = useState(false);
 
   useEffect(() => {
     if (token && isExpired(expiresAt)) {
       setSessionExpired(true);
-      logout();
+      // Same single logout entry point as the header: also tears down the
+      // downloads state so stale items / live sockets never survive a session
+      // boundary (e.g. an expired session redirecting here from /nas).
+      logoutSession();
     }
-  }, [token, expiresAt, logout]);
+  }, [token, expiresAt]);
 
   const from = (location.state as LoginLocationState | null)?.from ?? '/';
 
