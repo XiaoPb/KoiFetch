@@ -477,4 +477,24 @@ describe('downloadsStore', () => {
     expect(useDownloadsStore.getState().items[0].download_url).toBe('/api/download/file/d1?token=fresh');
     expect(useDownloadsStore.getState().items[0].status).toBe('completed');
   });
+
+  // -------------------------------------------------------------------------
+  // Teardown (Task 16 — logout cleanup)
+  // -------------------------------------------------------------------------
+
+  it('teardown closes live sockets, stops polling and clears the task list', async () => {
+    (downloadApi.submit as Mock).mockResolvedValue(submitData);
+    await useDownloadsStore.getState().submit('t1');
+    // A live socket exists for the pending download (WebSocket is stubbed).
+    expect(wsMock.MockWsClient.instances).toHaveLength(1);
+
+    useDownloadsStore.getState().teardown();
+
+    expect(wsMock.MockWsClient.instances[0].closeCalls).toBe(1);
+    expect(wsMock.MockWsClient.instances[0].status).toBe('closed');
+    const state = useDownloadsStore.getState();
+    expect(state.items).toHaveLength(0);
+    expect(state.submitting).toEqual({});
+    expect(selectActiveCount(state)).toBe(0);
+  });
 });

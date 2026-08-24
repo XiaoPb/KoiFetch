@@ -127,6 +127,13 @@ export interface DownloadsState {
    * missed (polling-only path) or its token expired.
    */
   refreshFileLink: (downloadId: string) => void;
+  /**
+   * Tear down the session-local download state: close every live socket,
+   * stop the polling timer and clear the task list. Called on logout so the
+   * next admin (or the same one) starts from a clean slate — the store has
+   * no server-side list to rehydrate from (see the module docstring).
+   */
+  teardown: () => void;
 
   // --- internal reconciliation (public so WS/polling handlers can call them) ---
   /** Apply a progress/polling snapshot to an item (never clears download_url). */
@@ -343,6 +350,11 @@ export const useDownloadsStore = create<DownloadsState>()((set, get) => ({
     // event instead and the item honestly moves to expired.
     releaseWs(downloadId);
     get().connectWs(downloadId);
+  },
+
+  teardown: () => {
+    __resetDownloadStreams();
+    set({ items: [], submitting: {} });
   },
 
   applySnapshot: (downloadId, snapshot) =>

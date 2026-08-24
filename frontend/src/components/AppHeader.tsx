@@ -35,6 +35,7 @@ export function AppHeader(): JSX.Element {
   const username = useAuthStore((state) => state.username);
   const logout = useAuthStore((state) => state.logout);
   const activeCount = useDownloadsStore(selectActiveCount);
+  const teardownDownloads = useDownloadsStore((state) => state.teardown);
 
   const modeOptions: { label: string; value: MediaMode }[] = [
     { label: t('header.modeVideo'), value: 'video' },
@@ -49,6 +50,10 @@ export function AppHeader(): JSX.Element {
 
   const onLogout = () => {
     logout();
+    // Drop the session-local download state (live sockets, poll timer, task
+    // list) so the next admin starts clean — downloadsStore has no
+    // server-side list to rehydrate from (Task 16, from the Task 15 review).
+    teardownDownloads();
     void message.info(t('header.logout'));
   };
 

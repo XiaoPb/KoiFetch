@@ -6,6 +6,7 @@ import { renderWithProviders } from '../test/utils';
 import { healthApi } from '../services/api';
 import { useAppStore } from '../stores/appStore';
 import { useAuthStore } from '../stores/authStore';
+import { useDownloadsStore, type DownloadItem } from '../stores/downloadsStore';
 
 vi.mock('../services/api', () => ({
   healthApi: { getHealth: vi.fn() },
@@ -13,6 +14,25 @@ vi.mock('../services/api', () => ({
   // the mock keeps the module importable in header tests.
   downloadApi: { getFileUrl: vi.fn(), submit: vi.fn(), getProgress: vi.fn() },
 }));
+
+function seedDownloadItem(partial: Partial<DownloadItem> & Pick<DownloadItem, 'download_id' | 'task_id' | 'status'>): DownloadItem {
+  return {
+    title: null,
+    format: null,
+    quality: null,
+    created_at: '2026-01-01T00:00:00Z',
+    progress: 0,
+    speed: null,
+    downloaded_bytes: null,
+    total_bytes: null,
+    remaining_time: null,
+    error_code: null,
+    error_message: null,
+    download_url: null,
+    token_expire_at: null,
+    ...partial,
+  };
+}
 
 const healthy = { status: 'ok', services: { api: 'ok' }, storage_roots: {} };
 
@@ -113,5 +133,21 @@ describe('AppHeader', () => {
 
     await user.click(screen.getByTestId('download-center'));
     expect(await screen.findByTestId('download-center-drawer')).toBeInTheDocument();
+  });
+
+  it('clears the session-local download state on logout', async () => {
+    const user = userEvent.setup();
+    useAuthStore.setState({ token: 'tok', username: 'admin', expiresAt: '2099-01-01T00:00:00Z' });
+    useDownloadsStore.setState({
+      items: [seedDownloadItem({ download_id: 'd1', task_id: 't1', status: 'downloading', title: 'Video A' })],
+    });
+    renderWithProviders(<AppHeader />);
+
+    await user.click(screen.getByRole('button', { name: /admin/ }));
+    await user.click(await screen.findByRole('menuitem', { name: /退出登录/ }));
+
+    expect(useAuthStore.getState().token).toBeNull();
+    // The next admin starts from a clean slate (Task 16 teardown seam).
+    expect(useDownloadsStore.getState().items).toHaveLength(0);
   });
 });
