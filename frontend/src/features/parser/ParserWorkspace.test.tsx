@@ -39,6 +39,8 @@ vi.mock('../../services/wsClient', () => ({
   buildWsUrl: vi.fn((downloadId: string) => `ws://test/ws/download/${downloadId}`),
 }));
 
+// --- fixtures (unchanged) ---
+
 const videoResult: ParseResult = {
   task_id: 't1',
   url: 'https://example.com/v/a',
@@ -81,10 +83,43 @@ const imageResult: ParseResult = {
   available_bitrates: [],
 };
 
-async function submitUrls(urls: string): Promise<void> {
+// --- helpers ---
+
+/** Type one URL into the one-line search input and click the search button. */
+async function submitUrl(url: string): Promise<void> {
   const user = userEvent.setup();
-  await user.type(screen.getByTestId('url-input'), urls);
-  await user.click(screen.getByTestId('parse-button'));
+  await user.type(screen.getByTestId('url-input'), url);
+  await user.click(screen.getByRole('button', { name: /解\s*析/ }));
+}
+
+/** Seed the store with raw multi-line input (TXT-import equivalent), then search. */
+async function parseSeeded(urls: string): Promise<void> {
+  useParserStore.setState({ input: urls });
+  const user = userEvent.setup();
+  await user.click(screen.getByRole('button', { name: /解\s*析/ }));
+}
+
+// A matchMedia that reports no breakpoints — i.e. a small/mobile viewport.
+function mobileMatchMedia(): () => {
+  matches: boolean;
+  media: string;
+  onchange: null;
+  addListener: ReturnType<typeof vi.fn>;
+  removeListener: ReturnType<typeof vi.fn>;
+  addEventListener: ReturnType<typeof vi.fn>;
+  removeEventListener: ReturnType<typeof vi.fn>;
+  dispatchEvent: ReturnType<typeof vi.fn>;
+} {
+  return () => ({
+    matches: false,
+    media: '',
+    onchange: null,
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  });
 }
 
 describe('ParserWorkspace', () => {
@@ -100,32 +135,41 @@ describe('ParserWorkspace', () => {
     vi.unstubAllGlobals();
   });
 
-  it('renders the input, mode hint and action buttons', () => {
+  it('renders the search input, mode hint and action buttons', () => {
     renderWithProviders(<ParserWorkspace />);
     expect(screen.getByTestId('url-input')).toBeInTheDocument();
     expect(screen.getByTestId('mode-hint')).toHaveTextContent('当前模式：视频');
-    expect(screen.getByTestId('parse-button')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /解\s*析/ })).toBeInTheDocument();
     expect(screen.getByTestId('import-txt-button')).toBeInTheDocument();
     expect(screen.getByTestId('clear-button')).toBeInTheDocument();
     expect(screen.getByTestId('parser-empty')).toBeInTheDocument();
   });
 
+  it('keeps the compact search + TXT group on mobile', () => {
+    vi.stubGlobal('matchMedia', mobileMatchMedia());
+    renderWithProviders(<ParserWorkspace />);
+    expect(screen.getByTestId('url-input')).toBeInTheDocument();
+    // Icon-only search button on mobile (the icon's accessible name).
+    expect(screen.getByRole('button', { name: /scan/i })).toBeInTheDocument();
+    expect(screen.getByTestId('import-txt-button')).toBeInTheDocument();
+  });
+
   it('blocks an empty submission and shows the friendly error', async () => {
     const user = userEvent.setup();
     renderWithProviders(<ParserWorkspace />);
-    await user.click(screen.getByTestId('parse-button'));
+    await user.click(screen.getByRole('button', { name: /解\s*析/ }));
 
     expect(parseApi.parse).not.toHaveBeenCalled();
     expect(await screen.findByTestId('parse-error')).toHaveTextContent(PARSER_EMPTY_INPUT_MESSAGE);
   });
 
-  it('parses typed URLs and renders the result cards plus failed list', async () => {
+  it('parses the input URLs and renders the result cards plus failed list', async () => {
     (parseApi.parse as Mock).mockResolvedValue({
       results: [videoResult, musicResult],
       failed: [{ url: 'https://example.com/bad', error: '平台不支持 / Unsupported platform' }],
     });
     renderWithProviders(<ParserWorkspace />);
-    await submitUrls('https://example.com/v/a\nhttps://example.com/m/b\nhttps://example.com/bad');
+    await parseSeeded('https://example.com/v/a\nhttps://example.com/m/b\nhttps://example.com/bad');
 
     expect(parseApi.parse).toHaveBeenCalledWith([
       'https://example.com/v/a',
@@ -150,7 +194,7 @@ describe('ParserWorkspace', () => {
   it('renders image results in both media modes', async () => {
     (parseApi.parse as Mock).mockResolvedValue({ results: [videoResult, imageResult], failed: [] });
     renderWithProviders(<ParserWorkspace />);
-    await submitUrls('https://example.com/v/a\nhttps://example.com/p/c');
+    await parseSeeded('https://example.com/v/a\nhttps://example.com/p/c');
 
     // Video mode: the video card and the image card.
     expect(await screen.findByTestId('result-card-t1')).toBeInTheDocument();
@@ -165,7 +209,7 @@ describe('ParserWorkspace', () => {
   it('switching the media mode refilters the displayed cards', async () => {
     (parseApi.parse as Mock).mockResolvedValue({ results: [videoResult, musicResult], failed: [] });
     renderWithProviders(<ParserWorkspace />);
-    await submitUrls('https://example.com/v/a\nhttps://example.com/m/b');
+    await parseSeeded('https://example.com/v/a\nhttps://example.com/m/b');
     await screen.findByTestId('result-card-t1');
 
     useAppStore.setState({ mediaMode: 'music' });
@@ -173,17 +217,30 @@ describe('ParserWorkspace', () => {
     expect(screen.queryByTestId('result-card-t1')).not.toBeInTheDocument();
   });
 
-  it('shows the loading state while a parse is in flight', async () => {
+  it('shows loading on the search button while a parse is in flight', async () => {
     let resolveParse!: (value: unknown) => void;
     (parseApi.parse as Mock).mockReturnValue(new Promise((resolve) => { resolveParse = resolve; }));
     const user = userEvent.setup();
     renderWithProviders(<ParserWorkspace />);
     await user.type(screen.getByTestId('url-input'), 'https://example.com/v/a');
-    await user.click(screen.getByTestId('parse-button'));
+    await user.click(screen.getByRole('button', { name: /解\s*析/ }));
 
-    expect(screen.getByTestId('parser-loading')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /解\s*析/ })).toHaveClass('ant-btn-loading');
+    expect(screen.getByTestId('import-txt-button')).toBeDisabled();
+
     resolveParse({ results: [videoResult], failed: [] });
     expect(await screen.findByTestId('result-card-t1')).toBeInTheDocument();
+  });
+
+  it('parses when the user presses Enter in the search input', async () => {
+    (parseApi.parse as Mock).mockResolvedValue({ results: [videoResult], failed: [] });
+    const user = userEvent.setup();
+    renderWithProviders(<ParserWorkspace />);
+    await user.type(screen.getByTestId('url-input'), 'https://example.com/v/a');
+    await user.keyboard('{Enter}');
+
+    expect(await screen.findByTestId('result-card-t1')).toBeInTheDocument();
+    expect(parseApi.parse).toHaveBeenCalledWith(['https://example.com/v/a']);
   });
 
   it('shows the backend error with a working retry', async () => {
@@ -192,7 +249,7 @@ describe('ParserWorkspace', () => {
     const user = userEvent.setup();
     renderWithProviders(<ParserWorkspace />);
     await user.type(screen.getByTestId('url-input'), 'not-a-url');
-    await user.click(screen.getByTestId('parse-button'));
+    await user.click(screen.getByRole('button', { name: /解\s*析/ }));
 
     expect(await screen.findByTestId('parse-error')).toHaveTextContent('URL格式无效');
     expect(parseApi.parse).toHaveBeenCalledTimes(1);
@@ -206,7 +263,7 @@ describe('ParserWorkspace', () => {
     (parseApi.parse as Mock).mockResolvedValue({ results: [videoResult], failed: [] });
     const user = userEvent.setup();
     renderWithProviders(<ParserWorkspace />);
-    await submitUrls('https://example.com/v/a');
+    await submitUrl('https://example.com/v/a');
 
     await user.click(await screen.findByTestId('preview-t1'));
     expect(usePreviewStore.getState().activeTask).toEqual(videoResult);
@@ -222,7 +279,7 @@ describe('ParserWorkspace', () => {
     });
     const user = userEvent.setup();
     renderWithProviders(<ParserWorkspace />);
-    await submitUrls('https://example.com/v/a');
+    await submitUrl('https://example.com/v/a');
 
     await user.click(await screen.findByTestId('download-t1'));
     await waitFor(() => expect(selectActiveCount(useDownloadsStore.getState())).toBe(1));
@@ -241,14 +298,14 @@ describe('ParserWorkspace', () => {
     (downloadApi.submit as Mock).mockRejectedValue(new ApiError('任务不存在 / Task not found', 3001, 400));
     const user = userEvent.setup();
     renderWithProviders(<ParserWorkspace />);
-    await submitUrls('https://example.com/v/a');
+    await submitUrl('https://example.com/v/a');
 
     await user.click(await screen.findByTestId('download-t1'));
     expect(await screen.findByText(/Task not found/)).toBeInTheDocument();
     expect(useDownloadsStore.getState().items).toHaveLength(0);
   });
 
-  it('imports a plain-text TXT file into the input', async () => {
+  it('imports a plain-text TXT file into the input and reports the batch size', async () => {
     renderWithProviders(<ParserWorkspace />);
     const file = new File(['https://example.com/v/a\nhttps://example.com/m/b'], 'links.txt', {
       type: 'text/plain',
@@ -257,9 +314,15 @@ describe('ParserWorkspace', () => {
     const user = userEvent.setup();
     await user.upload(input, file);
 
+    // The store keeps the raw multi-line text after import. (The one-line
+    // search input itself sanitizes line breaks out of its DOM value — HTML
+    // value sanitization strips \n/\r from single-line <input> values — so
+    // the multi-line content is verified at the store, per the design note
+    // "a single-line input cannot contain \n".)
     await waitFor(() =>
-      expect(screen.getByTestId('url-input')).toHaveValue('https://example.com/v/a\nhttps://example.com/m/b'),
+      expect(useParserStore.getState().input).toBe('https://example.com/v/a\nhttps://example.com/m/b'),
     );
+    expect(screen.getByTestId('imported-count')).toHaveTextContent('已导入 2 条链接');
   });
 
   it('rejects a non-TXT file via the workspace guard with a toast', async () => {
@@ -321,7 +384,7 @@ describe('ParserWorkspace', () => {
     renderWithProviders(<ParserWorkspace />);
     const urls = Array.from({ length: 51 }, (_, i) => `https://example.com/x/${i}`);
     useParserStore.setState({ input: urls.join('\n') });
-    await user.click(screen.getByTestId('parse-button'));
+    await user.click(screen.getByRole('button', { name: /解\s*析/ }));
 
     expect(await screen.findByTestId('parse-error')).toHaveTextContent(PARSER_TOO_MANY_URLS_MESSAGE);
     expect(parseApi.parse).not.toHaveBeenCalled();
@@ -344,7 +407,7 @@ describe('ParserWorkspace', () => {
       ],
     });
     renderWithProviders(<ParserWorkspace />);
-    await submitUrls('https://example.com/v/a\nhttps://example.com/dup\nhttps://example.com/dup');
+    await parseSeeded('https://example.com/v/a\nhttps://example.com/dup\nhttps://example.com/dup');
 
     const failed = await screen.findByTestId('parser-failed');
     expect(within(failed).getAllByText('https://example.com/dup')).toHaveLength(2);
@@ -355,7 +418,7 @@ describe('ParserWorkspace', () => {
     (parseApi.parse as Mock).mockResolvedValue({ results: [videoResult], failed: [] });
     const user = userEvent.setup();
     renderWithProviders(<ParserWorkspace />);
-    await submitUrls('https://example.com/v/a');
+    await submitUrl('https://example.com/v/a');
     await screen.findByTestId('result-card-t1');
 
     await user.click(screen.getByTestId('clear-button'));

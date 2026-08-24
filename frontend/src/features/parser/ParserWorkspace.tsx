@@ -1,13 +1,13 @@
 import { useMemo } from 'react';
-import { Alert, App, Button, Col, Input, Row, Space, Spin, Typography, Upload } from 'antd';
-import { ClearOutlined, CloudUploadOutlined, ScanOutlined } from '@ant-design/icons';
+import { Alert, App, Button, Col, Grid, Input, Row, Space, Tag, Typography, Upload } from 'antd';
+import { ClearOutlined, FileTextOutlined, ScanOutlined } from '@ant-design/icons';
 import type { UploadProps } from 'antd';
 import { useTranslation } from '../../services/i18n';
 import { useAppStore } from '../../stores/appStore';
 import { useDownloadsStore } from '../../stores/downloadsStore';
 import { getErrorMessage } from '../../services/apiClient';
 import { ResultCard, type DownloadOptions } from './ResultCard';
-import { selectVisibleResults, useParserStore } from './parserStore';
+import { extractUrls, selectVisibleResults, useParserStore } from './parserStore';
 import { usePreviewStore } from './previewStore';
 import type { ParseResult } from '../../types/api';
 
@@ -29,17 +29,21 @@ export function readTxtFile(file: File): Promise<string> {
 export const MAX_TXT_IMPORT_BYTES = 1024 * 1024; // 1 MB
 
 /**
- * Parser workspace (PRD §4.2): URL batch input (paste or TXT import),
- * media-mode hint, submit/loading/error states, the result-card grid, the
- * failed-URL section, and the preview/download actions.
+ * Parser workspace (PRD §4.2) — redesigned around a one-line search input.
  *
- * The preview action only records the clicked result in previewStore — the
- * preview Modal itself lands in Task 15. The download action submits through
- * downloadsStore so the Task 15 download-center drawer/badge sees the task.
+ * Input UX (product feedback): the batch textarea is gone. A single-line
+ * `Input.Search` inside a `Space.Compact` group with a compact TXT button
+ * covers 输入 + 搜索 + 加载txt. Because a single-line input cannot hold line
+ * breaks, multi-line batches are TXT-import only: the store still keeps the
+ * raw multi-line text (extractUrls splits on line endings) and a Tag reports
+ * the imported count. The header media-mode switch re-keys the result grid so
+ * cards replay a staggered fade-up animation (see Task 3).
  */
 export function ParserWorkspace(): JSX.Element {
   const { t } = useTranslation();
   const { message } = App.useApp();
+  const screens = Grid.useBreakpoint();
+  const isMobile = !screens.md;
   const mediaMode = useAppStore((state) => state.mediaMode);
 
   const input = useParserStore((state) => state.input);
@@ -58,6 +62,13 @@ export function ParserWorkspace(): JSX.Element {
   const visibleResults = useMemo(() => selectVisibleResults(results, mediaMode), [results, mediaMode]);
   const isLoading = status === 'loading';
   const modeName = t(mediaMode === 'video' ? 'header.modeVideo' : 'header.modeMusic');
+
+  // A single-line input cannot contain line breaks, so any '\n' in the store
+  // input means a TXT import happened; report the batch size to the user.
+  const importedCount = useMemo(() => {
+    if (!input.includes('\n')) return null;
+    return extractUrls(input).length;
+  }, [input]);
 
   const handleParse = () => {
     void parse();
@@ -87,7 +98,7 @@ export function ParserWorkspace(): JSX.Element {
     void readTxtFile(file)
       .then((text) => setInput(text))
       .catch(() => void message.error(t('parser.txtReadFailed')));
-    return false; // never upload — the lines land in the textarea instead
+    return false; // never upload — the lines land in the search input instead
   };
 
   const handlePreview = (result: ParseResult) => {
@@ -108,27 +119,22 @@ export function ParserWorkspace(): JSX.Element {
   return (
     <div className="parser-workspace" data-testid="parser-workspace">
       <div className="parser-input-area">
-        <Typography.Text type="secondary" data-testid="mode-hint">
+        <Typography.Text type="secondary" className="mode-hint" data-testid="mode-hint">
           {t('parser.modeHint', { mode: modeName })}
         </Typography.Text>
-        <Input.TextArea
-          rows={5}
-          value={input}
-          onChange={(event) => setInput(event.target.value)}
-          placeholder={t('parser.placeholder')}
-          aria-label={t('parser.placeholder')}
-          data-testid="url-input"
-        />
-        <Space wrap>
-          <Button
-            type="primary"
-            icon={<ScanOutlined />}
+
+        <Space.Compact block size={isMobile ? 'middle' : 'large'} className="parser-search-compact">
+          <Input.Search
+            value={input}
+            onChange={(event) => setInput(event.target.value)}
+            onSearch={handleParse}
+            placeholder={t('parser.placeholder')}
+            allowClear
             loading={isLoading}
-            onClick={handleParse}
-            data-testid="parse-button"
-          >
-            {t('parser.parse')}
-          </Button>
+            enterButton={isMobile ? <ScanOutlined /> : t('parser.parse')}
+            aria-label={t('parser.placeholder')}
+            data-testid="url-input"
+          />
           <Upload
             accept=".txt,text/plain"
             showUploadList={false}
@@ -136,17 +142,30 @@ export function ParserWorkspace(): JSX.Element {
             disabled={isLoading}
           >
             <Button
-              icon={<CloudUploadOutlined />}
+              icon={<FileTextOutlined />}
               disabled={isLoading}
               title={t('parser.txtHint')}
+              aria-label={t('parser.importTxt')}
               data-testid="import-txt-button"
-            >
-              {t('parser.importTxt')}
-            </Button>
+            />
           </Upload>
-          <Button icon={<ClearOutlined />} onClick={handleReset} disabled={!input && !hasOutput} data-testid="clear-button">
+        </Space.Compact>
+
+        <Space className="parser-toolbar" wrap>
+          <Button
+            size="small"
+            icon={<ClearOutlined />}
+            onClick={handleReset}
+            disabled={!input && !hasOutput}
+            data-testid="clear-button"
+          >
             {t('parser.clear')}
           </Button>
+          {importedCount != null && importedCount > 0 && (
+            <Tag color="orange" icon={<FileTextOutlined />} data-testid="imported-count">
+              {t('parser.batchImported', { count: importedCount })}
+            </Tag>
+          )}
         </Space>
       </div>
 
@@ -162,13 +181,6 @@ export function ParserWorkspace(): JSX.Element {
           }
           data-testid="parse-error"
         />
-      )}
-
-      {isLoading && (
-        <div className="parser-loading" data-testid="parser-loading">
-          <Spin size="large" />
-          <Typography.Text type="secondary">{t('parser.loading')}</Typography.Text>
-        </div>
       )}
 
       {hasOutput && (

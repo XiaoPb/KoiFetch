@@ -166,12 +166,21 @@ body {
   gap: 12px;
 }
 
-.parser-loading {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 12px;
-  padding: 32px 0;
+/* --- One-line search input + compact TXT button --- */
+
+.parser-search-compact {
+  width: 100%;
+}
+
+/* Let the search input grow and the TXT button hug its content inside the
+   Space.Compact flex row (antd gives the compact group `display: flex`). */
+.parser-search-compact .ant-input-group-wrapper {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.parser-toolbar {
+  margin-top: 2px;
 }
 
 .parser-summary {
