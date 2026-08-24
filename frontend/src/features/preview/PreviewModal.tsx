@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, App, Button, Descriptions, Divider, Image, Modal, Select, Space, Spin, Table, Typography } from 'antd';
 import { DownloadOutlined } from '@ant-design/icons';
 import { useTranslation } from '../../services/i18n';
@@ -41,17 +41,26 @@ export function PreviewModal(): JSX.Element {
   const [quality, setQuality] = useState<string | null>(null);
   const [bitrate, setBitrate] = useState<string | null>(null);
 
+  // Monotonic request token: a slow response for a PREVIOUSLY opened task
+  // must never overwrite the modal with stale metadata (open t1 → slow
+  // request A; close; open t2 → fast request B; A resolving after B would
+  // otherwise render t1's data under t2's title).
+  const requestSeq = useRef(0);
+
   const load = useCallback(async () => {
     if (!taskId) return;
+    const seq = ++requestSeq.current;
     setLoadStatus('loading');
     setError('');
     try {
       const preview = await previewApi.getPreview(taskId);
+      if (seq !== requestSeq.current) return; // a newer request superseded us
       setData(preview);
       setQuality(preview.available_qualities[0] ?? null);
       setBitrate(preview.available_bitrates[0] ?? null);
       setLoadStatus('success');
     } catch (err) {
+      if (seq !== requestSeq.current) return;
       setError(getErrorMessage(err));
       setLoadStatus('error');
     }
@@ -61,6 +70,8 @@ export function PreviewModal(): JSX.Element {
   // content is cleared so stale data never flashes under the new spinner.
   useEffect(() => {
     if (taskId) {
+      // Invalidate any in-flight request for the previous task.
+      requestSeq.current += 1;
       setData(null);
       void load();
     }

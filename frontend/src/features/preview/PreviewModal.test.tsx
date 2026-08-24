@@ -242,6 +242,29 @@ describe('PreviewModal', () => {
     expect(await screen.findByText(/Task already downloading/)).toBeInTheDocument();
   });
 
+  it('ignores a stale preview response when the task changed mid-flight', async () => {
+    let resolveA!: (value: unknown) => void;
+    let resolveB!: (value: unknown) => void;
+    (previewApi.getPreview as Mock)
+      .mockReturnValueOnce(new Promise((resolve) => { resolveA = resolve; }))
+      .mockReturnValueOnce(new Promise((resolve) => { resolveB = resolve; }));
+
+    usePreviewStore.setState({ activeTask: videoTask }); // t1 → slow request A
+    renderWithProviders(<PreviewModal />);
+
+    // Switch to t2 while A is still in flight → fast request B.
+    usePreviewStore.setState({ activeTask: musicTask });
+    resolveB(musicPreview);
+    expect(await screen.findByText('Song B')).toBeInTheDocument();
+
+    // A resolves LATE — must not overwrite t2's metadata.
+    resolveA(videoPreview);
+    await waitFor(() => expect(screen.getByTestId('preview-content')).toHaveTextContent('netease'));
+    expect(screen.queryByText('douyin')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('preview-quality-select')).not.toBeInTheDocument();
+    expect(screen.getByTestId('preview-bitrate-select')).toBeInTheDocument();
+  });
+
   it('closes via the modal close button and clears the preview store', async () => {
     (previewApi.getPreview as Mock).mockResolvedValue(videoPreview);
     const user = userEvent.setup();
