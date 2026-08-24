@@ -25,7 +25,6 @@ module docstring for why the worker processes one batch sequentially).
 """
 
 import asyncio
-import hashlib
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -45,6 +44,7 @@ from app.workers.main import build_worker_deps, run_forever, schema_ready
 from app.workers.worker import _publish, claim_pending_tasks, run_once
 from tests.conftest import (
     FakeHub,
+    expected_stub_bytes,
     load_download,
     make_settings,
     seed_download,
@@ -53,14 +53,6 @@ from tests.conftest import (
 
 STUB_TOTAL = 4096
 STUB_CHUNK = 1024
-
-
-def expected_stub_bytes(download_id: str, title: str, total_bytes: int) -> bytes:
-    """The deterministic byte stream the stub downloader writes (its contract)."""
-    seed_bytes = hashlib.sha256(
-        f"{download_id}:{title or ''}".encode("utf-8")
-    ).digest()
-    return (seed_bytes * (total_bytes // 32 + 1))[:total_bytes]
 
 
 class ObservingDownloader:

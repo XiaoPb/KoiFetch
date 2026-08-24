@@ -18,6 +18,7 @@ the backend — the exact routing the end-to-end smoke walks over HTTP. The
 executable offline smoke itself lives in ``test_smoke.py``.
 """
 
+import re
 from pathlib import Path
 
 import pytest
@@ -140,13 +141,30 @@ class TestNginxProxy:
 
     def test_api_location_proxies_to_backend(self):
         conf = NGINX_CONF.read_text(encoding="utf-8")
-        api_block = conf.split("location /api/ {", 1)[1].split("}", 1)[0]
-        assert "proxy_pass http://backend:8000;" in api_block
+        block = self._nginx_block(conf, "/api/")
+        assert "proxy_pass http://backend:8000;" in block
 
     def test_ws_location_proxies_to_backend_with_upgrade(self):
         conf = NGINX_CONF.read_text(encoding="utf-8")
-        ws_block = conf.split("location /ws {", 1)[1].split("}", 1)[0]
-        assert "proxy_pass http://backend:8000;" in ws_block
-        assert "proxy_http_version 1.1;" in ws_block
-        assert "proxy_set_header Upgrade $http_upgrade;" in ws_block
-        assert 'proxy_set_header Connection "upgrade";' in ws_block
+        block = self._nginx_block(conf, "/ws")
+        assert "proxy_pass http://backend:8000;" in block
+        assert "proxy_http_version 1.1;" in block
+        assert "proxy_set_header Upgrade $http_upgrade;" in block
+        assert 'proxy_set_header Connection "upgrade";' in block
+
+    @staticmethod
+    def _nginx_block(conf: str, location: str) -> str:
+        """The body of an nginx ``location <location> { ... }`` block.
+
+        Regex-based so a renamed/missing location fails with a clear assertion
+        message instead of an obscure IndexError from naive string splitting.
+        """
+        match = re.search(
+            rf"location {re.escape(location)} \{{(.*?)\n\}}",
+            conf,
+            re.DOTALL,
+        )
+        assert match is not None, (
+            f"nginx.conf is missing the 'location {location}' block"
+        )
+        return match.group(1)

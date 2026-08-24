@@ -9,6 +9,7 @@ name locally shadow these — every other test file already does for ``env``/
 ``engine``/``storage``, which return module-specific shapes there.
 """
 
+import hashlib
 import os
 import uuid
 
@@ -124,6 +125,17 @@ def load_download(engine, download_id) -> DownloadTask:
     """Load a DownloadTask row (detached, attributes populated)."""
     with session_scope(engine) as session:
         return session.get(DownloadTask, download_id)
+
+
+def expected_stub_bytes(download_id: str, title: str, total_bytes: int) -> bytes:
+    """The deterministic byte stream the stub downloader writes (its contract).
+
+    A SHA-256 digest of ``"<download_id>:<title>"`` repeated to exactly
+    ``total_bytes`` — shared by the worker tests and the end-to-end smoke so
+    the byte-level assertion cannot drift between the two suites.
+    """
+    digest = hashlib.sha256(f"{download_id}:{title}".encode("utf-8")).digest()
+    return (digest * (total_bytes // len(digest) + 1))[:total_bytes]
 
 
 @pytest.fixture
