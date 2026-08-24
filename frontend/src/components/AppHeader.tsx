@@ -11,7 +11,7 @@ import { StatusIndicator } from './StatusIndicator';
 import { useTranslation } from '../services/i18n';
 import { useAppStore, type MediaMode } from '../stores/appStore';
 import { useAuthStore, selectIsAuthenticated } from '../stores/authStore';
-import { useDownloadsStore } from '../stores/downloadsStore';
+import { selectActiveCount, useDownloadsStore } from '../stores/downloadsStore';
 
 /**
  * PRD header: logo 🎏 Koi Fetch / mode switch / status indicator / login
@@ -30,7 +30,7 @@ export function AppHeader(): JSX.Element {
   const isAuthenticated = useAuthStore(selectIsAuthenticated);
   const username = useAuthStore((state) => state.username);
   const logout = useAuthStore((state) => state.logout);
-  const activeCount = useDownloadsStore((state) => state.activeCount);
+  const activeCount = useDownloadsStore(selectActiveCount);
 
   const modeOptions: { label: string; value: MediaMode }[] = [
     { label: t('header.modeVideo'), value: 'video' },

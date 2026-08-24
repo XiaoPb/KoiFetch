@@ -7,9 +7,10 @@ import type { DownloadStatus, SubmitData } from '../types/api';
  *
  * Task 13 shipped the header badge stub (`activeCount`); Task 14 adds
  * `submit()` so result cards can start downloads, and `items` so the Task 15
- * drawer has the task list to render. Task 15 extends this store with
- * progress/WebSocket reconciliation; the header already reads `activeCount`,
- * so the badge updates as soon as a submit lands.
+ * drawer has the task list to render. The badge count is NOT stored — it is
+ * derived from `items` via `selectActiveCount`, so it can never drift from
+ * the task list (important once Task 15 reconciles progress/terminal states
+ * over WebSocket).
  *
  * `submit()` maps 3001/3002/3003 failures to a rejection carrying the
  * backend's bilingual ApiError message — the caller toasts it.
@@ -35,23 +36,22 @@ export interface SubmitOptions {
 export interface DownloadsState {
   /** Download tasks the drawer will render (Task 15). */
   items: DownloadItem[];
-  /** Header badge: number of active (pending/downloading) tasks. */
-  activeCount: number;
   /** Per-task loading flags for [下载] buttons, keyed by task_id. */
   submitting: Record<string, boolean>;
 
   /** Submit a download for a parsed task; rejects with the ApiError on failure. */
   submit: (taskId: string, options?: SubmitOptions) => Promise<void>;
-  setActiveCount: (count: number) => void;
 }
 
-/** Active badge count derived from the item list (pending/downloading). */
+/**
+ * Active badge count, purely derived from the item list (pending/downloading).
+ * There is deliberately no stored counter — see the module docstring.
+ */
 export const selectActiveCount = (state: DownloadsState): number =>
   state.items.filter((item) => item.status === 'pending' || item.status === 'downloading').length;
 
 export const useDownloadsStore = create<DownloadsState>()((set) => ({
   items: [],
-  activeCount: 0,
   submitting: {},
 
   submit: async (taskId, options = {}) => {
@@ -69,14 +69,9 @@ export const useDownloadsStore = create<DownloadsState>()((set) => ({
         format,
         quality,
       };
-      set((state) => {
-        const items = [...state.items, item];
-        return { items, activeCount: selectActiveCount({ ...state, items }) };
-      });
+      set((state) => ({ items: [...state.items, item] }));
     } finally {
       set((state) => ({ submitting: { ...state.submitting, [taskId]: false } }));
     }
   },
-
-  setActiveCount: (activeCount) => set({ activeCount }),
 }));

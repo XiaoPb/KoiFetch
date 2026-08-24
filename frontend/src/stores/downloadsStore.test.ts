@@ -11,7 +11,7 @@ const submitData = { download_id: 'd1', task_id: 't1', status: 'pending' as cons
 
 describe('downloadsStore', () => {
   beforeEach(() => {
-    useDownloadsStore.setState({ items: [], activeCount: 0, submitting: {} });
+    useDownloadsStore.setState({ items: [], submitting: {} });
     vi.clearAllMocks();
   });
 
@@ -31,7 +31,6 @@ describe('downloadsStore', () => {
       title: 'Video A',
     });
     expect(selectActiveCount(state)).toBe(1);
-    expect(state.activeCount).toBe(1);
   });
 
   it('submit omits blank format/quality from the API call', async () => {
@@ -62,8 +61,14 @@ describe('downloadsStore', () => {
     expect(useDownloadsStore.getState().submitting.t1).toBe(false);
   });
 
-  it('setActiveCount stays available for Task 15 reconciliation', () => {
-    useDownloadsStore.getState().setActiveCount(3);
-    expect(useDownloadsStore.getState().activeCount).toBe(3);
+  it('derives the badge purely from items (terminal states stop counting)', () => {
+    useDownloadsStore.setState({
+      items: [
+        { download_id: 'd1', task_id: 't1', status: 'pending', created_at: 'x', title: null, format: null, quality: null },
+        { download_id: 'd2', task_id: 't2', status: 'downloading', created_at: 'x', title: null, format: null, quality: null },
+        { download_id: 'd3', task_id: 't3', status: 'completed', created_at: 'x', title: null, format: null, quality: null },
+      ],
+    });
+    expect(selectActiveCount(useDownloadsStore.getState())).toBe(2);
   });
 });
