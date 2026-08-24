@@ -38,6 +38,77 @@ real `.env`; the example file contains safe local-development values only.
 | `TZ` | `Asia/Shanghai` | Application timezone (validated against the IANA database) |
 | `DATABASE_URL` | `sqlite:///./data/db/koifetch.db` | SQLAlchemy database URL |
 
+## Smoke testing
+
+The end-to-end smoke exercises the full v1 path — health check → parse a stub
+URL → preview → submit download → observe progress → retrieve the tokenized
+file → log in as admin → save to Pond — against deterministic, offline stub
+adapters (no network calls). The stub parser/downloader derive everything from
+the URL / download id, so the flow is reproducible byte-for-byte.
+
+**Automated (recommended, Docker-free).** One pytest smoke boots the real app
+(`create_app`), the real worker batch executor, and the real HTTP/WebSocket
+transport against a throwaway temp database and temp bubble/pond roots:
+
+```bash
+python -m pytest backend/tests/test_smoke.py -v
+```
+
+**Manual without Docker.** Run the API server, the worker, and the curl flow
+locally from the venv. First-time setup (migrations + idempotent admin seed),
+from `backend/`:
+
+```bash
+cd backend
+../.venv/Scripts/python.exe -m alembic upgrade head
+../.venv/Scripts/python.exe -m app.infrastructure.seed
+```
+
+Then, from the repo root, start the API server (terminal 1) and the worker
+(terminal 2, from `backend/`):
+
+```bash
+.venv/Scripts/python.exe -m uvicorn app.main:app --app-dir backend --port 8000
+cd backend && ../.venv/Scripts/python.exe -m app.workers.main
+```
+
+And walk the flow (terminal 3):
+
+```bash
+curl -s http://127.0.0.1:8000/api/health
+curl -s -X POST http://127.0.0.1:8000/api/parse \
+  -H "Content-Type: application/json" \
+  -d '{"urls":["https://www.douyin.com/video/123456"]}'            # note task_id
+curl -s -X POST http://127.0.0.1:8000/api/download/submit \
+  -H "Content-Type: application/json" \
+  -d '{"task_id":"<task_id>"}'                                     # note download_id
+curl -s http://127.0.0.1:8000/api/download/progress/<download_id>  # poll to completed
+curl -s -X POST http://127.0.0.1:8000/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"<ADMIN_PASSWORD>"}'          # note token
+curl -s -X POST http://127.0.0.1:8000/api/nas/save \
+  -H "Content-Type: application/json" -H "Authorization: Bearer <token>" \
+  -d '{"download_id":"<download_id>","target_path":"/video/smoke"}'
+```
+
+The tokenized file link is delivered by the WebSocket complete event
+(`ws://127.0.0.1:8000/ws/download/<download_id>`, event `data.download_url`);
+fetch it with `curl "http://127.0.0.1:8000/api/download/file/<download_id>?token=<token>"`.
+The automated smoke mints and consumes this link deterministically.
+
+**With Docker.** The compose stack is authored for this flow and statically
+validated by `backend/tests/test_compose.py` (backend runs
+`alembic upgrade head && seed && uvicorn`, worker runs `app.workers.main`,
+Nginx proxies `/api` + `/ws` to the backend):
+
+```bash
+docker compose up --build
+curl -s http://localhost:5173/api/health          # frontend Nginx proxies /api
+```
+
+then repeat the same curl flow against `http://localhost:5173` (the Nginx
+proxy also forwards `/ws` for live download progress).
+
 ## Docs
 
 Product requirements and planning artifacts live in `docs/prd/` (local-only,
