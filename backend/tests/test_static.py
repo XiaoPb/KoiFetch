@@ -15,14 +15,21 @@ Contract asserted here:
 * Client-side routes (``/login``, ``/nas``, deep links) fall back to
   ``index.html``.
 * Hashed assets are served at their absolute root paths (the Vite ``base`` is
-  ``/``); a *missing* asset is an honest 404, never the SPA.
+  ``/``); a *missing* asset is an honest 404, never the SPA. Assets carry an
+  ETag and honor ``If-None-Match`` (304).
 * ``/api/health`` keeps its readiness envelope; an unknown ``/api/*`` path
   keeps its envelope 404 and is never swallowed by the SPA fallback.
 * The download WebSocket is still served (route precedence over the mount).
+* Method/safety edges: HEAD gets headers without a body; a non-GET/HEAD method
+  on an unknown non-API path keeps the envelope 404 (never the SPA); path
+  traversal attempts never leak files outside the dist (the SPA fallback or an
+  honest 404, never sibling content); a broken build (dist directory without
+  ``index.html``) keeps honest 404s instead of the placeholder.
 * Without a build, the app still boots: "/" serves an honest "frontend not
   built" placeholder, the API works, and API 404s stay envelopes.
 """
 
+import logging
 import uuid
 
 import pytest
@@ -74,6 +81,18 @@ def make_app(tmp_path, **overrides):
     return create_app(settings=settings)
 
 
+@pytest.fixture
+def caplog_info(caplog):
+    """caplog with INFO capture enabled.
+
+    pytest's caplog only captures WARNING+ by default; the frontend startup
+    log line is INFO, and the level must be raised *before* ``create_app``
+    runs (the app fixture depends on this fixture to guarantee the order).
+    """
+    caplog.set_level(logging.INFO)
+    return caplog
+
+
 class TestSpaServing:
     @pytest.fixture
     def app(self, tmp_path, dist):
@@ -110,6 +129,63 @@ class TestSpaServing:
         assert response.status_code == 404
         assert "KOI_SPA_MARKER" not in response.text
 
+    def test_asset_served_with_etag_and_conditional_304(self, client):
+        # Starlette's FileResponse emits an ETag from the file stat, so
+        # conditional requests still give browsers revalidation even though the
+        # no-Nginx serving deliberately sets no Cache-Control (the old Nginx
+        # `expires 1y` on /assets is not reproduced — see main.py notes).
+        first = client.get("/assets/app.js")
+        assert first.status_code == 200
+        assert first.text == ASSET_JS
+        etag = first.headers.get("etag")
+        assert etag
+
+        revalidated = client.get(
+            "/assets/app.js", headers={"If-None-Match": etag}
+        )
+        assert revalidated.status_code == 304
+        assert revalidated.content == b""
+
+    def test_head_unknown_path_returns_headers_without_body(self, client):
+        # The SPA fallback must honor HEAD semantics: 200 status and headers,
+        # never a body (Starlette suppresses the body for HEAD responses).
+        for path in ("/", "/login", "/nas"):
+            response = client.head(path)
+            assert response.status_code == 200
+            assert response.content == b""
+
+    def test_non_get_method_unknown_path_keeps_envelope_404(self, client):
+        # Only GET/HEAD are candidates for the SPA fallback: a POST to an
+        # unknown non-API path is a client error and must keep the envelope
+        # 404, not be answered with index.html.
+        for method in ("post", "put", "delete"):
+            response = getattr(client, method)("/foo")
+            assert response.status_code == 404
+            assert response.json()["code"] == 404
+            assert "KOI_SPA_MARKER" not in response.text
+
+    def test_path_traversal_never_leaks_files_outside_dist(self, client, dist):
+        # A sibling "secret" next to the dist must never be served, no matter
+        # how the traversal is encoded. The client (httpx) normalizes most dot
+        # segments before they reach the app, and StaticFiles rejects what
+        # survives — either way the response is the SPA fallback or an honest
+        # 404, never sibling content. This pins the boundary so a future
+        # fallback refactor cannot silently open the dist to ../.
+        secret = dist.parent / "TOP_SECRET.txt"
+        secret.write_text("TOP_SECRET_BODY", encoding="utf-8")
+        attempts = (
+            "/../TOP_SECRET.txt",
+            "/%2e%2e/TOP_SECRET.txt",
+            "/..%2fTOP_SECRET.txt",
+            "/assets/../TOP_SECRET.txt",
+            "/%2e%2e%2fTOP_SECRET.txt",
+        )
+        for path in attempts:
+            response = client.get(path)
+            assert response.status_code in (200, 404), path
+            assert "TOP_SECRET_BODY" not in response.text, path
+            assert response.text != secret.read_text(encoding="utf-8"), path
+
     def test_api_health_still_returns_envelope(self, client):
         response = client.get("/api/health")
         assert response.status_code == 200
@@ -126,8 +202,9 @@ class TestSpaServing:
         assert "KOI_SPA_MARKER" not in response.text
 
     def test_websocket_still_served(self, client):
-        # Route precedence: /ws/download/{id} is registered before the "/"
-        # static mount, so the WebSocket keeps working with a build present.
+        # Route precedence: /ws/download/{id} is registered on the app, so the
+        # WebSocket keeps working with a build present (the frontend middleware
+        # only ever answers the app's 404s).
         with client.websocket_connect(f"/ws/download/{uuid.uuid4()}") as ws:
             event = ws.receive_json()
         assert event["type"] == "error"
@@ -138,7 +215,7 @@ class TestNoDist:
     """The build is missing (fresh clone, tests): the API must not break."""
 
     @pytest.fixture
-    def app(self, tmp_path):
+    def app(self, tmp_path, caplog_info):
         missing = tmp_path / "no-such-dist"
         assert not missing.exists()
         return make_app(tmp_path, frontend_dist_path=missing)
@@ -169,8 +246,67 @@ class TestNoDist:
         assert response.json()["code"] == 404
         assert "frontend not built" not in response.text
 
+    def test_head_placeholder_serves_headers_without_body(self, client):
+        # HEAD on the placeholder keeps HEAD semantics: 200 + headers, no body.
+        response = client.head("/")
+        assert response.status_code == 200
+        assert response.content == b""
+
+    def test_missing_build_logs_placeholder_notice(self, client, caplog_info):
+        # The placeholder is easy to miss behind a reverse proxy; the startup
+        # log line is the operational signal that no build is being served.
+        # It fires while the app fixture is being built, i.e. in the pytest
+        # *setup* phase — pytest's caplog separates phases, so the setup
+        # records must be inspected too (caplog.records alone covers only the
+        # test call phase).
+        client.get("/")
+        records = caplog_info.get_records("setup") + caplog_info.records
+        assert any(
+            "frontend build not found" in record.getMessage()
+            for record in records
+        )
+
     def test_websocket_still_served(self, client):
         with client.websocket_connect(f"/ws/download/{uuid.uuid4()}") as ws:
             event = ws.receive_json()
         assert event["type"] == "error"
         assert event["data"]["code"] == CODE_TASK_NOT_FOUND
+
+
+class TestBrokenDist:
+    """The dist directory exists but has no index.html (broken/corrupt build).
+
+    This is distinct from "no dist at all": StaticFiles is constructed (the
+    directory exists) but every lookup 404s, and the SPA fallback must NOT
+    pretend a broken build is fine — the honest answer is the app's envelope
+    404, never the "frontend not built" placeholder (that would suggest the
+    operator just needs to build, when the build is actually present but
+    unusable).
+    """
+
+    @pytest.fixture
+    def app(self, tmp_path):
+        broken = tmp_path / "broken-dist"
+        broken.mkdir()  # exists, but no index.html
+        return make_app(tmp_path, frontend_dist_path=broken)
+
+    @pytest.fixture
+    def client(self, app):
+        with TestClient(app) as client:
+            yield client
+
+    def test_root_keeps_honest_404(self, client):
+        response = client.get("/")
+        assert response.status_code == 404
+        assert response.json()["code"] == 404
+        assert "frontend not built" not in response.text
+
+    def test_deep_link_keeps_honest_404(self, client):
+        response = client.get("/login")
+        assert response.status_code == 404
+        assert response.json()["code"] == 404
+
+    def test_api_health_independent_of_broken_dist(self, client):
+        response = client.get("/api/health")
+        assert response.status_code == 200
+        assert response.json()["code"] == CODE_OK
