@@ -1,2 +1,4 @@
-// Reusable UI components. Populated in later tasks.
-export {};
+// Reusable UI components (Task 13 shell).
+export * from './AppHeader';
+export * from './ProtectedRoute';
+export * from './StatusIndicator';
