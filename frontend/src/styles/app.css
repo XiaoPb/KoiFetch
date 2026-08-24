@@ -1,0 +1,192 @@
+/* Koi Fetch app shell styles (Task 13).
+   Responsive: desktop-first with a mobile collapse at 768px. Per the plan
+   rule, no nested decorative cards — the login card is the only Card in the
+   shell and the home page uses a plain workspace container. */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: #f5f5f5;
+}
+
+/* --- Shell layout --- */
+
+.app-layout {
+  min-height: 100vh;
+  background: transparent;
+}
+
+.app-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  padding: 0 24px;
+  background: #fff;
+  border-bottom: 1px solid #f0f0f0;
+  height: auto;
+  line-height: normal;
+}
+
+.app-header-inner {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto;
+  height: 64px;
+}
+
+.app-logo {
+  font-size: 18px;
+  font-weight: 600;
+  color: rgba(0, 0, 0, 0.88);
+  white-space: nowrap;
+  text-decoration: none;
+}
+
+.app-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: auto;
+}
+
+.app-content {
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+/* --- Status indicator --- */
+
+.status-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: rgba(0, 0, 0, 0.65);
+  white-space: nowrap;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #d9d9d9;
+}
+
+.status-online .status-dot {
+  background: #52c41a;
+}
+
+.status-offline .status-dot {
+  background: #ff4d4f;
+}
+
+/* --- Global loading bar --- */
+
+.app-loading-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: #1677ff;
+  animation: app-loading-pulse 1s ease-in-out infinite;
+  z-index: 1000;
+}
+
+@keyframes app-loading-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.route-loading {
+  display: flex;
+  justify-content: center;
+  padding: 48px;
+}
+
+/* --- Pages --- */
+
+.home-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.parser-workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.login-page {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 16px;
+}
+
+.login-card {
+  width: 100%;
+  max-width: 360px;
+}
+
+.login-title {
+  text-align: center;
+  margin-bottom: 24px;
+}
+
+.login-back {
+  margin-top: 12px;
+  text-align: center;
+}
+
+/* --- Mobile --- */
+
+@media (max-width: 768px) {
+  .app-header {
+    padding: 0 12px;
+  }
+
+  .app-header-inner {
+    gap: 8px;
+    height: 56px;
+  }
+
+  .app-logo {
+    font-size: 16px;
+  }
+
+  .app-header-actions {
+    gap: 6px;
+  }
+
+  .app-content {
+    padding: 12px;
+  }
+
+  .status-indicator {
+    font-size: 12px;
+  }
+}
