@@ -1,9 +1,9 @@
-import { useState } from 'react';
-import { App, Button, Card, Form, Input, Typography } from 'antd';
+import { useEffect, useState } from 'react';
+import { Alert, App, Button, Card, Form, Input, Typography } from 'antd';
 import { LockOutlined, UserOutlined } from '@ant-design/icons';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from '../services/i18n';
-import { useAuthStore } from '../stores/authStore';
+import { isExpired, useAuthStore } from '../stores/authStore';
 import { getErrorMessage } from '../services/apiClient';
 
 interface LoginFormValues {
@@ -19,6 +19,11 @@ interface LoginLocationState {
  * Admin login page (PRD §3.4): renders standalone (no app header). Submits to
  * POST /api/auth/login via the auth store and navigates back to the page the
  * user originally requested (or home) on success.
+ *
+ * Expired-session handling (Task 16): when the page mounts with a rehydrated
+ * session whose token already expired (e.g. ProtectedRoute sent an
+ * authenticated-but-expired visitor here), it shows a clear "会话已过期" notice
+ * and drops the stale session so the next login starts clean.
  */
 export default function LoginPage(): JSX.Element {
   const { t } = useTranslation();
@@ -26,7 +31,18 @@ export default function LoginPage(): JSX.Element {
   const navigate = useNavigate();
   const location = useLocation();
   const login = useAuthStore((state) => state.login);
+  const token = useAuthStore((state) => state.token);
+  const expiresAt = useAuthStore((state) => state.expiresAt);
+  const logout = useAuthStore((state) => state.logout);
   const [submitting, setSubmitting] = useState(false);
+  const [sessionExpired, setSessionExpired] = useState(false);
+
+  useEffect(() => {
+    if (token && isExpired(expiresAt)) {
+      setSessionExpired(true);
+      logout();
+    }
+  }, [token, expiresAt, logout]);
 
   const from = (location.state as LoginLocationState | null)?.from ?? '/';
 
@@ -49,6 +65,15 @@ export default function LoginPage(): JSX.Element {
         <Typography.Title level={3} className="login-title">
           🎏 {t('login.title')}
         </Typography.Title>
+        {sessionExpired && (
+          <Alert
+            type="warning"
+            showIcon
+            message={t('login.expired')}
+            style={{ marginBottom: 16 }}
+            data-testid="login-expired"
+          />
+        )}
         <Form<LoginFormValues> layout="vertical" onFinish={onFinish} requiredMark={false}>
           <Form.Item
             name="username"
