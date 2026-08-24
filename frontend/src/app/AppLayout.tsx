@@ -1,13 +1,15 @@
 import { Layout } from 'antd';
 import { Outlet } from 'react-router-dom';
 import { AppHeader } from '../components/AppHeader';
+import { PreviewModal } from '../features/preview/PreviewModal';
 import { selectIsLoading, useAppStore } from '../stores/appStore';
 import { GlobalErrorWatcher } from './GlobalErrorWatcher';
 
 /**
- * The shared page shell: header + content region. Wraps the `/` and `/nas`
- * routes (the login page renders standalone). The global loading indicator
- * and error toast live here so every routed page gets them.
+ * The shared page shell: header + content region + the app-wide preview Modal.
+ * Wraps the `/` and `/nas` routes (the login page renders standalone). The
+ * global loading indicator and error toast live here so every routed page
+ * gets them.
  */
 export function AppLayout(): JSX.Element {
   const isLoading = useAppStore(selectIsLoading);
@@ -19,6 +21,7 @@ export function AppLayout(): JSX.Element {
       <Layout.Content className="app-content">
         <Outlet />
       </Layout.Content>
+      <PreviewModal />
       <GlobalErrorWatcher />
     </Layout>
   );
