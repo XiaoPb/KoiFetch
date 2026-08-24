@@ -61,11 +61,14 @@ class Settings(BaseModel):
     cleanup_interval_minutes: int = Field(default=60, ge=1)
     # A ``downloading`` task is considered stale (crashed worker) after this
     # many minutes since creation (Task 12 marks it ``expired`` so the
-    # expired -> pending re-download path can recover it). Must be far larger
-    # than the worker poll interval and a typical download time — v1 anchors
-    # staleness on ``created_at`` because the model has no heartbeat column
-    # (see app/workers/cleanup.py).
-    stale_download_minutes: int = Field(default=30, ge=1)
+    # expired -> pending re-download path can recover it). The anchor is
+    # ``created_at`` — the v1 model has no heartbeat column and the worker
+    # claim does not update it — so the risk window is *queueing time +
+    # download time* and has no hard upper bound: a task that sat queued long
+    # and is still in flight can be expired by design. Keep this comfortably
+    # above the realistic queue + download duration (default 60 min; the stub
+    # downloader finishes in milliseconds, see app/workers/cleanup.py).
+    stale_download_minutes: int = Field(default=60, ge=1)
 
     # --- Web/app behavior ---
     cors_origins: list[str] = Field(default_factory=list)

@@ -4,8 +4,10 @@ Task 11's worker publishes progress/terminal events here as it executes a
 download; the WebSocket endpoint (``app.api.download``) subscribes per
 connection and forwards each event to the client verbatim. The hub is
 deliberately transport-free: it knows nothing about WebSockets or the DB, so
-any publisher (worker, cleanup loop, future admin tooling) can drive live
-updates without touching the WS contract.
+any publisher (worker, future admin tooling) can drive live updates without
+touching the WS contract. (The Task 12 cleanup pass does *not* publish —
+its state changes surface through the DB-backed snapshot on connect and
+HTTP polling; see ``app.workers.cleanup``.)
 
 Design decisions (stable contract for Task 11):
 
