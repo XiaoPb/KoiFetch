@@ -56,6 +56,16 @@ class Settings(BaseModel):
     # Seconds the worker (Task 11) sleeps between idle polling rounds; batches
     # that claimed work poll again immediately (see app/workers/main.py).
     worker_poll_interval: float = Field(default=1.0, ge=0.1)
+    # How often the worker daemon (Task 12) runs the bubble-cleanup /
+    # stale-task-expiry pass, in minutes. PRD schedules hourly cleanup.
+    cleanup_interval_minutes: int = Field(default=60, ge=1)
+    # A ``downloading`` task is considered stale (crashed worker) after this
+    # many minutes since creation (Task 12 marks it ``expired`` so the
+    # expired -> pending re-download path can recover it). Must be far larger
+    # than the worker poll interval and a typical download time — v1 anchors
+    # staleness on ``created_at`` because the model has no heartbeat column
+    # (see app/workers/cleanup.py).
+    stale_download_minutes: int = Field(default=30, ge=1)
 
     # --- Web/app behavior ---
     cors_origins: list[str] = Field(default_factory=list)

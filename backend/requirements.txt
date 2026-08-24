@@ -31,3 +31,8 @@ bcrypt>=3.2,<5
 # Tokens: PyJWT signs the 24-hour admin access tokens and the five-minute
 # single-use file tokens issued by the download API (app/adapters/tokens_jwt.py).
 pyjwt>=2.13
+
+# Scheduling: APScheduler runs the worker daemon's periodic bubble-cleanup /
+# stale-task-expiry job (app/workers/cleanup.py). Pinned below 4 so the
+# 3.x BackgroundScheduler API stays stable.
+apscheduler>=3.10,<4

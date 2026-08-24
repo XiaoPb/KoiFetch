@@ -41,6 +41,8 @@ class TestDefaults:
         assert settings.download_speed_limit == 0
         assert settings.bubble_expire_hours == 24
         assert settings.worker_poll_interval == 1.0
+        assert settings.cleanup_interval_minutes == 60
+        assert settings.stale_download_minutes == 30
         assert settings.debug is False
         assert settings.tz == "Asia/Shanghai"
 
@@ -67,6 +69,8 @@ class TestEnvOverrides:
         monkeypatch.setenv("MAX_CONCURRENT", "5")
         monkeypatch.setenv("DOWNLOAD_SPEED_LIMIT", "10")
         monkeypatch.setenv("BUBBLE_EXPIRE_HOURS", "48")
+        monkeypatch.setenv("CLEANUP_INTERVAL_MINUTES", "15")
+        monkeypatch.setenv("STALE_DOWNLOAD_MINUTES", "5")
         monkeypatch.setenv("DEBUG", "true")
         monkeypatch.setenv("TZ", "UTC")
         monkeypatch.setenv("DATABASE_URL", "sqlite:///other.db")
@@ -79,6 +83,8 @@ class TestEnvOverrides:
         assert settings.max_concurrent == 5
         assert settings.download_speed_limit == 10
         assert settings.bubble_expire_hours == 48
+        assert settings.cleanup_interval_minutes == 15
+        assert settings.stale_download_minutes == 5
         assert settings.debug is True
         assert settings.tz == "UTC"
         assert settings.database_url == "sqlite:///other.db"
@@ -187,6 +193,16 @@ class TestValidation:
     def test_bubble_expire_hours_below_minimum_rejected(self, clean_env, bad):
         with pytest.raises(ValidationError):
             build(bubble_expire_hours=bad)
+
+    @pytest.mark.parametrize("bad", [0, -1, -100])
+    def test_cleanup_interval_minutes_below_minimum_rejected(self, clean_env, bad):
+        with pytest.raises(ValidationError):
+            build(cleanup_interval_minutes=bad)
+
+    @pytest.mark.parametrize("bad", [0, -1, -100])
+    def test_stale_download_minutes_below_minimum_rejected(self, clean_env, bad):
+        with pytest.raises(ValidationError):
+            build(stale_download_minutes=bad)
 
     @pytest.mark.parametrize("bad", [-1, -100])
     def test_download_speed_limit_negative_rejected(self, clean_env, bad):
