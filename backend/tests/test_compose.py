@@ -7,6 +7,15 @@ SQLite/Bubble/Pond storage, healthchecks, and explicit migration/worker startup
 commands. The test skips when PyYAML is not installed (it is not a runtime
 dependency). Full ``docker compose config`` validation is deferred to a
 Docker-enabled environment.
+
+This module also statically validates the Task 17 *smoke contract* for the
+compose variant (authored but not executed here — Docker is absent): the
+backend command chains ``alembic upgrade head && seed && uvicorn``, the worker
+runs ``python -m app.workers.main``, the backend healthcheck runs the readiness
+probe (``python -m app.health``, which requires ``code == 0`` from
+``/api/health``), and the frontend Nginx proxies both ``/api`` and ``/ws`` to
+the backend — the exact routing the end-to-end smoke walks over HTTP. The
+executable offline smoke itself lives in ``test_smoke.py``.
 """
 
 from pathlib import Path
@@ -17,6 +26,7 @@ yaml = pytest.importorskip("yaml")
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_FILE = REPO_ROOT / "docker-compose.yml"
+NGINX_CONF = REPO_ROOT / "frontend" / "nginx.conf"
 
 EXPECTED_SERVICES = {"backend", "worker", "frontend"}
 BACKEND_MOUNTS = [
@@ -113,3 +123,30 @@ class TestFrontendService:
         # Nginx serves /usr/share/nginx/html; busybox wget ships in nginx:alpine.
         test = " ".join(compose["services"]["frontend"]["healthcheck"]["test"])
         assert "wget -q -O /dev/null http://127.0.0.1/" in test
+
+
+class TestNginxProxy:
+    """The smoke contract's frontend hop: Nginx routes /api + /ws to backend.
+
+    The offline smoke (test_smoke.py) walks the API flow through the backend
+    directly; under Docker the browser talks to the frontend Nginx, which must
+    proxy REST and WebSocket traffic to the ``backend`` service on port 8000.
+    These assertions pin that routing statically (the compose variant is
+    authored + validated but not executed in this Docker-less environment).
+    """
+
+    def test_nginx_conf_exists(self):
+        assert NGINX_CONF.is_file()
+
+    def test_api_location_proxies_to_backend(self):
+        conf = NGINX_CONF.read_text(encoding="utf-8")
+        api_block = conf.split("location /api/ {", 1)[1].split("}", 1)[0]
+        assert "proxy_pass http://backend:8000;" in api_block
+
+    def test_ws_location_proxies_to_backend_with_upgrade(self):
+        conf = NGINX_CONF.read_text(encoding="utf-8")
+        ws_block = conf.split("location /ws {", 1)[1].split("}", 1)[0]
+        assert "proxy_pass http://backend:8000;" in ws_block
+        assert "proxy_http_version 1.1;" in ws_block
+        assert "proxy_set_header Upgrade $http_upgrade;" in ws_block
+        assert 'proxy_set_header Connection "upgrade";' in ws_block
