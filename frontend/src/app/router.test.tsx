@@ -13,6 +13,8 @@ vi.mock('../services/api', () => ({
   // provide them so a future render-time access cannot crash on undefined.
   parseApi: { parse: vi.fn() },
   downloadApi: { submit: vi.fn() },
+  // The /nas page imports the save endpoint (used on admin action only).
+  nasApi: { save: vi.fn() },
 }));
 
 function renderAt(route: string): void {
