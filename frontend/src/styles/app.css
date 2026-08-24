@@ -339,3 +339,13 @@ body {
     height: 110px;
   }
 }
+
+@media (max-width: 480px) {
+  .status-indicator {
+    display: none;
+  }
+
+  .app-logo {
+    font-size: 14px;
+  }
+}
