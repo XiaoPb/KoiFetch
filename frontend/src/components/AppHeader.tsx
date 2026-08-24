@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { App, Badge, Button, Dropdown, Grid, Layout, Segmented, Tooltip } from 'antd';
 import {
   AudioOutlined,
@@ -8,6 +9,7 @@ import {
 } from '@ant-design/icons';
 import { Link } from 'react-router-dom';
 import { StatusIndicator } from './StatusIndicator';
+import { DownloadCenterDrawer } from '../features/downloads/DownloadCenterDrawer';
 import { useTranslation } from '../services/i18n';
 import { useAppStore, type MediaMode } from '../stores/appStore';
 import { useAuthStore, selectIsAuthenticated } from '../stores/authStore';
@@ -15,15 +17,17 @@ import { selectActiveCount, useDownloadsStore } from '../stores/downloadsStore';
 
 /**
  * PRD header: logo 🎏 Koi Fetch / mode switch / status indicator / login
- * button (or admin dropdown) / download-center icon with badge. The segmented
- * mode switch collapses into a compact dropdown on mobile viewports so mobile
- * users keep the video/music control; the language toggle is always visible.
+ * button (or admin dropdown) / download-center icon with badge that opens the
+ * Task 15 download-center Drawer. The segmented mode switch collapses into a
+ * compact dropdown on mobile viewports so mobile users keep the video/music
+ * control; the language toggle is always visible.
  */
 export function AppHeader(): JSX.Element {
   const { t, language, toggleLanguage } = useTranslation();
   const { message } = App.useApp();
   const screens = Grid.useBreakpoint();
   const isMobile = !screens.md;
+  const [drawerOpen, setDrawerOpen] = useState(false);
 
   const mediaMode = useAppStore((state) => state.mediaMode);
   const setMediaMode = useAppStore((state) => state.setMediaMode);
@@ -40,7 +44,7 @@ export function AppHeader(): JSX.Element {
   const modeMenuItems = modeOptions.map(({ label, value }) => ({ key: value, label }));
 
   const onDownloadCenterClick = () => {
-    void message.info(t('downloadCenter.comingSoon'));
+    setDrawerOpen(true);
   };
 
   const onLogout = () => {
@@ -125,6 +129,8 @@ export function AppHeader(): JSX.Element {
           </Badge>
         </div>
       </div>
+
+      <DownloadCenterDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} />
     </Layout.Header>
   );
 }

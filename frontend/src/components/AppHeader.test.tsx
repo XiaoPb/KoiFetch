@@ -9,6 +9,9 @@ import { useAuthStore } from '../stores/authStore';
 
 vi.mock('../services/api', () => ({
   healthApi: { getHealth: vi.fn() },
+  // The download-center Drawer (Task 15) reads downloadApi only on actions;
+  // the mock keeps the module importable in header tests.
+  downloadApi: { getFileUrl: vi.fn(), submit: vi.fn(), getProgress: vi.fn() },
 }));
 
 const healthy = { status: 'ok', services: { api: 'ok' }, storage_roots: {} };
@@ -102,5 +105,13 @@ describe('AppHeader', () => {
     renderWithProviders(<AppHeader />);
     expect(screen.getByText('admin')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /登\s*录/ })).not.toBeInTheDocument();
+  });
+
+  it('opens the download-center drawer from the header badge', async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<AppHeader />);
+
+    await user.click(screen.getByTestId('download-center'));
+    expect(await screen.findByTestId('download-center-drawer')).toBeInTheDocument();
   });
 });
