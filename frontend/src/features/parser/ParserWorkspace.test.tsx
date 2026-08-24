@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
-import { screen, waitFor, within } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ParserWorkspace, MAX_TXT_IMPORT_BYTES } from './ParserWorkspace';
 import { renderWithProviders } from '../../test/utils';
@@ -201,7 +201,9 @@ describe('ParserWorkspace', () => {
     expect(screen.getByTestId('result-card-t3')).toBeInTheDocument();
 
     // Music mode: the image card stays visible, the video card hides.
-    useAppStore.setState({ mediaMode: 'music' });
+    // act() flushes the re-keyed grid synchronously (the grid remounts on
+    // mediaMode change, so a stale pre-flush element would be detached).
+    act(() => useAppStore.setState({ mediaMode: 'music' }));
     expect(await screen.findByTestId('result-card-t3')).toBeInTheDocument();
     expect(screen.queryByTestId('result-card-t1')).not.toBeInTheDocument();
   });
@@ -213,6 +215,24 @@ describe('ParserWorkspace', () => {
     await screen.findByTestId('result-card-t1');
 
     useAppStore.setState({ mediaMode: 'music' });
+    expect(await screen.findByTestId('result-card-t2')).toBeInTheDocument();
+    expect(screen.queryByTestId('result-card-t1')).not.toBeInTheDocument();
+  });
+
+  it('re-keys the grid with the media mode so cards replay the animation', async () => {
+    (parseApi.parse as Mock).mockResolvedValue({ results: [videoResult, musicResult], failed: [] });
+    renderWithProviders(<ParserWorkspace />);
+    await parseSeeded('https://example.com/v/a\nhttps://example.com/m/b');
+
+    const grid = await screen.findByTestId('parser-grid');
+    expect(grid).toHaveAttribute('data-mode', 'video');
+    expect(document.querySelector('.parser-grid .parser-grid-item')).toBeInTheDocument();
+
+    // act() flushes the re-keyed grid synchronously: React 18 defers renders
+    // scheduled outside React events, so without it the synchronous
+    // getByTestId below would read the pre-flush grid (data-mode="video").
+    act(() => useAppStore.setState({ mediaMode: 'music' }));
+    expect(screen.getByTestId('parser-grid')).toHaveAttribute('data-mode', 'music');
     expect(await screen.findByTestId('result-card-t2')).toBeInTheDocument();
     expect(screen.queryByTestId('result-card-t1')).not.toBeInTheDocument();
   });

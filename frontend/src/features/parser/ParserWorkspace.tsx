@@ -117,9 +117,14 @@ export function ParserWorkspace(): JSX.Element {
   const hasOutput = status === 'success';
 
   return (
-    <div className="parser-workspace" data-testid="parser-workspace">
+    <div className="parser-workspace" data-testid="parser-workspace" data-mode={mediaMode}>
       <div className="parser-input-area">
-        <Typography.Text type="secondary" className="mode-hint" data-testid="mode-hint">
+        <Typography.Text
+          key={mediaMode}
+          type="secondary"
+          className="mode-hint"
+          data-testid="mode-hint"
+        >
           {t('parser.modeHint', { mode: modeName })}
         </Typography.Text>
 
@@ -214,9 +219,23 @@ export function ParserWorkspace(): JSX.Element {
           )}
 
           {visibleResults.length > 0 ? (
-            <Row gutter={[16, 16]} className="parser-grid" data-testid="parser-grid">
-              {visibleResults.map((result) => (
-                <Col key={result.task_id} xs={24} sm={12} md={8} lg={6}>
+            <Row
+              key={mediaMode}
+              gutter={[16, 16]}
+              className="parser-grid"
+              data-testid="parser-grid"
+              data-mode={mediaMode}
+            >
+              {visibleResults.map((result, index) => (
+                <Col
+                  key={result.task_id}
+                  xs={24}
+                  sm={12}
+                  md={8}
+                  lg={6}
+                  className="parser-grid-item"
+                  style={{ animationDelay: `${Math.min(index, 12) * 45}ms` }}
+                >
                   <ResultCard
                     result={result}
                     downloading={Boolean(submitting[result.task_id])}
