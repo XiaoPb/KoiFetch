@@ -13,7 +13,8 @@ import type { ParseResult } from '../../types/api';
 
 /**
  * Read a plain-text file as UTF-8 (TXT batch import). Plain-text only by
- * design — no spreadsheets or archives are accepted.
+ * design — no spreadsheets or archives are accepted, and the file must be
+ * UTF-8 encoded (other encodings, e.g. GBK, will not decode correctly).
  */
 export function readTxtFile(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -23,6 +24,9 @@ export function readTxtFile(file: File): Promise<string> {
     reader.readAsText(file, 'utf-8');
   });
 }
+
+/** TXT import size guard — a huge file would freeze the tab on decode. */
+export const MAX_TXT_IMPORT_BYTES = 1024 * 1024; // 1 MB
 
 /**
  * Parser workspace (PRD §4.2): URL batch input (paste or TXT import),
@@ -64,11 +68,17 @@ export function ParserWorkspace(): JSX.Element {
   };
 
   const handleTxtImport: UploadProps['beforeUpload'] = (file) => {
-    // Plain-text batch import only (security): reject anything that is not a
-    // .txt / text/plain file before it is read.
+    // Plain-text batch import only (security). rc-upload already drops files
+    // that do not match the `accept` prop, so the isTxt check below is
+    // defense-in-depth; the size guard is the load-bearing one (accept does
+    // not limit file size).
     const isTxt = file.name.toLowerCase().endsWith('.txt') || file.type === 'text/plain';
     if (!isTxt) {
       void message.error(t('parser.txtRejected'));
+      return Upload.LIST_IGNORE;
+    }
+    if (file.size > MAX_TXT_IMPORT_BYTES) {
+      void message.error(t('parser.txtTooLarge'));
       return Upload.LIST_IGNORE;
     }
     void readTxtFile(file)
@@ -122,7 +132,12 @@ export function ParserWorkspace(): JSX.Element {
             beforeUpload={handleTxtImport}
             disabled={isLoading}
           >
-            <Button icon={<CloudUploadOutlined />} disabled={isLoading} data-testid="import-txt-button">
+            <Button
+              icon={<CloudUploadOutlined />}
+              disabled={isLoading}
+              title={t('parser.txtHint')}
+              data-testid="import-txt-button"
+            >
               {t('parser.importTxt')}
             </Button>
           </Upload>
@@ -157,7 +172,8 @@ export function ParserWorkspace(): JSX.Element {
         <>
           <div className="parser-summary" data-testid="parser-summary">
             <Typography.Text type="secondary">
-              {t('parser.summary', { ok: results.length, failed: failed.length })}
+              {/* Counts the mode-visible cards, matching the grid below. */}
+              {t('parser.summary', { ok: visibleResults.length, failed: failed.length })}
             </Typography.Text>
           </div>
 
@@ -165,8 +181,9 @@ export function ParserWorkspace(): JSX.Element {
             <div className="parser-failed" data-testid="parser-failed">
               <Typography.Text strong>{t('parser.failedTitle')}</Typography.Text>
               <ul className="parser-failed-list">
-                {failed.map((item) => (
-                  <li key={item.url} className="parser-failed-item">
+                {failed.map((item, index) => (
+                  // url + index: the same URL can appear more than once in a batch.
+                  <li key={`${item.url}-${index}`} className="parser-failed-item">
                     <Typography.Text code>{item.url}</Typography.Text>
                     <Typography.Text type="danger"> — {item.error}</Typography.Text>
                   </li>

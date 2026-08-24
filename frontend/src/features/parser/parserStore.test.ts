@@ -43,6 +43,20 @@ const musicResult: ParseResult = {
   available_bitrates: ['320kbps', 'FLAC'],
 };
 
+const imageResult: ParseResult = {
+  task_id: 't3',
+  url: 'https://example.com/p/c',
+  type: 'image',
+  platform: 'xiaohongshu',
+  title: 'Post C',
+  cover: 'https://example.com/c.jpg',
+  duration: null,
+  file_size_mb: 0.8,
+  format: 'jpg',
+  available_qualities: [],
+  available_bitrates: [],
+};
+
 const okParse = (overrides: Partial<{ results: ParseResult[]; failed: { url: string; error: string }[] }> = {}) => ({
   results: overrides.results ?? [videoResult],
   failed: overrides.failed ?? [],
@@ -60,6 +74,8 @@ describe('parserStore', () => {
       'https://b',
       'https://c',
     ]);
+    // Lone \r line endings (old-Mac TXT files) split too.
+    expect(extractUrls('https://a\rhttps://b')).toEqual(['https://a', 'https://b']);
     expect(extractUrls('   \n\n  ')).toEqual([]);
   });
 
@@ -158,10 +174,13 @@ describe('parserStore', () => {
     });
   });
 
-  it('selectVisibleResults filters cards by the active media mode', () => {
-    const all = [videoResult, musicResult];
-    expect(selectVisibleResults(all, 'video')).toEqual([videoResult]);
-    expect(selectVisibleResults(all, 'music')).toEqual([musicResult]);
+  it('selectVisibleResults shows video/music per mode and image in both modes', () => {
+    const all = [videoResult, musicResult, imageResult];
+    expect(selectVisibleResults(all, 'video')).toEqual([videoResult, imageResult]);
+    expect(selectVisibleResults(all, 'music')).toEqual([musicResult, imageResult]);
+    // image belongs to neither mode, so it must be reachable in both.
+    expect(selectVisibleResults([imageResult], 'video')).toEqual([imageResult]);
+    expect(selectVisibleResults([imageResult], 'music')).toEqual([imageResult]);
     expect(selectVisibleResults([], 'video')).toEqual([]);
   });
 });

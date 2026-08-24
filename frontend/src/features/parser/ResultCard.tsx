@@ -32,6 +32,11 @@ export interface ResultCardProps {
  * One result-card grid item (PRD §4.2.2): cover with duration badge, title,
  * platform/format tags, file size, a quality or bitrate picker when the
  * backend offered one, and [预览] / [下载] actions. Single card level only.
+ *
+ * The quality/bitrate pickers are card-local state; switching the header
+ * media mode unmounts non-matching cards, which resets their selection to the
+ * first option. Accepted trade-off: the mode filter is presentation-layer
+ * only, and a re-parse is not needed to see the card again.
  */
 export function ResultCard({ result, downloading, onPreview, onDownload }: ResultCardProps): JSX.Element {
   const { t } = useTranslation();

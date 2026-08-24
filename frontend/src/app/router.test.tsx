@@ -9,6 +9,10 @@ import { useAuthStore } from '../stores/authStore';
 vi.mock('../services/api', () => ({
   authApi: { login: vi.fn() },
   healthApi: { getHealth: vi.fn().mockResolvedValue({ status: 'ok', services: {}, storage_roots: {} }) },
+  // The home page renders the parser workspace, whose stores import these;
+  // provide them so a future render-time access cannot crash on undefined.
+  parseApi: { parse: vi.fn() },
+  downloadApi: { submit: vi.fn() },
 }));
 
 function renderAt(route: string): void {

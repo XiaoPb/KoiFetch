@@ -1,14 +1,14 @@
-import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { ParserWorkspace } from './ParserWorkspace';
+import { ParserWorkspace, MAX_TXT_IMPORT_BYTES } from './ParserWorkspace';
 import { renderWithProviders } from '../../test/utils';
 import { parseApi, downloadApi } from '../../services/api';
 import { ApiError } from '../../types/api';
 import type { ParseResult } from '../../types/api';
 import { useAppStore } from '../../stores/appStore';
-import { useDownloadsStore } from '../../stores/downloadsStore';
-import { useParserStore, PARSER_EMPTY_INPUT_MESSAGE } from './parserStore';
+import { selectActiveCount, useDownloadsStore } from '../../stores/downloadsStore';
+import { useParserStore, PARSER_EMPTY_INPUT_MESSAGE, PARSER_TOO_MANY_URLS_MESSAGE } from './parserStore';
 import { usePreviewStore } from './previewStore';
 
 vi.mock('../../services/api', () => ({
@@ -44,6 +44,20 @@ const musicResult: ParseResult = {
   available_bitrates: ['320kbps', 'FLAC'],
 };
 
+const imageResult: ParseResult = {
+  task_id: 't3',
+  url: 'https://example.com/p/c',
+  type: 'image',
+  platform: 'xiaohongshu',
+  title: 'Post C',
+  cover: 'https://example.com/c.jpg',
+  duration: null,
+  file_size_mb: 0.8,
+  format: 'jpg',
+  available_qualities: [],
+  available_bitrates: [],
+};
+
 async function submitUrls(urls: string): Promise<void> {
   const user = userEvent.setup();
   await user.type(screen.getByTestId('url-input'), urls);
@@ -54,9 +68,13 @@ describe('ParserWorkspace', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     useParserStore.setState({ input: '', results: [], failed: [], status: 'idle', error: null });
-    useDownloadsStore.setState({ items: [], activeCount: 0, submitting: {} });
+    useDownloadsStore.setState({ items: [], submitting: {} });
     usePreviewStore.setState({ activeTask: null });
     useAppStore.setState({ mediaMode: 'video' });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it('renders the input, mode hint and action buttons', () => {
@@ -102,7 +120,23 @@ describe('ParserWorkspace', () => {
     expect(screen.queryByTestId('result-card-t2')).not.toBeInTheDocument();
 
     expect(screen.getByTestId('parser-failed')).toHaveTextContent('平台不支持');
-    expect(screen.getByTestId('parser-summary')).toHaveTextContent('成功 2 个，失败 1 个');
+    // Summary counts the mode-visible cards (video mode → the video card only).
+    expect(screen.getByTestId('parser-summary')).toHaveTextContent('成功 1 个，失败 1 个');
+  });
+
+  it('renders image results in both media modes', async () => {
+    (parseApi.parse as Mock).mockResolvedValue({ results: [videoResult, imageResult], failed: [] });
+    renderWithProviders(<ParserWorkspace />);
+    await submitUrls('https://example.com/v/a\nhttps://example.com/p/c');
+
+    // Video mode: the video card and the image card.
+    expect(await screen.findByTestId('result-card-t1')).toBeInTheDocument();
+    expect(screen.getByTestId('result-card-t3')).toBeInTheDocument();
+
+    // Music mode: the image card stays visible, the video card hides.
+    useAppStore.setState({ mediaMode: 'music' });
+    expect(await screen.findByTestId('result-card-t3')).toBeInTheDocument();
+    expect(screen.queryByTestId('result-card-t1')).not.toBeInTheDocument();
   });
 
   it('switching the media mode refilters the displayed cards', async () => {
@@ -168,7 +202,7 @@ describe('ParserWorkspace', () => {
     await submitUrls('https://example.com/v/a');
 
     await user.click(await screen.findByTestId('download-t1'));
-    await waitFor(() => expect(useDownloadsStore.getState().activeCount).toBe(1));
+    await waitFor(() => expect(selectActiveCount(useDownloadsStore.getState())).toBe(1));
     expect(downloadApi.submit).toHaveBeenCalledWith('t1', { format: 'mp4', quality: '1080p' });
     expect(useDownloadsStore.getState().items[0]).toMatchObject({
       download_id: 'd1',
@@ -205,14 +239,86 @@ describe('ParserWorkspace', () => {
     );
   });
 
-  it('rejects a non-TXT import and leaves the input untouched', async () => {
+  it('ignores a non-TXT import (rc-upload pre-filters by accept)', async () => {
     renderWithProviders(<ParserWorkspace />);
     const file = new File(['nope'], 'links.csv', { type: 'text/csv' });
     const input = document.querySelector('input[type="file"]') as HTMLInputElement;
     const user = userEvent.setup();
     await user.upload(input, file);
 
+    // antd's rc-upload drops files that do not match `accept` before the
+    // workspace's beforeUpload guard ever runs, so the input stays untouched.
     await waitFor(() => expect(screen.getByTestId('url-input')).toHaveValue(''));
+  });
+
+  it('rejects an oversized TXT import with a toast', async () => {
+    renderWithProviders(<ParserWorkspace />);
+    // A file just over the 1 MB guard — decoding it would freeze the tab.
+    const big = new Array(MAX_TXT_IMPORT_BYTES + 16).fill('a').join('');
+    const file = new File([big], 'big.txt', { type: 'text/plain' });
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    const user = userEvent.setup();
+    await user.upload(input, file);
+
+    expect(await screen.findByText('TXT 文件过大(最大 1 MB)')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId('url-input')).toHaveValue(''));
+  });
+
+  it('toasts when the TXT file cannot be read', async () => {
+    // Simulate a FileReader that fails (e.g. a locked file).
+    class FailingFileReader {
+      onload: ((event: unknown) => void) | null = null;
+      onerror: ((event: unknown) => void) | null = null;
+      error: Error | null = new Error('boom');
+      readAsText(): void {
+        setTimeout(() => this.onerror?.({}), 0);
+      }
+    }
+    vi.stubGlobal('FileReader', FailingFileReader);
+
+    renderWithProviders(<ParserWorkspace />);
+    const file = new File(['content'], 'links.txt', { type: 'text/plain' });
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    const user = userEvent.setup();
+    await user.upload(input, file);
+
+    expect(await screen.findByText('TXT 文件读取失败')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId('url-input')).toHaveValue(''));
+  });
+
+  it('blocks a parse with more than 50 URLs at the component level', async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<ParserWorkspace />);
+    const urls = Array.from({ length: 51 }, (_, i) => `https://example.com/x/${i}`);
+    useParserStore.setState({ input: urls.join('\n') });
+    await user.click(screen.getByTestId('parse-button'));
+
+    expect(await screen.findByTestId('parse-error')).toHaveTextContent(PARSER_TOO_MANY_URLS_MESSAGE);
+    expect(parseApi.parse).not.toHaveBeenCalled();
+  });
+
+  it('updates the mode hint when the header mode changes', async () => {
+    renderWithProviders(<ParserWorkspace />);
+    expect(screen.getByTestId('mode-hint')).toHaveTextContent('当前模式：视频');
+
+    useAppStore.setState({ mediaMode: 'music' });
+    expect(await screen.findByText('当前模式：音乐')).toBeInTheDocument();
+  });
+
+  it('renders duplicate failed URLs without key collisions', async () => {
+    (parseApi.parse as Mock).mockResolvedValue({
+      results: [videoResult],
+      failed: [
+        { url: 'https://example.com/dup', error: '第一次失败 / first failure' },
+        { url: 'https://example.com/dup', error: '第二次失败 / second failure' },
+      ],
+    });
+    renderWithProviders(<ParserWorkspace />);
+    await submitUrls('https://example.com/v/a\nhttps://example.com/dup\nhttps://example.com/dup');
+
+    const failed = await screen.findByTestId('parser-failed');
+    expect(within(failed).getAllByText('https://example.com/dup')).toHaveLength(2);
+    expect(within(failed).getByText(/second failure/)).toBeInTheDocument();
   });
 
   it('clears the workspace via the clear button', async () => {
