@@ -49,9 +49,11 @@ WS degrades to snapshot + HTTP polling).
 
 **Frontend scope.** A browser cannot be booted in this environment, so the
 smoke exercises the exact API flow the frontend uses over the same endpoints;
-the frontend build itself is verified in Tasks 13-16 and the Nginx proxy
-contract that routes ``/api`` + ``/ws`` to the backend is statically validated
-in ``test_compose.py``.
+the frontend build itself is verified in Tasks 13-16. The no-Nginx static hop
+— the backend serving the SPA at "/" with the client-side-routing fallback —
+is exercised here against a tiny fake dist and pinned in depth by
+``test_static.py``; the Docker wiring is statically validated in
+``test_compose.py``.
 """
 
 from __future__ import annotations
@@ -85,9 +87,18 @@ def smoke_env(tmp_path_factory):
 
     See the module docstring for the fixture-design rationale. The downloader
     comes from the same factory call ``create_app`` uses, so the worker writes
-    the same deterministic 1 MiB stub file the app's service would.
+    the same deterministic 1 MiB stub file the app's service would. A tiny fake
+    frontend build (index.html) is dropped into the temp root and wired as
+    ``frontend_dist_path`` so the smoke also proves the no-Nginx static hop:
+    the backend serves the SPA at "/" on the same origin as the API.
     """
     root = tmp_path_factory.mktemp("koi-smoke")
+    dist = root / "static"
+    dist.mkdir(parents=True)
+    (dist / "index.html").write_text(
+        "<!doctype html><html><body>KOI_SMOKE_SPA</body></html>",
+        encoding="utf-8",
+    )
     settings = make_settings(
         database_url=f"sqlite:///{root / 'smoke.db'}",
         video_storage_path=root / "pond/video",
@@ -96,6 +107,7 @@ def smoke_env(tmp_path_factory):
         temp_video_path=root / "bubble/video",
         temp_image_path=root / "bubble/image",
         temp_music_path=root / "bubble/music",
+        frontend_dist_path=dist,
     )
     engine = build_engine(settings.database_url)
     Base.metadata.create_all(engine)
@@ -127,6 +139,17 @@ class TestEndToEndSmoke:
                 status == "ok"
                 for status in health_body["data"]["storage_roots"].values()
             )
+
+            # -- 1.5 the no-Nginx static hop: the backend serves the SPA ----
+            # The v1 stack has no container-internal Nginx; the backend serves
+            # the built frontend at "/" on the same origin as the API, so the
+            # browser never needs a proxy for /api or /ws (and no CORS).
+            spa = client.get("/")
+            assert spa.status_code == 200
+            assert "KOI_SMOKE_SPA" in spa.text
+            deep = client.get("/login")
+            assert deep.status_code == 200
+            assert "KOI_SMOKE_SPA" in deep.text
 
             # -- 2. parse a stub URL: deterministic metadata ------------------
             parse = client.post("/api/parse", json={"urls": [SMOKE_URL]})
