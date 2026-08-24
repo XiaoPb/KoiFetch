@@ -42,6 +42,7 @@ temp database and secret.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -75,6 +76,8 @@ from app.infrastructure.config import Settings, get_settings
 from app.infrastructure.database import get_engine
 
 __all__ = ["APP_TITLE", "APP_VERSION", "STORAGE_ROOT_FIELDS", "create_app", "app"]
+
+logger = logging.getLogger(__name__)
 
 APP_TITLE = "Koi Fetch API"
 APP_VERSION = "0.1.0"
@@ -119,6 +122,20 @@ class _FrontendMiddleware:
     Being a middleware (not a catch-all route or a "/" mount) also means
     non-404 responses pass through untouched — including streamed download
     bodies, which are never buffered.
+
+    **Caching.** The no-Nginx serving deliberately sets no ``Cache-Control``:
+    the old Nginx config gave ``/assets`` an ``expires 1y``, which is not
+    reproduced here (production deployments sit behind an external proxy that
+    can add its own caching rules). Static files still carry an ETag, so
+    ``If-None-Match`` revalidation works out of the box.
+
+    **Deployment limitation.** The API/WS exclusion (:func:`_is_api_or_ws_path`)
+    inspects the raw ``scope["path"]``, so an unknown path under a reverse-proxy
+    mount prefix — e.g. ``uvicorn --root-path /koi`` making ``/koi/api/*`` the
+    wire path — would be treated as a frontend path and answered with the SPA.
+    v1 targets root-path deployments; an app mounted under a prefix must either
+    set ``root_path`` on the ASGI scope before this middleware runs or rely on
+    the external proxy stripping the prefix.
     """
 
     def __init__(self, app: ASGIApp, dist_dir: Path) -> None:
@@ -206,7 +223,18 @@ def _add_frontend_serving(app: FastAPI, settings: Settings) -> None:
     route) so the API/WebSocket routers keep precedence AND routes registered
     after ``create_app`` keep working — the application runs first and the
     fallback only ever sees 404 responses.
+
+    Logs at startup which mode is active: the built frontend is easy to miss
+    behind a reverse proxy, and the placeholder is the operational signal that
+    no build is being served.
     """
+    if settings.frontend_dist_path.is_dir():
+        logger.info("serving frontend build from %s", settings.frontend_dist_path)
+    else:
+        logger.info(
+            "frontend build not found at %s; serving placeholder at /",
+            settings.frontend_dist_path,
+        )
     app.add_middleware(_FrontendMiddleware, dist_dir=settings.frontend_dist_path)
 
 
