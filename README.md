@@ -38,8 +38,11 @@ real `.env`; the example file contains safe local-development values only.
 | `MAX_CONCURRENT` | `3` | Concurrent downloads (`>= 1`) |
 | `DOWNLOAD_SPEED_LIMIT` | `0` | Speed limit in MB/s; `0` = unlimited |
 | `BUBBLE_EXPIRE_HOURS` | `24` | Bubble retention hours (`>= 1`) |
-| `CORS_ORIGINS` | *(none — empty list)* | Comma-separated allowed origins (no wildcard in production); example: `http://localhost:5173,http://localhost:8000` |
-| `DEBUG` | `false` | Debug mode |
+| `WORKER_POLL_INTERVAL` | `1.0` | Seconds the worker sleeps between idle poll rounds (`>= 0.1`); a batch that claimed work polls again immediately |
+| `CLEANUP_INTERVAL_MINUTES` | `60` | How often the worker's APScheduler runs the cleanup pass (bubble sweep + stale-task expiry), in minutes (`>= 1`) |
+| `STALE_DOWNLOAD_MINUTES` | `60` | A `downloading` task is expired for crashed-worker recovery after this many minutes since creation (`>= 1`); anchored on `created_at`, so the window is queue + download time |
+| `CORS_ORIGINS` | *(none — empty list)* | Comma-separated allowed origins (no wildcard in production); only needed when a different origin calls the API directly (same-origin serving needs none); example: `http://localhost:5173,http://localhost:8000` |
+| `DEBUG` | `false` | Debug mode — parsed into Settings but not consumed by v1 code (reserved) |
 | `TZ` | `Asia/Shanghai` | Application timezone (validated against the IANA database) |
 | `DATABASE_URL` | `sqlite:///./data/db/koifetch.db` | SQLAlchemy database URL |
 | `FRONTEND_DIST_PATH` | `frontend/dist` | Built frontend (Vite `dist`) the backend serves at `/`; resolved against the process CWD (run uvicorn from the repo root for the default to work), and set to `/app/static` by the Docker image. Never point it at `.` or the repo root — the path is served verbatim, so that would expose the whole tree |
@@ -125,7 +128,31 @@ process-local, so live progress pushes do not cross processes — the WS still
 serves its snapshot-on-connect event and the client reconciles live progress
 via HTTP polling (`GET /api/download/progress/{id}`, as the frontend does).
 
+## Operations
+
+The full operational guide lives in [`OPERATIONS.md`](OPERATIONS.md): the
+native development lifecycle (venv, migrations, seed, uvicorn, worker, tests,
+build), Compose commands, the complete environment-variable reference, volume /
+NAS mounts, migration and seed behavior, a troubleshooting table, the known v1
+limitations, and the exact deferred v1.1+ scope.
+
+Quick reference:
+
+- **Native full stack** — create the venv and install `backend/requirements.txt`,
+  then from `backend/`: `alembic upgrade head` → seed → uvicorn → worker. All
+  relative paths (database URL, storage roots) resolve against the process
+  working directory, so the server, worker, and migrations must share one CWD
+  (see OPERATIONS.md §1). UI development uses the Vite dev server
+  (`npm run dev --prefix frontend`), which proxies `/api` and `/ws` to
+  `localhost:8000`.
+- **Docker** — `docker compose up --build`. The frontend is compiled *inside*
+  the backend image, so `--build` (not a plain restart) is required to pick up
+  frontend changes.
+- **Troubleshooting & scope** — common failure modes, the consolidated v1
+  limitations, and the deferred v1.1+ feature list are in OPERATIONS.md (§6-8).
+
 ## Docs
 
 Product requirements and planning artifacts live in `docs/prd/` (local-only,
-not committed). See `AGENTS.md` for repository guidelines.
+not committed). See `AGENTS.md` for repository guidelines. Operational
+documentation is tracked in `OPERATIONS.md`.
