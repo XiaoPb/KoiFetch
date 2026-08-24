@@ -142,4 +142,37 @@ describe('apiClient', () => {
     await pending;
     expect(useAppStore.getState().pendingRequests).toBe(0);
   });
+
+  it('resolves a degraded health envelope (code 1, HTTP 200) when tolerance is set', async () => {
+    // The real wire shape: the backend reports degraded storage as
+    // HTTP 200 + code 1 + data.status "degraded" (main.py health()).
+    stubAdapter(() => ({
+      body: {
+        code: 1,
+        message: 'storage not ready',
+        data: {
+          status: 'degraded',
+          services: { api: 'ok', storage: 'degraded' },
+          storage_roots: { video_storage_path: 'ok', temp_music_path: 'error' },
+        },
+      },
+    }));
+
+    const data = await healthApi.getHealth();
+    expect(data).toEqual({
+      status: 'degraded',
+      services: { api: 'ok', storage: 'degraded' },
+      storage_roots: { video_storage_path: 'ok', temp_music_path: 'error' },
+    });
+  });
+
+  it('still rejects non-zero envelopes for endpoints without the tolerance flag', async () => {
+    stubAdapter(() => ({ body: { code: 1, message: 'storage not ready', data: null } }));
+    // authApi does not tolerate error envelopes — the degraded shape must
+    // keep rejecting there (and anywhere else that did not opt in).
+    await expect(authApi.login({ username: 'a', password: 'b' })).rejects.toMatchObject({
+      name: 'ApiError',
+      code: 1,
+    });
+  });
 });

@@ -8,11 +8,18 @@ import {
   type ApiEnvelope,
 } from '../types/api';
 
-// Opt-out flag for the global loading counter, e.g. background health polls
-// that should not flash the shell's loading bar. Used via per-request config.
+// Opt-out flags for the shared axios client:
+// - `skipGlobalLoading`: requests that must not flash the shell's loading bar
+//   (e.g. background health polls). Used via per-request config.
+// - `tolerateErrorEnvelope`: requests that must RESOLVE with the payload even
+//   when the envelope carries a non-zero code (e.g. /api/health's degraded
+//   response: HTTP 200 + code 1 + data.status "degraded"). The wire shape is
+//   preserved — the container readiness probe depends on code=1 — only the
+//   client-side rejection is lifted so the UI can render the degraded panel.
 declare module 'axios' {
   export interface AxiosRequestConfig {
     skipGlobalLoading?: boolean;
+    tolerateErrorEnvelope?: boolean;
   }
 }
 
@@ -102,6 +109,13 @@ apiClient.interceptors.response.use(
     if (isEnvelope(response.data)) {
       const envelope = response.data;
       if (envelope.code !== 0) {
+        if (response.config.tolerateErrorEnvelope) {
+          // Health-style degraded states: unwrap and resolve so the caller
+          // renders the payload (the wire code/HTTP status stay untouched —
+          // the compose readiness probe reads /api/health's code=1 response).
+          response.data = envelope.data;
+          return response;
+        }
         // Defensive: a 2xx carrying an error envelope (the backend maps
         // errors to proper HTTP statuses, but be robust either way).
         const apiError = new ApiError(envelope.message, envelope.code, response.status, envelope.data);

@@ -27,9 +27,17 @@ export const healthApi = {
    * GET /api/health → {status, services, storage_roots}. Polled on a
    * background interval, so it opts out of the global loading counter to
    * avoid flashing the shell's loading bar on every poll.
+   *
+   * Tolerates the degraded envelope: the backend reports degraded storage as
+   * HTTP 200 + code 1 + data.status "degraded" (the container readiness probe
+   * depends on that wire shape), which the shared client would otherwise
+   * reject — the NAS page must be able to render which root failed.
    */
   async getHealth(): Promise<HealthData> {
-    const { data } = await apiClient.get<HealthData>('/health', { skipGlobalLoading: true });
+    const { data } = await apiClient.get<HealthData>('/health', {
+      skipGlobalLoading: true,
+      tolerateErrorEnvelope: true,
+    });
     return data;
   },
 };
