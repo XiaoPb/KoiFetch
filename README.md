@@ -55,8 +55,11 @@ python -m pytest backend/tests/test_smoke.py -v
 ```
 
 **Manual without Docker.** Run the API server, the worker, and the curl flow
-locally from the venv. First-time setup (migrations + idempotent admin seed),
-from `backend/`:
+locally from the venv. All commands below run from `backend/` (the default
+`DATABASE_URL` and the six storage roots are relative to the process working
+directory, so server, worker, and migrations must share one CWD to share one
+database and one bubble/pond tree). First-time setup (migrations + idempotent
+admin seed):
 
 ```bash
 cd backend
@@ -64,12 +67,13 @@ cd backend
 ../.venv/Scripts/python.exe -m app.infrastructure.seed
 ```
 
-Then, from the repo root, start the API server (terminal 1) and the worker
-(terminal 2, from `backend/`):
+Then start the API server (terminal 1) and the worker (terminal 2), both from
+`backend/`:
 
 ```bash
-.venv/Scripts/python.exe -m uvicorn app.main:app --app-dir backend --port 8000
-cd backend && ../.venv/Scripts/python.exe -m app.workers.main
+cd backend
+../.venv/Scripts/python.exe -m uvicorn app.main:app --port 8000
+../.venv/Scripts/python.exe -m app.workers.main
 ```
 
 And walk the flow (terminal 3):
@@ -106,8 +110,12 @@ docker compose up --build
 curl -s http://localhost:5173/api/health          # frontend Nginx proxies /api
 ```
 
-then repeat the same curl flow against `http://localhost:5173` (the Nginx
-proxy also forwards `/ws` for live download progress).
+then repeat the same curl flow against `http://localhost:5173`. The Nginx
+proxy also forwards `/ws`, but note the v1 limitation: under compose the worker
+is a separate process and the WebSocket event hub is process-local, so live
+progress pushes do not cross processes — the WS still serves its snapshot-on-
+connect event and the client reconciles live progress via HTTP polling
+(`GET /api/download/progress/{id}`, as the frontend does).
 
 ## Docs
 
