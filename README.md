@@ -9,6 +9,11 @@ storage) through a Bubble (temporary staging area) with an admin panel.
 - **Frontend:** React 18 / TypeScript / Ant Design
 - **Infrastructure:** Docker Compose
 
+Static assets are served with ETags (so `If-None-Match` revalidation works) but
+no `Cache-Control`: the old Nginx `expires 1y` on `/assets` is intentionally not
+reproduced — production deployments sit behind an external proxy that can add
+its own caching rules.
+
 ## Development commands
 
 | Command | Purpose |
@@ -37,7 +42,7 @@ real `.env`; the example file contains safe local-development values only.
 | `DEBUG` | `false` | Debug mode |
 | `TZ` | `Asia/Shanghai` | Application timezone (validated against the IANA database) |
 | `DATABASE_URL` | `sqlite:///./data/db/koifetch.db` | SQLAlchemy database URL |
-| `FRONTEND_DIST_PATH` | `frontend/dist` | Built frontend (Vite `dist`) the backend serves at `/`; resolved against the process CWD (run uvicorn from the repo root for the default to work), and set to `/app/static` by the Docker image |
+| `FRONTEND_DIST_PATH` | `frontend/dist` | Built frontend (Vite `dist`) the backend serves at `/`; resolved against the process CWD (run uvicorn from the repo root for the default to work), and set to `/app/static` by the Docker image. Never point it at `.` or the repo root — the path is served verbatim, so that would expose the whole tree |
 
 ## Smoke testing
 

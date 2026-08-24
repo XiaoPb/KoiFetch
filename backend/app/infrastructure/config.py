@@ -87,6 +87,9 @@ class Settings(BaseModel):
     # it to /app/static, with FRONTEND_DIST_PATH set accordingly. When the
     # directory does not exist the app still boots and serves an honest
     # placeholder instead of the SPA (the API stays fully independent).
+    # CAUTION: this path is served verbatim at "/", so it must point at the
+    # build directory only — never at "." or the repo root, which would expose
+    # the whole tree as static files.
     frontend_dist_path: Path = Path("frontend/dist")
 
     @field_validator(
