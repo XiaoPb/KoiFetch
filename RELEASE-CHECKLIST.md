@@ -35,7 +35,7 @@ the checks in order; any unexpected failure blocks the release.
 | 8 | Live API + frontend entry routes | `uvicorn app.main:app` (temp DB + built/synthetic dist) then `curl http://127.0.0.1:8000/api/health` and `curl http://127.0.0.1:8000/` | `/api/health` → HTTP 200 `{"code":0,"data":{"status":"ok",...}}`; `/`, `/login`, deep routes → HTTP 200 SPA; unknown `/api/*` → HTTP 404 preserved | ✅ live uvicorn probe: `/api/health` 200 full readiness; `/`, `/login`, `/nonexistent-deep-route` 200 SPA; `/api/does-not-exist` 404 |
 | 9 | Hygiene — no secrets/runtime files tracked | `git ls-files` (inspect) | No `.env` (only `.env.example`, `frontend/.env.example`), no `*.db`/`*.sqlite`, no `data/` paths, no `node_modules/`, no `frontend/dist/`, no `.venv`, no `__pycache__`/`*.pyc`, no `.npm-cache` | ✅ none tracked; `.gitignore` covers all of the above |
 | 10 | Hygiene — no real secrets in tracked content | `git grep` for credential patterns | Only synthetic placeholders (`.env.example` `change-me-*`, test fixtures) | ✅ only test fixtures (`admin-s3cret-pass`, `super-secret-pw-123456`) — no real credentials, keys, or tokens |
-| 11 | Working tree clean | `git status --short` | Clean (no modified/untracked files) after the run | ✅ clean; the only tracked addition of this run is this checklist (commit `d04dbd5`) — all shim artifacts removed post-run |
+| 11 | Working tree clean | `git status --short` | Clean (no modified/untracked files) after the run | ✅ clean; the only tracked addition of this run is this checklist (commit `1d10043`) — all shim artifacts removed post-run |
 
 ## Verification evidence (most recent run)
 
