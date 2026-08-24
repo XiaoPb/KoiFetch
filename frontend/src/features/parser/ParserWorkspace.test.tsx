@@ -13,7 +13,30 @@ import { usePreviewStore } from './previewStore';
 
 vi.mock('../../services/api', () => ({
   parseApi: { parse: vi.fn() },
-  downloadApi: { submit: vi.fn() },
+  downloadApi: { submit: vi.fn(), getProgress: vi.fn() },
+}));
+
+// Task 15: downloadsStore now opens a WS client per download; jsdom has no
+// WebSocket, so the store would silently fall back to polling instead. Mock
+// the client so submit keeps the WS path (and no poll timer interferes).
+vi.mock('../../services/wsClient', () => ({
+  DownloadWsClient: class {
+    url: string;
+    status = 'open';
+    constructor(options: { url: string }) {
+      this.url = options.url;
+    }
+    subscribe(): () => void {
+      return () => undefined;
+    }
+    connect(): void {
+      this.status = 'open';
+    }
+    close(): void {
+      this.status = 'closed';
+    }
+  },
+  buildWsUrl: vi.fn((downloadId: string) => `ws://test/ws/download/${downloadId}`),
 }));
 
 const videoResult: ParseResult = {
