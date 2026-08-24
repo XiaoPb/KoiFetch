@@ -16,7 +16,15 @@ Covers :mod:`app.workers.cleanup`:
 * **Scheduling** — :func:`build_cleanup_scheduler` registers exactly one
   APScheduler interval job bound to the given interval/settings values.
 * **CLI** — ``run_cli(settings, ["--once", ...])`` runs one cleanup pass
-  against a temp engine and exits 0.
+  against a temp engine and exits 0; non-positive ``--expire-hours`` /
+  ``--stale-minutes`` overrides are rejected (argparse exits 2) so a typo can
+  never widen the sweep to *all* bubble files.
+* **Safety invariants** — expiry writes are status-guarded conditional UPDATEs
+  (a row the worker completed mid-pass is never overwritten to ``expired``);
+  the completed-row file removal never touches a path outside a bubble root
+  (a corrupt ``bubble_path`` pointing into the pond is skipped, pond is
+  permanent); a non-``FileNotFoundError`` ``OSError`` while stat-ing a file is
+  logged and skipped so one unreadable file cannot abort the pass.
 
 All timestamps are injected via ``now=`` so tests never sleep; file mtimes and
 row ``created_at``/``completed_at`` are backdated relative to the same fixed
@@ -24,13 +32,16 @@ row ``created_at``/``completed_at`` are backdated relative to the same fixed
 """
 
 import os
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
 from apscheduler.triggers.interval import IntervalTrigger
 
 from app.adapters.factory import get_storage
-from app.domain import DownloadStatus, MediaType
+from app.domain import DownloadStatus, MediaType, transition
+from app.infrastructure import config as config_module
 from app.infrastructure.database import Base, build_engine, session_scope
 from app.infrastructure.models import DownloadTask
 from app.workers import cleanup as cleanup_module
@@ -151,6 +162,38 @@ class TestFileCleanup:
 
         assert report.files_removed == 0
         assert report.files_already_absent == 1
+
+    def test_stat_error_does_not_abort_pass(self, env, monkeypatch):
+        # A non-missing OSError (e.g. permissions) while stat-ing one file is
+        # logged and skipped — it must not abort the whole sweep mid-way.
+        settings, engine, storage, _ = env
+        blocked = write_bubble(storage, MediaType.VIDEO, "blocked.mp4", hours_back=30)
+        removable = write_bubble(storage, MediaType.VIDEO, "removable.mp4", hours_back=30)
+
+        class Unstatable:
+            """A listed file whose mtime check fails like an unreadable file."""
+
+            def __init__(self, path):
+                self._path = path
+
+            def stat(self):
+                raise PermissionError("simulated permission error")
+
+        monkeypatch.setattr(
+            storage,
+            "list_files",
+            lambda media_type: (
+                [Unstatable(blocked), removable]
+                if media_type is MediaType.VIDEO
+                else []
+            ),
+        )
+
+        report = run_cleanup(engine, storage, now=NOW, expire_hours=EXPIRE_HOURS)
+
+        assert blocked.exists()
+        assert not removable.exists()
+        assert report.files_removed == 1
 
 
 class TestTaskExpiry:
@@ -292,6 +335,106 @@ class TestTaskExpiry:
         assert load_download(engine, expired).status is DownloadStatus.EXPIRED
         assert report.tasks_expired == 0
 
+    def test_completed_null_completed_at_falls_back_to_created_at(self, env):
+        # A completed row with a NULL completed_at expires on its created_at
+        # anchor when that is old...
+        settings, engine, storage, _ = env
+        task_id = seed_parse_task(engine)
+        old = seed_download(
+            engine,
+            task_id=task_id,
+            status=DownloadStatus.COMPLETED,
+            progress=100.0,
+            created_at=NOW - timedelta(hours=EXPIRE_HOURS + 6),
+            completed_at=None,
+        )
+        fresh = seed_download(
+            engine,
+            task_id=task_id,
+            status=DownloadStatus.COMPLETED,
+            progress=100.0,
+            created_at=NOW - timedelta(hours=1),
+            completed_at=None,
+        )
+
+        report = run_cleanup(engine, storage, now=NOW, expire_hours=EXPIRE_HOURS)
+
+        assert load_download(engine, old).status is DownloadStatus.EXPIRED
+        assert load_download(engine, fresh).status is DownloadStatus.COMPLETED
+        assert report.tasks_expired_by_category.completed_expired == 1
+
+    def test_completed_bubble_path_inside_pond_never_deleted(self, env):
+        # A corrupt bubble_path pointing into the pond must never delete a
+        # permanent pond file (the "never touch pond" invariant), even though
+        # the completed task itself is legitimately expired.
+        settings, engine, storage, _ = env
+        task_id = seed_parse_task(engine)
+        pond_file = storage.pond_root(MediaType.VIDEO) / "permanent.mp4"
+        pond_file.write_bytes(b"permanent")
+        download_id = seed_download(
+            engine,
+            task_id=task_id,
+            status=DownloadStatus.COMPLETED,
+            progress=100.0,
+            created_at=NOW - timedelta(hours=30),
+            completed_at=NOW - timedelta(hours=30),
+        )
+        with session_scope(engine) as session:
+            session.get(DownloadTask, download_id).bubble_path = str(pond_file)
+
+        report = run_cleanup(engine, storage, now=NOW, expire_hours=EXPIRE_HOURS)
+
+        assert load_download(engine, download_id).status is DownloadStatus.EXPIRED
+        assert pond_file.exists()  # pond survives
+        assert report.files_removed == 0
+
+    def test_expiry_write_does_not_overwrite_worker_completion(self, env, monkeypatch):
+        # The worker can commit ``completed`` between cleanup reading a stale
+        # downloading row and writing ``expired``. Expiry must be a status-
+        # guarded conditional UPDATE (WHERE status = 'downloading'), so a row
+        # the worker finished mid-pass is never overwritten to ``expired``.
+        settings, engine, storage, _ = env
+        task_id = seed_parse_task(engine)
+        download_id = seed_download(
+            engine,
+            task_id=task_id,
+            status=DownloadStatus.DOWNLOADING,
+            created_at=NOW - timedelta(minutes=STALE_MINUTES + 15),
+        )
+        real_scope = cleanup_module.session_scope
+        flipped = False
+
+        @contextmanager
+        def racing_scope(engine=None):
+            # The worker "finishes" the download on the first DB write cleanup
+            # performs (its first conditional expiry UPDATE), from a separate
+            # session — the exact interleaving of the read-then-write race.
+            with real_scope(engine) as session:
+                original_execute = session.execute
+
+                def guarded_execute(*args, **kwargs):
+                    nonlocal flipped
+                    if not flipped:
+                        flipped = True
+                        with real_scope(engine) as other:
+                            row = other.get(DownloadTask, download_id)
+                            row.status = transition(
+                                row.status, DownloadStatus.COMPLETED
+                            )
+                    return original_execute(*args, **kwargs)
+
+                session.execute = guarded_execute
+                yield session
+
+        monkeypatch.setattr(cleanup_module, "session_scope", racing_scope)
+
+        report = run_cleanup(engine, storage, now=NOW, stale_minutes=STALE_MINUTES)
+
+        assert flipped
+        assert load_download(engine, download_id).status is DownloadStatus.COMPLETED
+        assert report.tasks_expired_by_category.downloading_stale == 0
+        assert report.tasks_expired == 0
+
 
 class TestIdempotency:
     def test_second_run_removes_and_expires_nothing(self, env):
@@ -323,6 +466,43 @@ class TestIdempotency:
         assert second.files_removed == 0
         assert second.files_already_absent == 0
         assert second.tasks_expired == 0
+
+
+class TestSettingsDefaults:
+    def test_uses_settings_defaults_when_not_overridden(self, env, monkeypatch):
+        # ``run_cleanup`` without explicit expire/stale args falls back to the
+        # configured settings values: bubble_expire_hours (24 h window) and
+        # stale_download_minutes (60 min stale threshold).
+        settings, engine, storage, _ = env
+        for name in ("BUBBLE_EXPIRE_HOURS", "STALE_DOWNLOAD_MINUTES"):
+            monkeypatch.delenv(name, raising=False)
+        config_module.get_settings.cache_clear()
+        try:
+            task_id = seed_parse_task(engine)
+            pending = seed_download(
+                engine,
+                task_id=task_id,
+                status=DownloadStatus.PENDING,
+                created_at=NOW - timedelta(hours=30),
+            )
+            downloading = seed_download(
+                engine,
+                task_id=task_id,
+                status=DownloadStatus.DOWNLOADING,
+                created_at=NOW - timedelta(minutes=45),
+            )
+
+            report = run_cleanup(engine, storage, now=NOW)
+
+            assert load_download(engine, pending).status is DownloadStatus.EXPIRED
+            # 45 min of queue + download is under the 60 min stale default.
+            assert (
+                load_download(engine, downloading).status
+                is DownloadStatus.DOWNLOADING
+            )
+            assert report.tasks_expired == 1
+        finally:
+            config_module.get_settings.cache_clear()
 
 
 class TestScheduler:
@@ -435,3 +615,25 @@ class TestCli:
 
         assert code == 0
         assert load_download(engine, download_id).status is DownloadStatus.PENDING
+
+    @pytest.mark.parametrize("flag", ["--expire-hours", "--stale-minutes"])
+    @pytest.mark.parametrize("bad", ["0", "-5"])
+    def test_once_rejects_non_positive_overrides(self, tmp_path, flag, bad):
+        # The CLI is a second (unvalidated-by-Settings) entry point to a file-
+        # deleting tool: a 0/negative override must be rejected with argparse's
+        # exit code 2, never silently fall back to the default or widen the
+        # sweep to every bubble file.
+        settings, engine, storage = self._env_settings(tmp_path)
+
+        with pytest.raises(SystemExit) as excinfo:
+            cleanup_module.run_cli(settings, ["--once", flag, bad])
+
+        assert excinfo.value.code == 2
+
+    def test_once_rejects_non_numeric_override(self, tmp_path):
+        settings, engine, storage = self._env_settings(tmp_path)
+
+        with pytest.raises(SystemExit) as excinfo:
+            cleanup_module.run_cli(settings, ["--once", "--expire-hours", "abc"])
+
+        assert excinfo.value.code == 2

@@ -17,7 +17,9 @@ recovers from crashed workers:
   elapsed (anchored on ``completed_at``, falling back to ``created_at``), the
   temp bubble file is gone (either swept here or already absent) and the
   download link is dead; the row moves to the honest terminal state. Its
-  ``bubble_path`` file is removed best-effort if still present.
+  ``bubble_path`` file is removed best-effort if still present — but **only**
+  when the path is inside a bubble root; a corrupt/foreign path (e.g. pointing
+  into the pond) is skipped so permanent pond files are never deleted.
 * **Stale ``pending`` tasks → ``expired``** — a queued task that was never
   claimed within the expiry window (its data source is long gone) is expired
   rather than left pending forever.
@@ -33,21 +35,29 @@ Design decisions (stable contract for later tasks):
   where the worker is not running. The job interval is
   ``settings.cleanup_interval_minutes`` (default 60, per the PRD's hourly
   cleanup).
+* **Expiry writes are atomic and status-guarded.** Each category is a single
+  conditional ``UPDATE ... WHERE status = ...`` (mirroring the worker's
+  :func:`app.workers.worker.claim_pending_tasks`), with the target status
+  validated through :func:`transition`. A row that leaves its category
+  mid-pass — e.g. the worker completing a download between cleanup's read and
+  write — is never overwritten: the WHERE guard simply does not match. This
+  mirrors the worker's own re-check (``worker.py`` ``_record_completion``
+  abandons a row that left ``downloading``) and makes the pass safe to run
+  concurrently with an active worker.
 * **Idempotency.** A second pass removes nothing and expires nothing: swept
   files are gone, and rows that moved to ``expired`` are no longer selected.
   Missing files never raise — deletion races (a file vanishing between listing
   and delete) are caught as ``FileNotFoundError`` and counted as
   ``files_already_absent``.
-* **All status moves go through :func:`transition`.** Cleanup selects only
-  ``downloading``/``completed``/``pending`` rows (whose edges to ``expired``
-  exist in the graph), so an illegal move would raise loudly instead of
-  corrupting a row.
 * **Staleness anchors on ``created_at``.** The v1 model has no heartbeat /
-  ``updated_at`` column, so ``downloading`` staleness is measured from row
-  creation. ``stale_download_minutes`` must therefore be far larger than the
-  worker poll interval and a realistic download time (default 30 min; the stub
-  downloader completes in milliseconds). A real engine with long downloads
-  should add a heartbeat column before relying on this pass.
+  ``updated_at`` column and the worker claim does not update ``created_at``,
+  so a ``downloading`` task is measured from row *creation*: the risk window is
+  **queueing time + download time** and has no hard upper bound. The default
+  (``STALE_DOWNLOAD_MINUTES`` = 60) assumes a task is claimed and finished
+  within an hour of submission — true for the stub downloader (milliseconds);
+  a real engine with long downloads should add a heartbeat column before
+  relying on this pass, and operators should size the threshold against their
+  worst realistic queue + download duration.
 * **No WebSocket events.** Cleanup does not publish through the event hub: in
   the Docker topology the worker is a separate process whose hub is
   process-local, so events would never reach API subscribers. The WS endpoint
@@ -56,13 +66,20 @@ Design decisions (stable contract for later tasks):
   ``download_events.py``).
 * **Ordering.** The file sweep runs first; task expiry follows. Completed rows
   whose file was just swept find it already absent and simply move to
-  ``expired`` (no double-counting: the sweep counted the removal).
+  ``expired`` (no double-counting: the sweep counted the removal). The
+  just-expired completed rows' bubble files are removed *after* the status
+  flip commits, so a crash mid-pass never leaves files deleted under rows that
+  are still ``completed``.
+* **CLI daemon mode.** ``python -m app.workers.cleanup`` without ``--once``
+  starts a second cleanup daemon for environments where the worker is not
+  running. Running it alongside the worker means the pass fires twice per
+  interval (idempotent, so harmless, but worth knowing); prefer the worker's
+  built-in scheduler and reserve the CLI for ``--once`` ops runs.
 """
 
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import logging
 import signal
 import threading
@@ -71,11 +88,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from apscheduler.schedulers.background import BackgroundScheduler
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine, and_, or_, select, update
 
 from app.adapters.factory import get_storage
 from app.adapters.protocols import StorageAdapter
-from app.domain import DownloadStatus, MediaType, transition
+from app.domain import DownloadStatus, MediaType, is_within, transition
 from app.infrastructure.config import Settings, get_settings
 from app.infrastructure.database import get_engine, session_scope
 from app.infrastructure.models import DownloadTask
@@ -168,8 +185,9 @@ def _sweep_bubble_files(
     ``now - expire_hours``. A file that vanishes between listing and deletion
     raises ``FileNotFoundError`` from the adapter; that is caught and counted
     as ``files_already_absent`` — the pass never crashes on a missing file.
-    Any other ``OSError`` (e.g. permissions) is logged and skipped so one
-    un-deletable file cannot abort the whole pass.
+    Any other ``OSError`` (e.g. permissions) while stat-ing *or* deleting is
+    logged and skipped so one unreadable/un-deletable file cannot abort the
+    whole pass.
     """
     cutoff = now - timedelta(hours=expire_hours)
     removed = 0
@@ -180,6 +198,9 @@ def _sweep_bubble_files(
                 old = path.stat().st_mtime < cutoff.timestamp()
             except FileNotFoundError:  # vanished before we could even stat it
                 already_absent += 1
+                continue
+            except OSError:
+                logger.debug("could not stat %s during cleanup", path, exc_info=True)
                 continue
             if not old:
                 continue  # fresh file — keep
@@ -201,60 +222,89 @@ def _expire_stale_tasks(
     stale_minutes: int,
     report: CleanupReport,
 ) -> CleanupReport:
-    """Mark stale tasks ``expired`` (all moves through the domain transition).
+    """Mark stale tasks ``expired``; every write is atomic and status-guarded.
 
     * ``downloading`` rows older than ``stale_minutes`` (crashed worker).
     * ``pending`` rows older than the ``expire_hours`` window (never claimed).
     * ``completed`` rows whose retention anchor (``completed_at``, falling
-      back to ``created_at``) is older than the window — their bubble file is
-      gone (swept above or already absent); the file is removed best-effort if
-      it still exists (counted as a removal).
+      back to ``created_at``) is older than the window.
 
-    Rows in any other status (``failed``, ``expired``) are never selected, and
-    every status move goes through :func:`transition` so an illegal move would
-    raise loudly instead of corrupting a row.
+    Each category is one conditional ``UPDATE ... WHERE status = ...`` with the
+    target status validated through :func:`transition` — mirroring the
+    worker's atomic claim — so a row that leaves its category between cleanup's
+    read and write (e.g. the worker completing a download mid-pass) is never
+    overwritten to ``expired``. ``RETURNING`` hands back exactly the rows this
+    statement flipped; their bubble files are removed afterwards, contained to
+    the bubble roots (a foreign path — e.g. into the pond — is skipped and
+    counted as already absent; permanent pond files are never deleted).
     """
-    counts = report.tasks_expired_by_category
-    files_removed = report.files_removed
-
     stale_cutoff = now - timedelta(minutes=stale_minutes)
     expire_cutoff = now - timedelta(hours=expire_hours)
+    files_removed = report.files_removed
+    files_already_absent = report.files_already_absent
 
     with session_scope(engine) as session:
-        downloading = session.scalars(
-            select(DownloadTask).where(
+        stale = session.execute(
+            update(DownloadTask)
+            .where(
                 DownloadTask.status == DownloadStatus.DOWNLOADING,
                 DownloadTask.created_at < stale_cutoff,
             )
+            .values(
+                status=transition(DownloadStatus.DOWNLOADING, DownloadStatus.EXPIRED)
+            )
         )
-        for row in downloading:
-            row.status = transition(row.status, DownloadStatus.EXPIRED)
-            counts = _bump(counts, "downloading_stale")
+        downloading_stale = stale.rowcount
 
-        pending = session.scalars(
-            select(DownloadTask).where(
+        never_claimed = session.execute(
+            update(DownloadTask)
+            .where(
                 DownloadTask.status == DownloadStatus.PENDING,
                 DownloadTask.created_at < expire_cutoff,
             )
+            .values(status=transition(DownloadStatus.PENDING, DownloadStatus.EXPIRED))
         )
-        for row in pending:
-            row.status = transition(row.status, DownloadStatus.EXPIRED)
-            counts = _bump(counts, "pending_stale")
+        pending_stale = never_claimed.rowcount
 
-        # Completed rows are few in v1; filter the anchor (completed_at or
-        # created_at) in Python so a NULL completed_at never mis-expires a
-        # freshly created row.
-        completed = session.scalars(
-            select(DownloadTask).where(DownloadTask.status == DownloadStatus.COMPLETED)
+        # Retention anchor: completed_at, falling back to created_at — a NULL
+        # completed_at must never expire a freshly created row.
+        anchor_expired = or_(
+            and_(
+                DownloadTask.completed_at.is_(None),
+                DownloadTask.created_at < expire_cutoff,
+            ),
+            DownloadTask.completed_at < expire_cutoff,
         )
-        for row in completed:
-            anchor = row.completed_at or row.created_at
-            if anchor >= expire_cutoff:
-                continue
-            row.status = transition(row.status, DownloadStatus.EXPIRED)
-            counts = _bump(counts, "completed_expired")
-            if row.bubble_path:
+        completed = session.execute(
+            update(DownloadTask)
+            .where(
+                DownloadTask.status == DownloadStatus.COMPLETED,
+                anchor_expired,
+            )
+            .values(status=transition(DownloadStatus.COMPLETED, DownloadStatus.EXPIRED))
+            .returning(DownloadTask.download_id)
+        )
+        completed_ids = list(completed.scalars())
+
+    # Best-effort bubble-file removal for the just-expired completed rows, run
+    # after the status flip committed so a crash mid-pass never leaves files
+    # deleted under rows that are still ``completed``.
+    if completed_ids:
+        with session_scope(engine) as session:
+            rows = session.scalars(
+                select(DownloadTask).where(
+                    DownloadTask.download_id.in_(completed_ids)
+                )
+            )
+            for row in rows:
+                if not row.bubble_path:
+                    continue
                 bubble = Path(row.bubble_path)
+                if not _is_bubble_path(storage, bubble):
+                    # Out of the bubble roots (corrupt/foreign path): never
+                    # delete — pond is permanent. Counted as already absent.
+                    files_already_absent += 1
+                    continue
                 if storage.exists(bubble):
                     try:
                         storage.delete(bubble)
@@ -269,15 +319,24 @@ def _expire_stale_tasks(
 
     return CleanupReport(
         files_removed=files_removed,
-        files_already_absent=report.files_already_absent,
-        tasks_expired_by_category=counts,
+        files_already_absent=files_already_absent,
+        tasks_expired_by_category=TaskExpiryCounts(
+            downloading_stale=downloading_stale,
+            completed_expired=len(completed_ids),
+            pending_stale=pending_stale,
+        ),
     )
 
 
-def _bump(counts: TaskExpiryCounts, category: str) -> TaskExpiryCounts:
-    """Return ``counts`` with ``category`` incremented (immutable dataclass)."""
-    return dataclasses.replace(
-        counts, **{category: getattr(counts, category) + 1}
+def _is_bubble_path(storage: StorageAdapter, path: Path) -> bool:
+    """True when ``path`` lives inside one of the adapter's bubble roots.
+
+    The invariant that matters is "never delete pond files", so *any* bubble
+    root counts — bucket attribution (which media type owns the row) is not
+    required to safely remove an actual bubble temp file.
+    """
+    return any(
+        is_within(storage.bubble_root(media_type), path) for media_type in MediaType
     )
 
 
@@ -316,6 +375,21 @@ def build_cleanup_scheduler(
     return scheduler
 
 
+def _positive_int(value: str) -> int:
+    """Argparse type: a positive integer (>= 1).
+
+    The CLI is a second entry point to a file-deleting tool, outside the
+    Settings ``ge=1`` validation — a 0 or negative ``--expire-hours`` would
+    silently widen the sweep to *every* bubble file (a negative window puts
+    the cutoff in the future). Reject such values with a clear argparse error
+    (exit code 2) instead of letting them through.
+    """
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be >= 1")
+    return parsed
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m app.workers.cleanup",
@@ -328,15 +402,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--expire-hours",
-        type=int,
+        type=_positive_int,
         default=None,
-        help="override the bubble retention window in hours",
+        help="override the bubble retention window in hours (>= 1)",
     )
     parser.add_argument(
         "--stale-minutes",
-        type=int,
+        type=_positive_int,
         default=None,
-        help="override the stale-downloading threshold in minutes",
+        help="override the stale-downloading threshold in minutes (>= 1)",
     )
     return parser
 
@@ -347,14 +421,25 @@ def run_cli(settings: Settings, argv: list[str] | None = None) -> int:
     ``--once`` runs a single pass and exits (the ops/testing mode). Without it
     the CLI starts the scheduler daemon and blocks until SIGTERM/SIGINT — for
     environments where the worker daemon is not running. ``--expire-hours`` /
-    ``--stale-minutes`` override the settings values for one-shot runs.
+    ``--stale-minutes`` override the settings values for one-shot runs and
+    must be >= 1 (argparse rejects 0/negative with exit code 2).
     """
-    args = _build_parser().parse_args(argv)
+    return _run_with_args(settings, _build_parser().parse_args(argv))
 
+
+def _run_with_args(settings: Settings, args: argparse.Namespace) -> int:
     engine = get_engine(settings.database_url)
     storage = get_storage(settings)
-    expire_hours = args.expire_hours or settings.bubble_expire_hours
-    stale_minutes = args.stale_minutes or settings.stale_download_minutes
+    expire_hours = (
+        args.expire_hours
+        if args.expire_hours is not None
+        else settings.bubble_expire_hours
+    )
+    stale_minutes = (
+        args.stale_minutes
+        if args.stale_minutes is not None
+        else settings.stale_download_minutes
+    )
 
     if args.once:
         report = run_cleanup(
@@ -407,7 +492,7 @@ def main() -> None:
     missing (the documented Settings fail-fast contract).
     """
     args = _build_parser().parse_args()
-    raise SystemExit(run_cli(get_settings(), None))
+    raise SystemExit(_run_with_args(get_settings(), args))
 
 
 if __name__ == "__main__":
