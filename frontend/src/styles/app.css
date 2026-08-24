@@ -133,6 +133,27 @@ body {
   gap: 16px;
 }
 
+/* --- Home hero band (koi orange gradient) --- */
+
+.home-hero {
+  padding: 28px 24px;
+  border-radius: 16px;
+  background: linear-gradient(135deg, #ffb34d 0%, #fa8c16 55%, #fa541c 100%);
+  color: #fff;
+}
+
+.home-hero-title.ant-typography {
+  margin: 0 0 6px;
+  color: #fff;
+  font-size: 26px;
+}
+
+.home-hero-sub.ant-typography {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 14px;
+}
+
 .parser-workspace {
   display: flex;
   flex-direction: column;

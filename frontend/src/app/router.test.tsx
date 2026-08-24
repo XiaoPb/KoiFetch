@@ -57,6 +57,12 @@ describe('router', () => {
     expect(await screen.findByText('解析工作台')).toBeInTheDocument();
   });
 
+  it('renders the home hero band with the subtitle', async () => {
+    renderAt('/');
+    expect(await screen.findByTestId('home-hero')).toBeInTheDocument();
+    expect(screen.getByText('视频 · 音乐 · 图片，粘贴链接一键解析下载')).toBeInTheDocument();
+  });
+
   it('redirects unauthenticated users from /nas to /login', async () => {
     renderAt('/nas');
     expect(await screen.findByText(/管理员登录/)).toBeInTheDocument();

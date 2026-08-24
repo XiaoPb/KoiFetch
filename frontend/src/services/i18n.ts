@@ -24,6 +24,7 @@ const zh = {
   'header.adminMenu.nas': 'NAS 管理',
 
   'home.title': '解析工作台',
+  'home.subtitle': '视频 · 音乐 · 图片，粘贴链接一键解析下载',
 
   // Parser workspace (Task 14)
   'parser.placeholder': '粘贴链接，每行一个...',
@@ -159,6 +160,7 @@ const en: Record<TranslationKey, string> = {
   'header.adminMenu.nas': 'NAS Admin',
 
   'home.title': 'Parser Workspace',
+  'home.subtitle': 'Video · Music · Images — parse and download in one click',
 
   // Parser workspace (Task 14)
   'parser.placeholder': 'Paste links, one per line...',
