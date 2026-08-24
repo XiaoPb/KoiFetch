@@ -34,7 +34,7 @@ const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
 /**
  * Derive the WebSocket URL for a download. Uses `VITE_WS_BASE_URL` when set;
  * otherwise derives ws:// or wss:// from the current page origin so the Vite
- * dev proxy and the nginx /ws location both work unchanged.
+ * dev proxy and the backend's same-origin /ws serving both work unchanged.
  */
 export function buildWsUrl(downloadId: string): string {
   const override = import.meta.env.VITE_WS_BASE_URL as string | undefined;

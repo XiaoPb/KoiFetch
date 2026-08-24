@@ -1,0 +1,32 @@
+# Build-context exclusions for the repository-root context used by the
+# multi-stage backend/Dockerfile (it builds the frontend from ./frontend and
+# copies ./backend into the image). Keep the context small and never ship
+# secrets, tests, virtualenvs, node_modules, or runtime data.
+
+# Python virtualenvs, bytecode, caches
+.venv/
+**/.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+
+# Node build artifacts (installed inside the image by npm ci)
+node_modules/
+frontend/dist/
+frontend/node_modules/
+
+# Runtime data (SQLite, Bubble, Pond) comes from Compose bind mounts
+data/
+
+# Tests are not shipped in the image
+backend/tests/
+
+# Secrets & local env files (the real .env is passed via Compose env_file)
+.env
+.env.*
+
+# Version control and local docs
+.git/
+.gitignore
+docs/

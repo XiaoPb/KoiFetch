@@ -1,15 +1,20 @@
-# Koi Fetch local stack: frontend (Nginx serving the React build), backend
-# (FastAPI API / auth / orchestration), worker (background parse / download /
+# Koi Fetch local stack: backend (FastAPI API + auth + orchestration + the
+# built frontend served at "/") and worker (background parse / download /
 # cleanup jobs).
 #
+# There is no container-internal Nginx anymore: the backend image builds the
+# frontend and serves it at "/", so /api and /ws are same-origin and need no
+# reverse proxy (production deployments sit behind their own external proxy).
+# Host port 8000 therefore exposes the API AND the SPA on one origin.
+#
 # Workflow: copy .env.example to .env, adjust values, then
-# `docker compose up --build`. The backend and worker share one Python image
-# (./backend/Dockerfile) and differ only in their startup command:
+# `docker compose up --build`. Both services share one Python image
+# (./backend/Dockerfile, multi-stage: a Node stage builds the frontend, the
+# Python stage runs backend + static serving) and differ only in their startup
+# command:
 #   - backend:  `alembic upgrade head && python -m app.infrastructure.seed &&
 #               uvicorn ...`  (migrations, then the idempotent admin seed, then API)
 #   - worker:   `python -m app.workers.main`           (worker entrypoint module)
-# The worker module arrives in a later task; the command below defines its
-# shape now so the stack boots end-to-end once it lands.
 #
 # Storage layout: SQLite under ./data/db, Bubble (temporary) under
 # ./data/bubble, Pond (permanent) under ./data/pond — all bind-mounted into the
@@ -19,13 +24,19 @@ name: koi-fetch
 
 services:
   backend:
+    # The build context is the repository root: the multi-stage Dockerfile
+    # builds the frontend from ./frontend and copies the dist into the image.
     build:
-      context: ./backend
+      context: .
+      dockerfile: backend/Dockerfile
     image: koi-fetch-backend:local
     env_file: .env
     environment:
       # Per PRD deployment; falls back to Asia/Shanghai even if .env omits TZ.
       TZ: ${TZ:-Asia/Shanghai}
+      # The image copies the built frontend to /app/static (see Dockerfile);
+      # override the native default (frontend/dist) so the backend serves it.
+      FRONTEND_DIST_PATH: /app/static
     volumes:
       - ./data/db:/app/data/db
       - ./data/bubble:/app/data/bubble
@@ -34,13 +45,14 @@ services:
       - sh
       - -c
       - alembic upgrade head && python -m app.infrastructure.seed && uvicorn app.main:app --host 0.0.0.0 --port 8000
+    # One origin for everything: the SPA at / and the API/WS on /api and /ws.
     ports:
       - "8000:8000"
     restart: unless-stopped
     healthcheck:
       # Runs the app's readiness probe (app/health.py): /api/health always
       # returns 200 and reports readiness in the body, so the probe requires
-      # code == 0 — `depends_on: service_healthy` on worker/frontend therefore
+      # code == 0 — `depends_on: service_healthy` on the worker therefore
       # reflects storage readiness, not just a live HTTP server.
       test:
         - CMD
@@ -54,7 +66,8 @@ services:
 
   worker:
     build:
-      context: ./backend
+      context: .
+      dockerfile: backend/Dockerfile
     image: koi-fetch-backend:local
     env_file: .env
     environment:
@@ -71,25 +84,3 @@ services:
       backend:
         condition: service_healthy
     restart: unless-stopped
-
-  frontend:
-    build:
-      context: ./frontend
-    image: koi-fetch-frontend:local
-    # 5173 matches the local-dev CORS origin (http://localhost:5173) so the
-    # containerized frontend is reachable at the same origin as the Vite dev
-    # server. Nginx proxies /api and /ws to the backend service.
-    ports:
-      - "5173:80"
-    restart: unless-stopped
-    depends_on:
-      backend:
-        condition: service_healthy
-    healthcheck:
-      test:
-        - CMD-SHELL
-        - wget -q -O /dev/null http://127.0.0.1/ || exit 1
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s

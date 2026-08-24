@@ -4,10 +4,10 @@ import react from '@vitejs/plugin-react';
 
 // Koi Fetch frontend (Task 13 shell).
 //
-// - Build output stays at `dist/` (Vite's default outDir) — the Task 3
-//   frontend Dockerfile copies `/app/dist` into the nginx image, so it must
-//   not be changed. The nginx SPA serves from the domain root, so `base`
-//   stays the default `/`.
+// - Build output stays at `dist/` (Vite's default outDir) — the multi-stage
+//   backend Dockerfile copies /build/dist into the backend image, which serves
+//   it at "/". `base` stays the default `/` (absolute asset paths), matching
+//   that root serving.
 // - Dev server runs on 5173 and proxies /api + /ws to the local backend
 //   (http://localhost:8000). Same-origin proxying means local development
 //   needs no CORS setup (the backend's CORS_ORIGINS default is empty).

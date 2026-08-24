@@ -26,9 +26,9 @@ declare module 'axios' {
 /**
  * Base URL of the backend REST API. Defaults to the same-origin `/api`
  * prefix — the Vite dev server proxies it to http://localhost:8000 and the
- * nginx deployment proxies it to the backend service — so local development
- * needs no CORS setup. Deployments on a different origin override it with
- * `VITE_API_BASE_URL`.
+ * backend serves the built frontend at "/" in Docker, so /api is same-origin
+ * either way — meaning local development needs no CORS setup. Deployments on
+ * a different origin override it with `VITE_API_BASE_URL`.
  */
 export const API_BASE_URL: string =
   (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? '/api';
