@@ -239,15 +239,22 @@ describe('ParserWorkspace', () => {
     );
   });
 
-  it('ignores a non-TXT import (rc-upload pre-filters by accept)', async () => {
+  it('rejects a non-TXT file via the workspace guard with a toast', async () => {
+    // The OS file dialog treats `accept` as advisory, so a non-TXT file CAN be
+    // picked in a real browser. userEvent pre-filters by accept by default
+    // (applyAccept), which would bypass the app entirely — disable that so the
+    // .csv reaches beforeUpload exactly as it would from a real picker.
+    const user = userEvent.setup({ applyAccept: false });
     renderWithProviders(<ParserWorkspace />);
     const file = new File(['nope'], 'links.csv', { type: 'text/csv' });
     const input = document.querySelector('input[type="file"]') as HTMLInputElement;
-    const user = userEvent.setup();
     await user.upload(input, file);
 
-    // antd's rc-upload drops files that do not match `accept` before the
-    // workspace's beforeUpload guard ever runs, so the input stays untouched.
+    // rc-upload's input-change handler passes every file to beforeUpload when
+    // `directory` is unset (`!directory || attrAccept(...)`), so the
+    // workspace's isTxt guard is load-bearing here: it toasts and returns
+    // Upload.LIST_IGNORE, leaving the input untouched.
+    expect(await screen.findByText('仅支持 TXT 文本文件')).toBeInTheDocument();
     await waitFor(() => expect(screen.getByTestId('url-input')).toHaveValue(''));
   });
 

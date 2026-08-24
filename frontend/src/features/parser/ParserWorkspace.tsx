@@ -68,10 +68,13 @@ export function ParserWorkspace(): JSX.Element {
   };
 
   const handleTxtImport: UploadProps['beforeUpload'] = (file) => {
-    // Plain-text batch import only (security). rc-upload already drops files
-    // that do not match the `accept` prop, so the isTxt check below is
-    // defense-in-depth; the size guard is the load-bearing one (accept does
-    // not limit file size).
+    // Plain-text batch import only (security). On the picker (input-change)
+    // path rc-upload filters with `!directory || attrAccept(...)`, which
+    // passes EVERY file when `directory` is unset — so the isTxt guard below
+    // is load-bearing there and rejects non-TXT files here. Only the
+    // drag-drop path pre-filters by accept (where this guard is
+    // defense-in-depth). The size guard is always load-bearing: accept never
+    // limits file size.
     const isTxt = file.name.toLowerCase().endsWith('.txt') || file.type === 'text/plain';
     if (!isTxt) {
       void message.error(t('parser.txtRejected'));
