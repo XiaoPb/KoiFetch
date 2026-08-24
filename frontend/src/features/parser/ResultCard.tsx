@@ -76,7 +76,7 @@ export function ResultCard({ result, downloading, onPreview, onDownload }: Resul
           <div
             className="result-card-type"
             data-testid={`type-badge-${result.task_id}`}
-            aria-label={result.type}
+            aria-hidden="true"
           >
             {TYPE_BADGE[result.type] ?? null}
           </div>
