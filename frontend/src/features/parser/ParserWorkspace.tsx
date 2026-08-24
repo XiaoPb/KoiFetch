@@ -127,7 +127,13 @@ export function ParserWorkspace(): JSX.Element {
           <Input.Search
             value={input}
             onChange={(event) => setInput(event.target.value)}
-            onSearch={handleParse}
+            onSearch={(_value, _event, info) => {
+              // antd fires onSearch with source 'clear' when the allowClear ✖
+              // is clicked — that must only clear the field, never parse.
+              if (info?.source !== 'clear') {
+                handleParse();
+              }
+            }}
             placeholder={t('parser.placeholder')}
             allowClear
             loading={isLoading}

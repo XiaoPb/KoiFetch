@@ -243,6 +243,19 @@ describe('ParserWorkspace', () => {
     expect(parseApi.parse).toHaveBeenCalledWith(['https://example.com/v/a']);
   });
 
+  it('clearing the input with the allowClear icon does not trigger a parse', async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<ParserWorkspace />);
+    await user.type(screen.getByTestId('url-input'), 'https://example.com/v/a');
+
+    // antd renders the allowClear ✖ as role="button" once the input has a value.
+    await user.click(screen.getByRole('button', { name: /close/i }));
+
+    expect(parseApi.parse).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('parse-error')).not.toBeInTheDocument();
+    expect(screen.getByTestId('url-input')).toHaveValue('');
+  });
+
   it('shows the backend error with a working retry', async () => {
     (parseApi.parse as Mock).mockRejectedValueOnce(new ApiError('URL格式无效 / Invalid URL format', 1002, 400));
     (parseApi.parse as Mock).mockResolvedValueOnce({ results: [videoResult], failed: [] });
