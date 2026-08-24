@@ -212,8 +212,8 @@ export const translations: Record<Language, Record<TranslationKey, string>> = { 
 
 /**
  * Translate a key for the active language, interpolating `{name}` tokens with
- * `params` (e.g. `translate('zh', 'download.progress', { percent: 45 })` →
- * "下载进度 45%"). Missing params are left as the literal `{name}` token so
+ * `params` (e.g. `translate('zh', 'downloads.remainingMinutes', { value: 2 })`
+ * → "约 2 分钟"). Missing params are left as the literal `{name}` token so
  * a missing argument never silently renders a blank.
  */
 export function translate(

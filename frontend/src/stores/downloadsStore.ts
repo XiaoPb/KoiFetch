@@ -54,8 +54,8 @@ import type {
  *   endpoint (the backend contract is submit/progress/file/WS only), so the
  *   store starts empty on page load: after an F5, in-flight/completed
  *   downloads disappear from the UI even though the server-side work
- *   continues. This is a known, accepted v1 constraint — recovery would need
- *   a v1.1 `GET /api/downloads` endpoint (see TODO below).
+ *   continues. This is a known, accepted v1 constraint; recovery would need
+ *   a v1.1 `GET /api/downloads` endpoint (not in scope for v1).
  * - **Terminal reconciliation.** A late snapshot (poll tick or stale socket
  *   event) can never move a terminal item back to an active state — see
  *   `applySnapshot`.
