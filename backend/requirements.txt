@@ -23,6 +23,11 @@ pytest>=8.4
 # compose suite because PyYAML arrived only as a transitive dependency.
 PyYAML>=6.0
 
+# Test dependency: backend/tests/test_download_ws.py drives the progress
+# WebSocket with websockets.sync.client (added in websockets 12.0). Not a
+# runtime dependency — the app's own WS server runs through Starlette.
+websockets>=12.0
+
 # Persistence: SQLAlchemy ORM (app/infrastructure/models.py), Alembic
 # migrations (backend/alembic, run via `alembic upgrade head` at deploy time),
 # and bcrypt for the admin password hash (app/infrastructure/seed.py).
