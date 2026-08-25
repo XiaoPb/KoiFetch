@@ -61,3 +61,6 @@ parse-video-py @ git+https://github.com/wujunwei928/parse-video-py.git@5fcf87256
 # `.venv/bin/python backend/scripts/patch_musicdl_py310.py` (installs an
 # idempotent typing.Unpack backport shim; not needed on Python >= 3.11).
 musicdl>=2.13.6,<3
+# typing_extensions backs the 3.10 shim above (typing.Unpack backport). musicdl
+# does not declare it, so it must be explicit here; Unpack exists since 4.1.
+typing-extensions>=4.1

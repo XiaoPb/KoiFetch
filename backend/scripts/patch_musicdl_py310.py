@@ -103,7 +103,11 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     site_packages = (args.site_packages or _site_packages()).resolve()
-    module_written, pth_written = install_shim(site_packages)
+    try:
+        module_written, pth_written = install_shim(site_packages)
+    except OSError as exc:
+        print(f"cannot write to {site_packages}: {exc}", file=sys.stderr)
+        return 1
     print(
         f"{'installed' if module_written else 'present'} {_SHIM_MODULE}.py "
         f"{'installed' if pth_written else 'present'} {_SHIM_MODULE}.pth "

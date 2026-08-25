@@ -113,3 +113,47 @@ class TestPatchMusicdlPy310:
         )
         assert probe.returncode == 0, probe.stderr
         assert "client ok" in probe.stdout
+
+    def test_pth_startup_mechanism(self, site_dir):
+        # The exact mechanism production relies on: site.addsitedir processes
+        # .pth files, so a fresh interpreter (with -S, isolated from the
+        # venv's own .pth files) gets typing.Unpack before any package
+        # imports purely from the shim's .pth.
+        import sysconfig
+
+        _run("--site-packages", str(site_dir))
+        env = dict(os.environ)
+        # -S drops site-packages from sys.path; typing_extensions must be
+        # reachable for the shim, so add the real purelib explicitly.
+        env["PYTHONPATH"] = os.pathsep.join(
+            [sysconfig.get_paths()["purelib"], str(site_dir)]
+        )
+        code = (
+            "import site\n"
+            f"site.addsitedir({str(site_dir)!r})\n"
+            "import typing\n"
+            "assert hasattr(typing, 'Unpack'), 'typing.Unpack not set by .pth'\n"
+            "from typing import Unpack\n"
+            "print('pth ok')\n"
+        )
+        probe = subprocess.run(
+            [sys.executable, "-S", "-c", code],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        assert probe.returncode == 0, probe.stderr
+        assert "pth ok" in probe.stdout
+
+    def test_unwritable_site_packages_fails_cleanly(self, tmp_path):
+        if os.geteuid() == 0:
+            pytest.skip("chmod is ineffective for root")
+        locked = tmp_path / "locked"
+        locked.mkdir()
+        locked.chmod(0o555)
+        try:
+            result = _run("--site-packages", str(locked))
+            assert result.returncode == 1
+            assert "cannot write to" in result.stderr
+        finally:
+            locked.chmod(0o755)
