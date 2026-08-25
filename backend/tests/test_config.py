@@ -345,3 +345,7 @@ class TestEngineSettings:
     def test_engine_proxy_empty_maps_to_none(self, clean_env):
         assert build(engine_proxy="").engine_proxy is None
         assert build(engine_proxy="   ").engine_proxy is None
+
+    def test_engine_proxy_valid_url_passes_through(self, clean_env):
+        settings = build(engine_proxy="http://proxy.local:3128")
+        assert settings.engine_proxy == "http://proxy.local:3128"

@@ -2,8 +2,8 @@
 downloader, and the adapter factory.
 
 The stub adapters are deterministic and offline: they exist so the complete
-parse → download → store workflow can be exercised end-to-end before real
-platform engines exist. Tests here pin down:
+parse → download → store workflow can be exercised end-to-end without the
+engine packages installed. Tests here pin down:
 
 * the protocol contracts are importable and structurally satisfied by the
   stubs (``typing.Protocol`` + ``runtime_checkable``),
