@@ -56,10 +56,15 @@ class ParseRequest(BaseModel):
 
 
 class ParseFailureData(BaseModel):
-    """One URL the parser could not process (runtime failure, not validation)."""
+    """One URL the parser could not process (runtime failure, not validation).
+
+    ``code`` is the PRD error code for typed engine failures (1003 平台不支持);
+    ``None`` for untagged failures. Additive — the frontend may ignore it.
+    """
 
     url: str
     error: str
+    code: int | None = None
 
 
 class ParseResultData(BaseModel):
@@ -132,7 +137,7 @@ def parse_urls(
         data={
             "results": [_serialize_result(result) for result in batch.results],
             "failed": [
-                {"url": failure.url, "error": failure.error}
+                {"url": failure.url, "error": failure.error, "code": failure.code}
                 for failure in batch.failed
             ],
         },

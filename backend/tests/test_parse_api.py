@@ -213,6 +213,38 @@ class TestPartialFailure:
         assert data["results"] == []
         assert len(data["failed"]) == 1
 
+    def test_unsupported_platform_failure_serializes_code_1003(self, engine):
+        from app.adapters.engine_errors import UnsupportedPlatformError
+        from app.api.responses import CODE_PLATFORM_UNSUPPORTED
+
+        class _UnsupportedParser:
+            def __init__(self, bad_url: str) -> None:
+                self._bad_url = bad_url
+                self._delegate = StubParserAdapter()
+
+            def parse(self, command):
+                if command.urls[0] == self._bad_url:
+                    raise UnsupportedPlatformError("平台不支持 / Unsupported platform")
+                return self._delegate.parse(command)
+
+        app = create_app(settings=make_settings())
+        app.dependency_overrides[get_parse_service] = lambda: ParseService(
+            parser=_UnsupportedParser(BAD_URL), engine=engine
+        )
+        client = TestClient(app)
+
+        response = client.post("/api/parse", json={"urls": [VIDEO_URL, BAD_URL]})
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert len(data["results"]) == 1
+        assert data["failed"] == [
+            {
+                "url": BAD_URL,
+                "error": "平台不支持 / Unsupported platform",
+                "code": CODE_PLATFORM_UNSUPPORTED,
+            }
+        ]
+
 
 class TestParsePersistence:
     def test_parse_persists_to_settings_database(self, tmp_path):

@@ -27,8 +27,8 @@ Design decisions (stable contract for Tasks 9-12):
   as the PRD ``data: {results, failed}`` shape. Failure messages are
   sanitized (stable bilingual text + exception class name; raw exception text
   is never echoed, per the repo's message-safety convention). Unsupported
-  platforms (code ``1003``) are reserved for real engines — the stub derives
-  metadata for every URL.
+  platforms (code ``1003``) are reported per-URL with code ``1003`` (real
+  engine mode); the stub derives metadata for every URL.
 * **Option ladders survive in ``metadata``.** :class:`ParseTask` has no
   columns for ``file_size_mb`` / ``available_qualities`` / ``available_bitrates`
   (Task 4 ORM), so the service enriches the result's ``metadata`` JSON with
@@ -53,10 +53,12 @@ from pydantic import ValidationError
 from sqlalchemy import Engine
 from starlette.status import HTTP_400_BAD_REQUEST
 
+from app.adapters.engine_errors import UnsupportedPlatformError
 from app.adapters.factory import get_parser
 from app.adapters.protocols import ParserAdapter
 from app.api.responses import (
     CODE_BAD_REQUEST,
+    CODE_PLATFORM_UNSUPPORTED,
     CODE_URL_EMPTY,
     CODE_URL_INVALID,
     ApiError,
@@ -76,10 +78,13 @@ _MESSAGE_PARSE_FAILED = "解析失败 / Parse failed"
 @dataclass(frozen=True)
 class ParseFailure:
     """One URL that failed at parse time (validation failures are never here —
-    they raise :class:`ApiError` before any parsing starts)."""
+    they raise :class:`ApiError` before any parsing starts). ``code`` carries
+    the PRD error code when the failure is typed (e.g. 1003 平台不支持 from a
+    real engine); it is ``None`` for untagged engine failures."""
 
     url: str
     error: str
+    code: int | None = None
 
 
 @dataclass(frozen=True)
@@ -146,6 +151,15 @@ class ParseService:
                     # broad `except Exception` so genuine programming errors
                     # from real parsers aren't silently collected as failures.
                     session.add(_task_row(parsed))
+                except UnsupportedPlatformError as exc:
+                    failed.append(
+                        ParseFailure(
+                            url=url,
+                            error=str(exc),  # stable bilingual message by contract
+                            code=CODE_PLATFORM_UNSUPPORTED,
+                        )
+                    )
+                    continue
                 except Exception as exc:
                     failed.append(
                         ParseFailure(url=url, error=_failure_error(exc))

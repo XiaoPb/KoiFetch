@@ -195,3 +195,41 @@ class TestPartialFailure:
         stored = rows(engine)
         assert len(stored) == 2
         assert {row.url for row in stored} == {VIDEO_URL, MUSIC_URL}
+
+
+class TestEngineUnsupportedPlatform:
+    def test_unsupported_platform_failure_carries_code_1003(self, engine):
+        from app.adapters.engine_errors import UnsupportedPlatformError
+
+        class RejectingParser:
+            def parse(self, command):
+                raise UnsupportedPlatformError("平台不支持 / Unsupported platform")
+
+        service = ParseService(parser=RejectingParser(), engine=engine)
+        batch = service.parse(["https://music.163.com/#/song?id=1"])
+        assert batch.results == []
+        assert len(batch.failed) == 1
+        failure = batch.failed[0]
+        assert failure.url == "https://music.163.com/#/song?id=1"
+        assert failure.code == 1003
+        assert failure.error == "平台不支持 / Unsupported platform"
+
+    def test_unsupported_platform_does_not_block_other_urls(self, engine):
+        from app.adapters.engine_errors import UnsupportedPlatformError
+        from app.domain import MediaType, ParseResult
+
+        class MixedParser:
+            def parse(self, command):
+                if "music.163.com" in command.urls[0]:
+                    raise UnsupportedPlatformError("平台不支持 / Unsupported platform")
+                return [ParseResult(
+                    task_id="11111111-1111-1111-1111-111111111111",
+                    url=command.urls[0], media_type=MediaType.VIDEO,
+                    platform="douyin", title="demo",
+                )]
+
+        service = ParseService(parser=MixedParser(), engine=engine)
+        batch = service.parse(["https://music.163.com/#/song?id=1", "https://v.douyin.com/abc/"])
+        assert len(batch.results) == 1
+        assert len(batch.failed) == 1
+        assert batch.failed[0].code == 1003

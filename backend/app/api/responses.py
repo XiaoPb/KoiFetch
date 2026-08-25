@@ -18,8 +18,9 @@ code          meaning                 HTTP        notes
 1002          URL格式无效             400         parse: malformed URL (scheme,
                                                     host, whitespace, control
                                                     characters)
-1003          平台不支持              400         parse: reserved for real engines
-                                                    (the stub supports every URL)
+1003          平台不支持              400         parse: unsupported platform —
+                                                    live in engine mode (the stub
+                                                    supports every URL)
 3001          任务不存在              400         preview/download/NAS save:
                                                     unknown task_id or
                                                     download_id
@@ -67,10 +68,11 @@ as the body ``code`` (they have no PRD code). Domain errors — from Tasks 8-10
 onward — must use explicit PRD codes (parse 1001-1005, download 3001-3003,
 NAS 5001-5004) raised via :class:`ApiError`; do not reuse the HTTP-mirroring
 convention for them. The parse range is only partially live today: ``1001``
-URL为空, ``1002`` URL格式无效, ``1003`` 平台不支持 (reserved — the stub supports
-every URL) have constants above; ``1004`` 解析超时 and ``1005`` 请求过于频繁 are
-reserved for later tasks (parse timeout, rate limiter) and deliberately have no
-constants yet, so the table and the constants cannot drift apart.
+URL为空, ``1002`` URL格式无效, ``1003`` 平台不支持 (live for real engines; the
+stub supports every URL) have constants above; ``1004`` 解析超时 and ``1005``
+请求过于频繁 are reserved for later tasks (parse timeout, rate limiter) and
+deliberately have no constants yet, so the table and the constants cannot
+drift apart.
 
 Handlers registered by :func:`register_exception_handlers`:
 
