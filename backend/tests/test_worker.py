@@ -44,6 +44,7 @@ from app.workers.main import build_worker_deps, run_forever, schema_ready
 from app.workers.worker import _publish, claim_pending_tasks, run_once
 from tests.conftest import (
     FakeHub,
+    VIDEO_URL,
     expected_stub_bytes,
     load_download,
     make_settings,
@@ -585,3 +586,34 @@ class TestPublish:
             ]
         finally:
             loop.close()
+
+
+class TestRequestCarriesParseContext:
+    def test_download_request_carries_source_url_and_metadata(self, engine, storage, token_provider):
+        captured = []
+
+        class CapturingDownloader:
+            def download(self, request):
+                captured.append(request)
+                return DownloadResult(
+                    download_id=request.download_id,
+                    task_id=request.command.task_id,
+                    title=request.title,
+                    media_type=request.media_type,
+                    status=DownloadStatus.COMPLETED,
+                    progress=100.0,
+                    total_bytes=1,
+                    downloaded_bytes=1,
+                )
+
+        task_id = seed_parse_task(
+            engine,
+            metadata={"engine": "parse-video-py", "video_url": "https://cdn.example/v.mp4"},
+        )
+        seed_download(engine, task_id=task_id)
+
+        run_once(engine, CapturingDownloader(), storage, DownloadEventHub(),
+                 token_provider=token_provider)
+        assert len(captured) == 1
+        assert captured[0].source_url == VIDEO_URL  # the seeded parse task's URL
+        assert captured[0].metadata["video_url"] == "https://cdn.example/v.mp4"

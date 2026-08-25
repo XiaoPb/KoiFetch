@@ -35,10 +35,10 @@ Design decisions (documented once, relied on by Tasks 7-12):
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Protocol, runtime_checkable
+from typing import Any, Callable, Protocol, runtime_checkable
 
 from app.domain import (
     DownloadCommand,
@@ -107,7 +107,9 @@ class DownloadRequest:
     it — the row already exists when the worker starts); ``target_path`` is the
     destination the worker resolved through the storage adapter (usually a
     bubble path); ``title``/``media_type`` are carried for convenience so
-    adapters can name/derive content without another lookup.
+    adapters can name/derive content without another lookup;
+    ``source_url``/``metadata`` are the parse context the real engines need
+    (the media URL / song info the parser resolved).
     """
 
     command: DownloadCommand
@@ -115,6 +117,16 @@ class DownloadRequest:
     target_path: Path
     title: str | None = None
     media_type: MediaType | None = None
+    source_url: str | None = None
+    """The original parse-task URL, carried so engine downloaders can
+    re-resolve media when the metadata does not carry it (and for
+    diagnostics). The stub downloader ignores it."""
+
+    metadata: dict[str, Any] = field(default_factory=dict)
+    """Engine-produced parse metadata (the persisted ``ParseTask.metadata_``
+    JSON): the engine downloader reads ``video_url`` (video) or ``song_info``
+    (music) from here. The stub downloader ignores it."""
+
     progress_callback: ProgressCallback | None = None
 
 

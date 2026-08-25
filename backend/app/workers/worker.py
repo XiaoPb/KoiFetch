@@ -66,9 +66,13 @@ Design decisions (stable contract for Tasks 12+):
 * **The downloader writes the bubble file.** ``DownloadRequest.target_path``
   is resolved here through the storage adapter (a contained absolute bubble
   path); the adapter writes bytes there and returns a ``COMPLETED``
-  :class:`DownloadResult`. The worker verifies the file exists, then records
-  the path on the row. A failed attempt removes its partial target
-  (best-effort) so a re-queue starts clean.
+  :class:`DownloadResult`. The request also carries ``source_url`` and the
+  parse task's ``metadata_`` JSON so engine downloaders can resolve the media
+  URL / song info the parser found; engine errors carry stable client
+  messages by contract (see ``app.adapters.engine_errors``). The worker
+  verifies the file exists, then records the path on the row. A failed
+  attempt removes its partial target (best-effort) so a re-queue starts
+  clean.
 """
 
 from __future__ import annotations
@@ -238,6 +242,8 @@ def _execute_download(
         target_path=target,
         title=title,
         media_type=media_type,
+        source_url=row.parse_task.url,
+        metadata=dict(row.parse_task.metadata_ or {}),
         progress_callback=_progress_callback_for(engine, event_hub, download_id),
     )
     try:
