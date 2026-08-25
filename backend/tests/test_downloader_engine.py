@@ -111,15 +111,26 @@ class TestVideoDownload:
             adapter.download(_request(tmp_path))
 
     def test_download_without_content_length(self, tmp_path):
-        def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(200, request=request, content=b"abc")
+        class Stream(httpx.SyncByteStream):
+            def __iter__(self):
+                yield b"abc"
 
+            def close(self):
+                pass
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, request=request, stream=Stream())
+
+        seen: list[DownloadProgress] = []
         adapter = EngineDownloaderAdapter(transport=httpx.MockTransport(handler))
-        result = adapter.download(_request(tmp_path))
+        result = adapter.download(_request(tmp_path, progress_callback=seen.append))
         assert result.status is DownloadStatus.COMPLETED
         assert result.downloaded_bytes == 3
-        assert result.total_bytes == 3  # total or written
+        assert result.total_bytes == 3  # total or written (length unknown)
         assert (tmp_path / "out" / "media.bin").read_bytes() == b"abc"
+        # absent-length contract: callbacks report 0.0 progress and no total
+        assert seen and all(p.progress == 0.0 for p in seen)
+        assert all(p.total_bytes is None for p in seen)
 
     def test_progress_monotonic_across_chunks(self, tmp_path):
         seen: list[DownloadProgress] = []
