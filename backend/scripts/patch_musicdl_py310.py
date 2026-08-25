@@ -10,11 +10,12 @@ environment's installed musicdl package onto ``typing_extensions`` (already a
 transitive dependency of this project's stack). It covers single-line imports
 in both plain (``from typing import Unpack``) and multi-name
 (``from typing import Dict, Any, Unpack``) and aliased
-(``from typing import Unpack as U``) forms, preserves line endings, writes
-atomically, and afterwards verifies no ``typing`` import still carries
-``Unpack`` (exit 1 if any remain). Parenthesized multi-line imports are NOT
-auto-rewritten; the post-condition detects and reports them loudly instead of
-silently missing them.
+(``from typing import Unpack as U``) forms, normalizes parenthesized
+single-line lists (``from typing import (Dict, Unpack)``), preserves line
+endings, writes atomically, and afterwards verifies no ``typing`` import
+still carries ``Unpack`` (exit 1 if any remain). Parenthesized multi-line and
+backslash-continuation imports are NOT auto-rewritten; the post-condition
+detects and reports them loudly instead of silently missing them.
 
 Idempotent: safe to run after every fresh install; a no-op when nothing needs
 patching. Files with no ``Unpack`` usage at all are left untouched and are not
@@ -70,13 +71,15 @@ def _rewrite_text(text: str) -> str:
         if not match:
             out.append(line)
             continue
-        if "(" in body and ")" not in body:
-            # Opening line of a parenthesized multi-line block: never rewrite
-            # it in isolation (it would mangle the block). The post-condition
-            # reports such blocks loudly.
+        if "(" in body and ")" not in body or body.endswith("\\"):
+            # Opening line of a parenthesized multi-line block, or a
+            # backslash-continuation import: never rewrite these in isolation
+            # (it would mangle the statement). The post-condition reports
+            # such forms loudly.
             out.append(line)
             continue
-        names = _split_names(match.group(1))
+        import_body = match.group(1).split("#", 1)[0].strip("()")
+        names = _split_names(import_body)
         removed = [name for name in names if _base_name(name) == "Unpack"]
         if not removed:
             out.append(line)
@@ -96,15 +99,18 @@ def _rewrite_text(text: str) -> str:
 def _unpack_typing_imports(package_dir: Path) -> list[Path]:
     """Files still importing ``Unpack`` from ``typing`` (post-condition check).
 
-    Detects single-line forms (plain, aliased, parenthesized) and parenthesized
-    multi-line blocks — including names on the opening line, the closing paren
-    on a name line, and inline comments — which the rewriter does not auto-fix;
-    they fail the check loudly instead of being silently missed.
+    Detects single-line forms (plain, aliased, parenthesized, with trailing
+    commas or inline comments) and parenthesized multi-line blocks — including
+    names on the opening line, the closing paren on a name line, and inline
+    comments — plus backslash-continuation imports. These forms are not all
+    auto-rewritten; any remaining one fails the check loudly instead of being
+    silently missed.
     """
     bad: list[Path] = []
     for path in sorted(package_dir.rglob("*.py")):
         lines = path.read_text(encoding="utf-8").splitlines()
         in_paren_import = False
+        in_backslash_import = False
         for line in lines:
             stripped = line.strip()
             if in_paren_import:
@@ -118,15 +124,27 @@ def _unpack_typing_imports(package_dir: Path) -> list[Path]:
                     bad.append(path)
                     break
                 continue
+            if in_backslash_import:
+                in_backslash_import = False
+                if _base_name(stripped.rstrip(",")) == "Unpack":
+                    bad.append(path)
+                    break
+                if stripped.endswith("\\"):
+                    in_backslash_import = True
+                continue
             match = _TYPING_IMPORT.match(stripped)
             if not match:
                 continue
-            names = _split_names(match.group(1))
+            import_body = match.group(1).split("#", 1)[0].strip("()")
+            names = _split_names(import_body)
             if any(_base_name(name) == "Unpack" for name in names):
                 bad.append(path)
                 break
             if "(" in stripped and ")" not in stripped:
                 in_paren_import = True
+                continue
+            if stripped.endswith("\\"):
+                in_backslash_import = True
     return bad
 
 

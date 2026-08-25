@@ -133,6 +133,46 @@ class TestPatchMusicdlPy310:
         )
 
     @pytest.mark.parametrize(
+        "original,expected",
+        [
+            # trailing comma inside the parens (legal Python)
+            ("from typing import (Unpack,)\n", "from typing_extensions import Unpack\n"),
+            (
+                "from typing import (Dict, Unpack,)\n",
+                "from typing import Dict\nfrom typing_extensions import Unpack\n",
+            ),
+            # inline comment on a single-line import
+            (
+                "from typing import Unpack  # keep\n",
+                "from typing_extensions import Unpack\n",
+            ),
+        ],
+    )
+    def test_trailing_comma_and_comment_forms(self, tmp_path, original, expected):
+        pkg = tmp_path / "musicdl"
+        pkg.mkdir()
+        _write(pkg, "__init__.py", "")
+        _write(pkg, "edge.py", original)
+        result = _run(pkg)
+        assert result.returncode == 0, result.stderr
+        assert (pkg / "edge.py").read_text() == expected
+
+    def test_backslash_continuation_import_fails_loudly(self, tmp_path):
+        # A backslash-continuation import is not auto-rewritten; the
+        # post-condition must flag it, never bless it.
+        pkg = tmp_path / "musicdl"
+        pkg.mkdir()
+        _write(pkg, "__init__.py", "")
+        _write(
+            pkg,
+            "cont.py",
+            "from typing import Dict, \\\n    Unpack\nx: Unpack[Kwargs]\n",
+        )
+        result = _run(pkg)
+        assert result.returncode == 1
+        assert "cont.py" in result.stderr
+
+    @pytest.mark.parametrize(
         "block",
         [
             # canonical: names on their own lines
