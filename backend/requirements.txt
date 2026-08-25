@@ -58,6 +58,6 @@ parse-video-py @ git+https://github.com/wujunwei928/parse-video-py.git@5fcf87256
 # NOTE: musicdl 2.13.x imports `Unpack` from `typing` (Python >= 3.11) but
 # declares no Requires-Python — on Python 3.10 `from musicdl import musicdl`
 # fails with ImportError. After install run
-# `.venv/bin/python backend/scripts/patch_musicdl_py310.py` (idempotent);
-# not needed on Python >= 3.11.
+# `.venv/bin/python backend/scripts/patch_musicdl_py310.py` (installs an
+# idempotent typing.Unpack backport shim; not needed on Python >= 3.11).
 musicdl>=2.13.6,<3

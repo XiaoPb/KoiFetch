@@ -1,14 +1,18 @@
 """Tests for backend/scripts/patch_musicdl_py310.py (the Python 3.10 compat
 shim for musicdl 2.13.x).
 
-Builds a fake musicdl package containing every import form the real package
-uses (single-name ``from typing import Unpack``, multi-name
-``from typing import Dict, Any, Unpack``, already-patched, and Unpack-free)
-and runs the script against it via subprocess — no real musicdl, no network,
-no mutation of the active environment. Regression coverage for the gdstudio.py
-multi-name form that a naive string replacement silently skipped.
+The script does not rewrite third-party source (import syntax has too many
+legal shapes for a line-based rewriter to handle safely); it installs an
+additive startup shim — ``koi_typing_compat.py`` + a ``.pth`` line — into the
+active environment's site-packages that backports ``typing.Unpack`` from
+``typing_extensions`` on Python < 3.11. These tests verify the install is
+idempotent, that the shim makes ``from typing import Unpack`` work, and that
+a module doing exactly what musicdl does (a fake client importing ``Unpack``
+and using it in an annotation) loads — via the ``--site-packages`` test seam.
+No real musicdl, no network, no mutation of the active environment.
 """
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -17,184 +21,95 @@ import pytest
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "patch_musicdl_py310.py"
 
+SHIM_FILE = "koi_typing_compat.py"
+PTH_FILE = "koi_typing_compat.pth"
 
-def _write(package_dir: Path, name: str, content: str) -> None:
-    (package_dir / name).write_text(content, encoding="utf-8")
+FAKE_CLIENT = """\
+from typing import Unpack
 
 
-def _run(package_dir: Path) -> subprocess.CompletedProcess:
+class Kwargs:
+    pass
+
+
+class FakeClient:
+    def __init__(self, **kwargs: Unpack[Kwargs]):
+        pass
+"""
+
+
+def _run(*extra: str) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [sys.executable, str(SCRIPT), "--package-dir", str(package_dir)],
+        [sys.executable, str(SCRIPT), *extra],
         capture_output=True,
         text=True,
     )
 
 
+def _py(code: str, env: dict) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, env=env
+    )
+
+
 @pytest.fixture
-def fake_package(tmp_path: Path) -> Path:
-    pkg = tmp_path / "musicdl"
-    pkg.mkdir()
-    _write(pkg, "__init__.py", "")
-    # Single-name form (23 files in the real package).
-    _write(pkg, "single.py", "from typing import Unpack\nx: Unpack[Kwargs]\n")
-    # Multi-name form (gdstudio.py in the real package).
-    _write(pkg, "multi.py", "from typing import Dict, Any, Unpack\ny: Unpack[Kwargs]\n")
-    # Already-patched form (idempotency).
-    _write(pkg, "patched.py", "from typing_extensions import Unpack\nz: Unpack[Kwargs]\n")
-    # No Unpack at all — must be untouched.
-    _write(pkg, "clean.py", "from typing import Dict\nw: Dict = {}\n")
-    return pkg
+def site_dir(tmp_path: Path) -> Path:
+    return tmp_path / "site"
 
 
+@pytest.fixture
+def fake_client_dir(tmp_path: Path) -> Path:
+    client = tmp_path / "fake_musicdl"
+    client.mkdir()
+    (client / "__init__.py").write_text("", encoding="utf-8")
+    (client / "client.py").write_text(FAKE_CLIENT, encoding="utf-8")
+    return client
+
+
+def _env_with(site_dir: Path, *extra_dirs: Path) -> dict:
+    parts = [str(site_dir), *(str(d) for d in extra_dirs)]
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(parts) + (
+        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+    )
+    return env
+
+
+@pytest.mark.skipif(sys.version_info >= (3, 11), reason="shim only needed on Python < 3.11")
 class TestPatchMusicdlPy310:
-    def test_rewrites_all_forms_and_passes_post_condition(self, fake_package):
-        result = _run(fake_package)
-        assert result.returncode == 0, result.stderr
-        assert "post-condition ok" in result.stdout
-        assert (fake_package / "single.py").read_text() == (
-            "from typing_extensions import Unpack\nx: Unpack[Kwargs]\n"
-        )
-        assert (fake_package / "multi.py").read_text() == (
-            "from typing import Dict, Any\n"
-            "from typing_extensions import Unpack\n"
-            "y: Unpack[Kwargs]\n"
-        )
-        assert (fake_package / "patched.py").read_text() == (
-            "from typing_extensions import Unpack\nz: Unpack[Kwargs]\n"
-        )
-        assert (fake_package / "clean.py").read_text() == (
-            "from typing import Dict\nw: Dict = {}\n"
-        )
+    def test_installs_shim_idempotently(self, site_dir):
+        first = _run("--site-packages", str(site_dir))
+        assert first.returncode == 0, first.stderr
+        assert (site_dir / SHIM_FILE).is_file()
+        assert (site_dir / PTH_FILE).read_text() == "import koi_typing_compat\n"
+        assert "typing.Unpack = typing_extensions.Unpack" in (
+            site_dir / SHIM_FILE
+        ).read_text()
 
-    def test_idempotent_second_run(self, fake_package):
-        first = _run(fake_package)
-        second = _run(fake_package)
-        assert first.returncode == 0 and second.returncode == 0
-        assert "patched 2 file(s), 1 already patched" in first.stdout
-        assert "patched 0 file(s), 3 already patched" in second.stdout
+        second = _run("--site-packages", str(site_dir))
+        assert second.returncode == 0, second.stderr
+        assert "present koi_typing_compat.py present koi_typing_compat.pth" in second.stdout
 
-    def test_missing_package_dir_fails(self, tmp_path):
-        result = _run(tmp_path / "nope")
-        assert result.returncode == 1
-        assert "not a directory" in result.stderr
-
-    def test_crlf_line_endings_preserved(self, tmp_path):
-        pkg = tmp_path / "musicdl"
-        pkg.mkdir()
-        _write(pkg, "__init__.py", "")
-        _write(pkg, "crlf.py", "from typing import Unpack\r\nx: Unpack[Kwargs]\r\n")
-        result = _run(pkg)
-        assert result.returncode == 0
-        assert (pkg / "crlf.py").read_bytes() == (
-            b"from typing_extensions import Unpack\r\nx: Unpack[Kwargs]\r\n"
+    def test_shim_makes_typing_unpack_importable(self, site_dir):
+        _run("--site-packages", str(site_dir))
+        probe = _py(
+            "import koi_typing_compat; import typing; "
+            "from typing import Unpack; assert Unpack is typing.Unpack; "
+            "print('unpack ok')",
+            _env_with(site_dir),
         )
+        assert probe.returncode == 0, probe.stderr
+        assert "unpack ok" in probe.stdout
 
-    def test_no_newline_final_import_is_not_corrupted(self, tmp_path):
-        # Regression: a typing import as the file's last line without a
-        # trailing newline must not fuse with the injected import line.
-        pkg = tmp_path / "musicdl"
-        pkg.mkdir()
-        _write(pkg, "__init__.py", "")
-        (pkg / "nonl.py").write_text(
-            "from typing import Dict, Unpack", encoding="utf-8"
+    def test_fake_client_imports_with_shim_active(self, site_dir, fake_client_dir):
+        # A module doing exactly what musicdl does — `from typing import
+        # Unpack` used in an annotation (evaluated at def time) — must load
+        # once the shim has run.
+        _run("--site-packages", str(site_dir))
+        probe = _py(
+            "import koi_typing_compat; "
+            "from fake_musicdl.client import FakeClient; print('client ok')",
+            _env_with(site_dir, fake_client_dir.parent),
         )
-        result = _run(pkg)
-        assert result.returncode == 0, result.stderr
-        patched = (pkg / "nonl.py").read_text(encoding="utf-8")
-        assert patched == (
-            "from typing import Dict\nfrom typing_extensions import Unpack\n"
-        )
-        assert "Dictfrom" not in patched
-
-    def test_aliased_unpack_keeps_alias(self, tmp_path):
-        pkg = tmp_path / "musicdl"
-        pkg.mkdir()
-        _write(pkg, "__init__.py", "")
-        _write(pkg, "aliased.py", "from typing import Unpack as U\nx: U[Kwargs]\n")
-        result = _run(pkg)
-        assert result.returncode == 0, result.stderr
-        assert (pkg / "aliased.py").read_text() == (
-            "from typing_extensions import Unpack as U\nx: U[Kwargs]\n"
-        )
-
-    def test_single_line_parenthesized_import_rewritten(self, tmp_path):
-        # Regression: a parenthesized single-line list must not be rewritten
-        # into an unterminated-paren SyntaxError.
-        pkg = tmp_path / "musicdl"
-        pkg.mkdir()
-        _write(pkg, "__init__.py", "")
-        _write(pkg, "paren.py", "from typing import (Dict, Unpack)\nx: Unpack[Kwargs]\n")
-        result = _run(pkg)
-        assert result.returncode == 0, result.stderr
-        assert (pkg / "paren.py").read_text() == (
-            "from typing import Dict\n"
-            "from typing_extensions import Unpack\n"
-            "x: Unpack[Kwargs]\n"
-        )
-
-    @pytest.mark.parametrize(
-        "original,expected",
-        [
-            # trailing comma inside the parens (legal Python)
-            ("from typing import (Unpack,)\n", "from typing_extensions import Unpack\n"),
-            (
-                "from typing import (Dict, Unpack,)\n",
-                "from typing import Dict\nfrom typing_extensions import Unpack\n",
-            ),
-            # inline comment on a single-line import
-            (
-                "from typing import Unpack  # keep\n",
-                "from typing_extensions import Unpack\n",
-            ),
-        ],
-    )
-    def test_trailing_comma_and_comment_forms(self, tmp_path, original, expected):
-        pkg = tmp_path / "musicdl"
-        pkg.mkdir()
-        _write(pkg, "__init__.py", "")
-        _write(pkg, "edge.py", original)
-        result = _run(pkg)
-        assert result.returncode == 0, result.stderr
-        assert (pkg / "edge.py").read_text() == expected
-
-    def test_backslash_continuation_import_fails_loudly(self, tmp_path):
-        # A backslash-continuation import is not auto-rewritten; the
-        # post-condition must flag it, never bless it.
-        pkg = tmp_path / "musicdl"
-        pkg.mkdir()
-        _write(pkg, "__init__.py", "")
-        _write(
-            pkg,
-            "cont.py",
-            "from typing import Dict, \\\n    Unpack\nx: Unpack[Kwargs]\n",
-        )
-        result = _run(pkg)
-        assert result.returncode == 1
-        assert "cont.py" in result.stderr
-
-    @pytest.mark.parametrize(
-        "block",
-        [
-            # canonical: names on their own lines
-            "from typing import (\n    Dict,\n    Unpack,\n)\n",
-            # closing paren on the Unpack line
-            "from typing import (\n    Dict,\n    Unpack)\n",
-            # Unpack on the opening line
-            "from typing import (Unpack,\n    Dict,\n)\n",
-            # inline comment after the Unpack comma
-            "from typing import (\n    Dict,\n    Unpack,  # comment\n)\n",
-            # aliased name inside the block
-            "from typing import (\n    Dict,\n    Unpack as U,\n)\n",
-        ],
-    )
-    def test_multiline_parenthesized_variants_fail_loudly(self, tmp_path, block):
-        # The rewriter only auto-fixes single-line imports; every parenthesized
-        # multi-line layout must fail the post-condition loudly, never pass.
-        pkg = tmp_path / "musicdl"
-        pkg.mkdir()
-        _write(pkg, "__init__.py", "")
-        _write(pkg, "multiline.py", block)
-        result = _run(pkg)
-        assert result.returncode == 1, result.stdout
-        assert "still importing Unpack from typing" in result.stderr
-        assert "multiline.py" in result.stderr
+        assert probe.returncode == 0, probe.stderr
+        assert "client ok" in probe.stdout
