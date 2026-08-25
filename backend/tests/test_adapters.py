@@ -61,6 +61,22 @@ _UUID_RE = re.compile(
 )
 
 
+@pytest.fixture
+def settings(tmp_path):
+    from app.infrastructure.config import Settings
+
+    return Settings(
+        admin_password="pw",
+        secret_key=TEST_SECRET,
+        video_storage_path=tmp_path / "pond/video",
+        image_storage_path=tmp_path / "pond/image",
+        music_storage_path=tmp_path / "pond/music",
+        temp_video_path=tmp_path / "bubble/video",
+        temp_image_path=tmp_path / "bubble/image",
+        temp_music_path=tmp_path / "bubble/music",
+    )
+
+
 def protocol_members(protocol: type) -> set[str]:
     """Names of a protocol's own members (Python 3.12-safe).
 
@@ -392,21 +408,6 @@ class TestStubDownloader:
 class TestAdapterFactory:
     """Adapter selection: factory returns the configured stub for each type."""
 
-    @pytest.fixture
-    def settings(self, tmp_path):
-        from app.infrastructure.config import Settings
-
-        return Settings(
-            admin_password="pw",
-            secret_key=TEST_SECRET,
-            video_storage_path=tmp_path / "pond/video",
-            image_storage_path=tmp_path / "pond/image",
-            music_storage_path=tmp_path / "pond/music",
-            temp_video_path=tmp_path / "bubble/video",
-            temp_image_path=tmp_path / "bubble/image",
-            temp_music_path=tmp_path / "bubble/music",
-        )
-
     def test_get_parser_returns_stub(self):
         assert isinstance(get_parser(), StubParserAdapter)
         assert isinstance(get_parser(), ParserAdapter)
@@ -456,3 +457,44 @@ class TestAdapterFactory:
         root = storage.pond_root(MediaType.VIDEO)
         assert root.is_absolute()
         assert root == (tmp_path / "data" / "pond" / "video").resolve()
+
+
+class TestEngineModeFactory:
+    """Factory switches between stub and real engines by settings."""
+
+    def test_get_parser_defaults_to_stub(self, settings):
+        assert isinstance(get_parser(settings), StubParserAdapter)
+
+    def test_get_parser_engine_mode_returns_engine_adapter(self, settings):
+        from app.adapters.parser_engine import EngineParserAdapter
+
+        engine_settings = settings.model_copy(update={"parser_engine": "engine"})
+        adapter = get_parser(engine_settings)
+        assert isinstance(adapter, EngineParserAdapter)
+        assert isinstance(adapter, ParserAdapter)
+
+    def test_get_downloader_engine_mode_returns_engine_adapter(self, settings):
+        from app.adapters.downloader_engine import EngineDownloaderAdapter
+
+        engine_settings = settings.model_copy(
+            update={"downloader_engine": "engine"}
+        )
+        adapter = get_downloader(engine_settings)
+        assert isinstance(adapter, EngineDownloaderAdapter)
+        assert isinstance(adapter, DownloaderAdapter)
+
+    def test_engine_adapter_wires_timeout_and_proxy(self, settings):
+        from app.adapters.downloader_engine import EngineDownloaderAdapter
+
+        engine_settings = settings.model_copy(
+            update={
+                "downloader_engine": "engine",
+                "engine_timeout_seconds": 7.5,
+                "engine_download_timeout_seconds": 9.5,
+                "engine_proxy": "http://proxy.local:3128",
+            }
+        )
+        adapter = get_downloader(engine_settings)
+        assert isinstance(adapter, EngineDownloaderAdapter)
+        assert adapter._download_timeout == pytest.approx(9.5)
+        assert adapter._proxy == "http://proxy.local:3128"
