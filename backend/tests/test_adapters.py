@@ -463,17 +463,15 @@ class TestAdapterFactory:
 class TestEngineModeFactory:
     """Factory switches between stub and real engines by settings.
 
-    Engine-mode tests need the engine packages; without them they skip
-    (the stub-mode tests above still run).
+    Engine-mode tests need the engine packages and skip individually when they
+    are missing; the stub-mode tests always run.
     """
-
-    pytest.importorskip("parse_video_py")
-    pytest.importorskip("musicdl")
 
     def test_get_parser_defaults_to_stub(self, settings):
         assert isinstance(get_parser(settings), StubParserAdapter)
 
     def test_get_parser_engine_mode_returns_engine_adapter(self, settings):
+        pytest.importorskip("parse_video_py")
         from app.adapters.parser_engine import EngineParserAdapter
 
         engine_settings = settings.model_copy(update={"parser_engine": "engine"})
@@ -482,6 +480,7 @@ class TestEngineModeFactory:
         assert isinstance(adapter, ParserAdapter)
 
     def test_engine_parser_wires_timeout_and_proxy(self, settings):
+        pytest.importorskip("parse_video_py")
         from app.adapters.parser_engine import EngineParserAdapter
 
         engine_settings = settings.model_copy(
@@ -497,6 +496,7 @@ class TestEngineModeFactory:
         assert adapter._proxy == "http://proxy.local:3128"
 
     def test_get_downloader_engine_mode_returns_engine_adapter(self, settings):
+        pytest.importorskip("musicdl")
         from app.adapters.downloader_engine import EngineDownloaderAdapter
 
         engine_settings = settings.model_copy(
@@ -507,6 +507,7 @@ class TestEngineModeFactory:
         assert isinstance(adapter, DownloaderAdapter)
 
     def test_engine_adapter_wires_timeout_and_proxy(self, settings):
+        pytest.importorskip("musicdl")
         from app.adapters.downloader_engine import EngineDownloaderAdapter
 
         engine_settings = settings.model_copy(
