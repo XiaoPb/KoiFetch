@@ -21,15 +21,16 @@ Behaviour contract:
 * **MUSIC** — reads ``request.metadata["song_info"]`` (a persisted
   :class:`musicdl.SongInfo`-compatible dict, ``SongInfo.fromdict``-able;
   missing/not-a-dict → typed
-  :class:`~app.adapters.engine_errors.EngineDownloadError`). The dict must
-  carry ``source`` (one of the configured ``music_sources``, else a typed
-  "not configured" error), a valid ``ext``, and a usable
-  ``download_url``/``download_url_status``. Plain ``HTTP`` tracks are
-  streamed directly from ``download_url`` with real progress. ``HLS``/
-  encrypted tracks are delegated to ``musicdl.MusicClient`` into a
+  :class:`~app.adapters.engine_errors.EngineDownloadError`). Plain ``HTTP``
+  tracks stream directly from ``download_url`` and need only a usable URL.
+  ``HLS``/encrypted tracks are delegated to ``musicdl.MusicClient`` into a
   per-download staging dir, then moved out of staging to ``target_path``
   before the staging dir is removed (coarse progress: one 0% snapshot, then
-  the completed result — musicdl exposes no callback).
+  the completed result — musicdl exposes no callback); that delegated path
+  requires ``song_info`` to carry ``source`` (one of the configured
+  ``music_sources``, else a typed "not configured" error), a valid ``ext``,
+  and a usable ``download_url``/``download_url_status`` — missing pieces fail
+  with typed errors.
 * **Errors** — httpx/requests failures translate to the typed
   :mod:`app.adapters.engine_errors` hierarchy (403 → PlatformBlockedError,
   timeouts → EngineTimeoutError, connect → EngineNetworkError). Music-engine

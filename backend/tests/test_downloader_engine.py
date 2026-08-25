@@ -287,3 +287,28 @@ class TestMusicDownload:
                 _request(tmp_path, metadata=bad_metadata, media_type=MediaType.MUSIC)
             )
         assert not list(tmp_path.glob("**/.musicdl-*"))
+
+    def test_missing_source_raises_not_configured(self, tmp_path, monkeypatch):
+        class NeverCalled:
+            def __init__(self, **kwargs):
+                raise AssertionError("MusicClient must not be built without a valid source")
+
+            def download(self, song_infos):
+                raise AssertionError("download must not be called")
+
+        monkeypatch.setattr(downloader_engine._musicdl, "MusicClient", NeverCalled)
+
+        bad_metadata = {
+            "song_info": {
+                "song_name": "t", "singers": "s", "ext": "m4a",
+                "identifier": "id1", "protocol": "HLS",
+                "download_url": "https://cdn.example/s.m3u8",
+                "work_dir": "./",
+                # no "source" key
+            }
+        }
+        adapter = EngineDownloaderAdapter(music_sources=["NeteaseMusicClient"])
+        with pytest.raises(EngineDownloadError, match="音乐来源未配置"):
+            adapter.download(
+                _request(tmp_path, metadata=bad_metadata, media_type=MediaType.MUSIC)
+            )
