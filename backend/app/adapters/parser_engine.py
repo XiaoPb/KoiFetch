@@ -153,39 +153,38 @@ class EngineParserAdapter:
             info = asyncio.run(
                 asyncio.wait_for(parse_video_share_url(url), timeout=self._timeout)
             )
+            return ParseResult(
+                task_id=str(uuid.uuid4()),
+                url=url,
+                media_type=MediaType.VIDEO,
+                platform=platform,
+                title=(info.title or "").strip() or platform,
+                cover=info.cover_url or None,
+                duration=None,  # engine exposes no duration (documented)
+                file_size_mb=self._probe_file_size_mb(info.video_url),
+                format=_extension_of(info.video_url) or "mp4",
+                available_qualities=[],  # engine exposes no quality ladder
+                available_bitrates=[],
+                metadata={
+                    "engine": "parse-video-py",
+                    "video_url": info.video_url,
+                    "music_url": info.music_url or None,
+                    "author": {
+                        "uid": info.author.uid,
+                        "name": info.author.name,
+                        "avatar": info.author.avatar,
+                    },
+                    "images": [
+                        {"url": img.url, "live_photo_url": img.live_photo_url}
+                        for img in info.images
+                    ],
+                },
+                error=None,
+            )
         except EngineError:
             raise
         except Exception as exc:
             raise translate_engine_exception(exc, url=url, operation="parse") from exc
-
-        return ParseResult(
-            task_id=str(uuid.uuid4()),
-            url=url,
-            media_type=MediaType.VIDEO,
-            platform=platform,
-            title=(info.title or "").strip() or platform,
-            cover=info.cover_url or None,
-            duration=None,  # engine exposes no duration (documented)
-            file_size_mb=self._probe_file_size_mb(info.video_url),
-            format=_extension_of(info.video_url) or "mp4",
-            available_qualities=[],  # engine exposes no quality ladder
-            available_bitrates=[],
-            metadata={
-                "engine": "parse-video-py",
-                "video_url": info.video_url,
-                "music_url": info.music_url or None,
-                "author": {
-                    "uid": info.author.uid,
-                    "name": info.author.name,
-                    "avatar": info.author.avatar,
-                },
-                "images": [
-                    {"url": img.url, "live_photo_url": img.live_photo_url}
-                    for img in info.images
-                ],
-            },
-            error=None,
-        )
 
     def _probe_file_size_mb(self, video_url: str) -> float | None:
         """Best-effort Content-Length of the media URL (GET, headers only).

@@ -255,3 +255,18 @@ class TestEngineErrorTranslation:
             EngineParserAdapter(timeout_seconds=0.01).parse(
                 ParseCommand(urls=["https://v.douyin.com/abc/"])
             )
+
+    def test_construction_failure_becomes_engine_parse_error(self, monkeypatch):
+        # Odd engine data (a field access raising) must translate into a typed
+        # EngineParseError, not leak a raw AttributeError.
+        class BrokenInfo:
+            @property
+            def title(self):
+                raise AttributeError("missing title")
+
+        async def fake_parse(url):
+            return BrokenInfo()
+
+        monkeypatch.setattr(parser_engine, "parse_video_share_url", fake_parse)
+        with pytest.raises(EngineParseError):
+            _offline_adapter().parse(ParseCommand(urls=["https://v.douyin.com/abc/"]))
