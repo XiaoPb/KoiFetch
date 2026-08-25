@@ -112,6 +112,23 @@ class TestVideoDownload:
         with pytest.raises(EngineDownloadError):
             adapter.download(_request(tmp_path))
 
+    def test_content_encoded_response_not_flagged_truncated(self, tmp_path):
+        import gzip
+
+        payload = gzip.compress(b"x" * 1000)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200, request=request, content=payload,
+                headers={"content-length": str(len(payload)),
+                         "content-encoding": "gzip"},
+            )
+
+        adapter = EngineDownloaderAdapter(transport=httpx.MockTransport(handler))
+        result = adapter.download(_request(tmp_path))
+        assert result.status is DownloadStatus.COMPLETED
+        assert result.downloaded_bytes == 1000  # decoded
+
     def test_download_without_content_length(self, tmp_path):
         class Stream(httpx.SyncByteStream):
             def __iter__(self):
@@ -312,3 +329,30 @@ class TestMusicDownload:
             adapter.download(
                 _request(tmp_path, metadata=bad_metadata, media_type=MediaType.MUSIC)
             )
+
+    def test_music_client_construction_error_is_translated(self, tmp_path, monkeypatch):
+        class ExplodingClient:
+            def __init__(self, **kwargs):
+                raise RuntimeError(
+                    "module 'musicdl.modules.sources' has no attribute 'BogusClient'"
+                )
+
+            def download(self, song_infos):
+                raise AssertionError("must not be called")
+
+        monkeypatch.setattr(downloader_engine._musicdl, "MusicClient", ExplodingClient)
+
+        bad_metadata = {
+            "song_info": {
+                "song_name": "t", "singers": "s", "ext": "m4a",
+                "identifier": "id1", "source": "NeteaseMusicClient",
+                "protocol": "HLS", "download_url": "https://cdn.example/s.m3u8",
+                "work_dir": "./",
+            }
+        }
+        adapter = EngineDownloaderAdapter(music_sources=["NeteaseMusicClient"])
+        with pytest.raises(EngineDownloadError) as raised:
+            adapter.download(
+                _request(tmp_path, metadata=bad_metadata, media_type=MediaType.MUSIC)
+            )
+        assert "BogusClient" not in str(raised.value)  # raw musicdl text never leaks

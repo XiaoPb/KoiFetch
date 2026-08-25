@@ -129,19 +129,28 @@ class EngineDownloaderAdapter:
         song = request.metadata.get("song_info") if request.metadata else None
         if not isinstance(song, dict):
             raise EngineDownloadError(_MESSAGE_MISSING_SONG)
-        info = _musicdl.SongInfo.fromdict(song)
-        protocol = (info.protocol or "HTTP").upper()
-        if (
-            protocol == "HTTP"
-            and isinstance(info.download_url, str)
-            and info.download_url.startswith("http")
-        ):
-            return self._stream_to_target(
-                request, info.download_url,
-                total_hint=info.file_size_bytes,
-                headers=info.default_download_headers or None,
-            )
-        return self._download_music_via_engine(request, info)
+        try:
+            info = _musicdl.SongInfo.fromdict(song)
+            protocol = (info.protocol or "HTTP").upper()
+            if (
+                protocol == "HTTP"
+                and isinstance(info.download_url, str)
+                and info.download_url.startswith("http")
+            ):
+                return self._stream_to_target(
+                    request, info.download_url,
+                    total_hint=info.file_size_bytes,
+                    headers=info.default_download_headers or None,
+                )
+            return self._download_music_via_engine(request, info)
+        except EngineError:
+            raise
+        except Exception as exc:
+            raise translate_engine_exception(
+                exc,
+                url=song.get("download_url") or request.source_url or "",
+                operation="download",
+            ) from exc
 
     def _download_music_via_engine(
         self, request: DownloadRequest, info: "_musicdl.SongInfo"
@@ -155,28 +164,29 @@ class EngineDownloaderAdapter:
             raise EngineDownloadError(_MESSAGE_MUSIC_SOURCE)
         staging = request.target_path.parent / f".musicdl-{request.download_id[:8]}"
         info.work_dir = str(staging)
-        client = _musicdl.MusicClient(
-            music_sources=self._music_sources,
-            init_music_clients_cfg={
-                source: {"work_dir": str(staging)} for source in self._music_sources
-            },
-            requests_overrides={
-                source: {"timeout": (self._timeout, self._download_timeout)}
-                for source in self._music_sources
-            },
-        )
-        if request.progress_callback is not None:
-            request.progress_callback(
-                DownloadProgress(
-                    download_id=request.download_id,
-                    status=DownloadStatus.DOWNLOADING,
-                    progress=0.0,
-                    speed=None,
-                    downloaded_bytes=0,
-                    total_bytes=info.file_size_bytes,
-                )
-            )
+        info._save_path = None  # a persisted stale path would bypass the staging override
         try:
+            client = _musicdl.MusicClient(
+                music_sources=self._music_sources,
+                init_music_clients_cfg={
+                    source: {"work_dir": str(staging)} for source in self._music_sources
+                },
+                requests_overrides={
+                    source: {"timeout": (self._timeout, self._download_timeout)}
+                    for source in self._music_sources
+                },
+            )
+            if request.progress_callback is not None:
+                request.progress_callback(
+                    DownloadProgress(
+                        download_id=request.download_id,
+                        status=DownloadStatus.DOWNLOADING,
+                        progress=0.0,
+                        speed=None,
+                        downloaded_bytes=0,
+                        total_bytes=info.file_size_bytes,
+                    )
+                )
             downloaded = client.download(song_infos=[info])
             if not downloaded:
                 raise EngineDownloadError(_MESSAGE_DOWNLOAD_FAILED)
@@ -235,17 +245,27 @@ class EngineDownloaderAdapter:
         last_written = 0
         written = 0
         total = total_hint
+        total_from_server = False
+        content_encoded = False
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             with httpx.Client(**kwargs) as client:
                 with client.stream("GET", url, headers=request_headers) as response:
                     response.raise_for_status()  # 403 -> HTTPStatusError -> typed
-                    # The server-declared length is authoritative over any
-                    # metadata hint (hints may be stale/approximate); the
-                    # hint only fills in when the server sends no length.
+                    content_encoded = bool(response.headers.get("content-encoding"))
                     length = response.headers.get("content-length")
-                    if length and length.isdigit():
+                    if content_encoded:
+                        # httpx transparently decodes gzip/br, so the declared
+                        # length is the ENCODED size — not a usable total for
+                        # progress or the truncation check (decoded bytes
+                        # legitimately differ). Treat the length as unknown.
+                        total = None
+                    elif length and length.isdigit():
+                        # The server-declared length is authoritative over any
+                        # metadata hint (hints may be stale/approximate); the
+                        # hint only fills in when the server sends no length.
                         total = int(length)
+                        total_from_server = True
                     with target.open("wb") as out:
                         for chunk in response.iter_bytes(chunk_size=self._chunk_size):
                             out.write(chunk)
@@ -272,7 +292,10 @@ class EngineDownloaderAdapter:
         except Exception as exc:
             raise translate_engine_exception(exc, url=url, operation="download") from exc
 
-        if total is not None and written != total:
+        # The truncation check only applies to server-declared, unencoded
+        # bodies: content-encoding (gzip/br) makes decoded bytes differ from
+        # the declared length, and the parser's file-size hint is approximate.
+        if total_from_server and not content_encoded and written != total:
             raise EngineDownloadError(_MESSAGE_INCOMPLETE)
 
         elapsed = max(time.monotonic() - start, 1e-9)
