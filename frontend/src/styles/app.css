@@ -133,12 +133,12 @@ body {
   gap: 16px;
 }
 
-/* --- Home hero band (koi orange gradient) --- */
+/* --- Home hero band (vibrant blue gradient) --- */
 
 .home-hero {
   padding: 28px 24px;
   border-radius: 16px;
-  background: linear-gradient(135deg, #ffb34d 0%, #fa8c16 55%, #fa541c 100%);
+  background: linear-gradient(135deg, #4facfe 0%, #2f6bff 55%, #1748d8 100%);
   color: #fff;
 }
 

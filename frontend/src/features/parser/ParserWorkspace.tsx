@@ -33,11 +33,11 @@ export const MAX_TXT_IMPORT_BYTES = 1024 * 1024; // 1 MB
  *
  * Input UX (product feedback): the batch textarea is gone. A single-line
  * `Input.Search` inside a `Space.Compact` group with a compact TXT button
- * covers 输入 + 搜索 + 加载txt. Because a single-line input cannot hold line
- * breaks, multi-line batches are TXT-import only: the store still keeps the
- * raw multi-line text (extractUrls splits on line endings) and a Tag reports
- * the imported count. The header media-mode switch re-keys the result grid so
- * cards replay a staggered fade-up animation (see Task 3).
+ * covers 输入 + 搜索 + 加载txt. Any pasted text — Douyin share cards, plain
+ * URL lists, TXT batches — is filtered for links client-side (extractUrls),
+ * so prose around the URL is ignored. A Tag reports how many links were
+ * extracted whenever there is more than one. The header media-mode switch
+ * re-keys the result grid so cards replay a staggered fade-up animation.
  */
 export function ParserWorkspace(): JSX.Element {
   const { t } = useTranslation();
@@ -63,11 +63,12 @@ export function ParserWorkspace(): JSX.Element {
   const isLoading = status === 'loading';
   const modeName = t(mediaMode === 'video' ? 'header.modeVideo' : 'header.modeMusic');
 
-  // A single-line input cannot contain line breaks, so any '\n' in the store
-  // input means a TXT import happened; report the batch size to the user.
-  const importedCount = useMemo(() => {
-    if (!input.includes('\n')) return null;
-    return extractUrls(input).length;
+  // Count the URLs extracted from whatever is in the input (share cards, TXT
+  // batches, plain links). Show the batch Tag only when there is more than
+  // one link — a single URL needs no hint.
+  const extractedCount = useMemo(() => {
+    const count = extractUrls(input).length;
+    return count > 1 ? count : null;
   }, [input]);
 
   const handleParse = () => {
@@ -172,9 +173,9 @@ export function ParserWorkspace(): JSX.Element {
           >
             {t('parser.clear')}
           </Button>
-          {importedCount != null && importedCount > 0 && (
-            <Tag color="orange" icon={<FileTextOutlined />} data-testid="imported-count">
-              {t('parser.batchImported', { count: importedCount })}
+          {extractedCount != null && (
+            <Tag color="blue" icon={<FileTextOutlined />} data-testid="extracted-count">
+              {t('parser.extractedCount', { count: extractedCount })}
             </Tag>
           )}
         </Space>

@@ -22,15 +22,29 @@ export const PARSER_EMPTY_INPUT_MESSAGE = '请输入至少一个链接 / Enter a
 export const PARSER_TOO_MANY_URLS_MESSAGE = `一次最多解析 ${MAX_PARSE_URLS} 个链接 / Up to ${MAX_PARSE_URLS} URLs at a time`;
 
 /**
- * Split raw textarea content into non-blank, trimmed URL lines (the batch
- * input format: one URL per line). Handles \n, \r\n and lone \r (old-Mac TXT
- * files) line endings.
+ * http(s) URLs embedded in arbitrary text. Share-cards (Douyin, WeChat, …)
+ * paste as a sentence of prose with the link in the middle, e.g.
+ *   "2.84 ... https://v.douyin.com/wLOh31JiznU/ 复制此链接，打开Dou音搜索…"
+ * so extraction matches any http(s) URL and ignores everything else.
+ * The character class excludes whitespace, quotes, angle brackets and CJK
+ * punctuation, so a URL glued to Chinese text ("…/a。") still extracts
+ * cleanly; ASCII sentence/bracket punctuation glued after a URL (".", ",", …)
+ * is trimmed at the end.
+ */
+const URL_PATTERN = /https?:\/\/[^\s"'<>，。！？、；：（）【】《》「」『』]+/gi;
+
+/** ASCII punctuation an OS text-selection can glue after a URL. */
+const TRAILING_PUNCTUATION = /[.,;:!?)\]}[】]+$/;
+
+/**
+ * Extract every http(s) URL from arbitrary input text (share cards, TXT
+ * batches, plain URL lists). Non-URL prose is dropped — the user pastes the
+ * whole share-card and the workspace parses just the links. Line endings are
+ * irrelevant: extraction works across \n, \r\n, lone \r and single-line text.
  */
 export function extractUrls(input: string): string[] {
-  return input
-    .split(/\r\n|\r|\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
+  const matches = input.match(URL_PATTERN) ?? [];
+  return matches.map((url) => url.replace(TRAILING_PUNCTUATION, ''));
 }
 
 /**

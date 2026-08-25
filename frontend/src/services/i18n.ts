@@ -27,8 +27,8 @@ const zh = {
   'home.subtitle': '视频 · 音乐 · 图片，粘贴链接一键解析下载',
 
   // Parser workspace (Task 14)
-  'parser.placeholder': '粘贴链接，按回车解析（批量请导入 TXT）',
-  'parser.batchImported': '已导入 {count} 条链接，点击搜索解析',
+  'parser.placeholder': '粘贴链接或分享文案，回车自动提取',
+  'parser.extractedCount': '已提取 {count} 条链接，点击搜索解析',
   'parser.modeHint': '当前模式：{mode}',
   'parser.parse': '解析',
   'parser.importTxt': '导入 TXT',
@@ -164,8 +164,8 @@ const en: Record<TranslationKey, string> = {
   'home.subtitle': 'Video · Music · Images — parse and download in one click',
 
   // Parser workspace (Task 14)
-  'parser.placeholder': 'Paste a URL, press Enter (batch: import TXT)',
-  'parser.batchImported': '{count} links imported — click search to parse',
+  'parser.placeholder': 'Paste a link or share text, press Enter',
+  'parser.extractedCount': '{count} links found — click search to parse',
   'parser.modeHint': 'Current mode: {mode}',
   'parser.parse': 'Parse',
   'parser.importTxt': 'Import TXT',

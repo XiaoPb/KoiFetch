@@ -68,15 +68,36 @@ describe('parserStore', () => {
     vi.clearAllMocks();
   });
 
-  it('splits raw input into trimmed non-blank URL lines', () => {
-    expect(extractUrls('  https://a  \n\n  \nhttps://b\r\nhttps://c ')).toEqual([
+  it('extracts http(s) URLs embedded in share text and ignores prose', () => {
+    const share =
+      '2.84 10/22 A@G.vF seB:/ :8pm 小麦和威龙偶遇小博博会发生什么？ # 三角洲行动 # 原创动画 https://v.douyin.com/wLOh31JiznU/ 复制此链接，打开Dou音搜索，直接观看视频！';
+    expect(extractUrls(share)).toEqual(['https://v.douyin.com/wLOh31JiznU/']);
+  });
+
+  it('extracts multiple URLs from one line and works across line endings', () => {
+    expect(extractUrls('看看这个 https://a.com/x 和这个 https://b.com/y，还有文字')).toEqual([
+      'https://a.com/x',
+      'https://b.com/y',
+    ]);
+    // Old-Mac TXT (\r), CRLF and blank lines are all irrelevant to extraction.
+    expect(extractUrls('https://a\rhttps://b\r\n\nhttps://c')).toEqual([
       'https://a',
       'https://b',
       'https://c',
     ]);
-    // Lone \r line endings (old-Mac TXT files) split too.
-    expect(extractUrls('https://a\rhttps://b')).toEqual(['https://a', 'https://b']);
     expect(extractUrls('   \n\n  ')).toEqual([]);
+    expect(extractUrls('只有文字没有链接')).toEqual([]);
+  });
+
+  it('strips trailing punctuation glued to URLs and is case-insensitive', () => {
+    expect(extractUrls('(https://a.com/x)。，https://b.com/y!')).toEqual([
+      'https://a.com/x',
+      'https://b.com/y',
+    ]);
+    // Matching is case-insensitive; the extracted URL keeps its original case.
+    expect(extractUrls('HTTPS://A.COM/X http://B.com/y')).toEqual(['HTTPS://A.COM/X', 'http://B.com/y']);
+    // Query strings are preserved (only the trailing-punctuation trim applies).
+    expect(extractUrls('https://a.com/p?a=1&b=2')).toEqual(['https://a.com/p?a=1&b=2']);
   });
 
   it('populates results and failed on a successful parse', async () => {
@@ -149,7 +170,10 @@ describe('parserStore', () => {
 
   it('stores the API error message when the backend rejects the parse', async () => {
     (parseApi.parse as Mock).mockRejectedValue(new ApiError('URL格式无效 / Invalid URL format', 1002, 400));
-    useParserStore.setState({ input: 'not-a-url' });
+    // A scheme-qualified URL passes client-side extraction, so the backend's
+    // own rejection surfaces (prose without a URL is filtered client-side
+    // into the empty-input error instead — covered by the empty test above).
+    useParserStore.setState({ input: 'https://not-a-real-host/x' });
     await useParserStore.getState().parse();
 
     const state = useParserStore.getState();

@@ -4,7 +4,7 @@ import { ParserWorkspace } from '../features/parser/ParserWorkspace';
 
 /**
  * Home page — the parser workspace (PRD §4.2). A compact gradient hero band
- * (koi orange) sits above the workspace and collapses gracefully on mobile.
+ * (vibrant blue) sits above the workspace and collapses gracefully on mobile.
  */
 export default function HomePage(): JSX.Element {
   const { t } = useTranslation();

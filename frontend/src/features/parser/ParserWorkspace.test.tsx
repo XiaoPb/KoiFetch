@@ -299,7 +299,9 @@ describe('ParserWorkspace', () => {
     (parseApi.parse as Mock).mockResolvedValueOnce({ results: [videoResult], failed: [] });
     const user = userEvent.setup();
     renderWithProviders(<ParserWorkspace />);
-    await user.type(screen.getByTestId('url-input'), 'not-a-url');
+    // A scheme-qualified URL passes client-side extraction so the backend's
+    // rejection surfaces (prose without a URL is filtered client-side).
+    await user.type(screen.getByTestId('url-input'), 'https://not-a-real-host/x');
     await user.click(screen.getByRole('button', { name: /解\s*析/ }));
 
     expect(await screen.findByTestId('parse-error')).toHaveTextContent('URL格式无效');
@@ -373,7 +375,21 @@ describe('ParserWorkspace', () => {
     await waitFor(() =>
       expect(useParserStore.getState().input).toBe('https://example.com/v/a\nhttps://example.com/m/b'),
     );
-    expect(screen.getByTestId('imported-count')).toHaveTextContent('已导入 2 条链接');
+    expect(screen.getByTestId('extracted-count')).toHaveTextContent('已提取 2 条链接');
+  });
+
+  it('extracts the link from pasted share text before parsing', async () => {
+    (parseApi.parse as Mock).mockResolvedValue({ results: [videoResult], failed: [] });
+    const user = userEvent.setup();
+    renderWithProviders(<ParserWorkspace />);
+    const share =
+      '2.84 10/22 A@G.vF seB:/ :8pm 小麦和威龙偶遇小博博会发生什么？ # 三角洲行动 ' +
+      'https://v.douyin.com/wLOh31JiznU/ 复制此链接，打开Dou音搜索，直接观看视频！';
+    await user.type(screen.getByTestId('url-input'), share);
+    await user.click(screen.getByRole('button', { name: /解\s*析/ }));
+
+    expect(await screen.findByTestId('result-card-t1')).toBeInTheDocument();
+    expect(parseApi.parse).toHaveBeenCalledWith(['https://v.douyin.com/wLOh31JiznU/']);
   });
 
   it('rejects a non-TXT file via the workspace guard with a toast', async () => {

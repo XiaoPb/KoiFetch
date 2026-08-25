@@ -7,7 +7,7 @@ import { useAppStore } from '../stores/appStore';
 
 /**
  * Root app component: antd providers (locale follows the active UI language,
- * theme carries the Koi brand look — warm orange primary with softer radii),
+ * theme carries the Koi brand look — vibrant blue primary with softer radii),
  * the top-level error boundary, and the route table. Rendered inside a router
  * (BrowserRouter in main.tsx; MemoryRouter in tests).
  */
@@ -19,7 +19,7 @@ export function App(): JSX.Element {
       locale={language === 'zh' ? zhCN : enUS}
       theme={{
         token: {
-          colorPrimary: '#fa8c16',
+          colorPrimary: '#2f6bff',
           borderRadius: 10,
         },
         components: {
