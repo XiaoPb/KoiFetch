@@ -17,15 +17,15 @@ Behaviour contract:
   :class:`~app.adapters.engine_errors.EngineDownloadError`). Streams with
   httpx, writing to ``request.target_path`` (parent dirs created), per-chunk
   progress callbacks, returns a ``COMPLETED`` :class:`DownloadResult`.
-* **MUSIC** — stubbed in Task 7 (raises a typed "not wired yet" error) and
-  implemented in Task 8: reads ``request.metadata["song_info"]`` (a persisted
-  :class:`musicdl.SongInfo`-compatible dict, ``SongInfo.fromdict``-able).
-  Plain ``HTTP`` tracks are streamed directly from ``download_url`` with real
-  progress; ``HLS``/encrypted tracks are delegated to ``musicdl.MusicClient``
-  into a per-download staging dir, then moved out of staging to
-  ``target_path`` and the staging dir removed (coarse progress: one 0%
-  snapshot, then the completed result — musicdl owns its own progress
-  internally and exposes no callback).
+* **MUSIC** — reads ``request.metadata["song_info"]`` (a persisted
+  :class:`musicdl.SongInfo`-compatible dict, ``SongInfo.fromdict``-able;
+  missing/not-a-dict → typed
+  :class:`~app.adapters.engine_errors.EngineDownloadError`). Plain ``HTTP``
+  tracks are streamed directly from ``download_url`` with real progress.
+  ``HLS``/encrypted tracks are delegated to ``musicdl.MusicClient`` into a
+  per-download staging dir, then moved out of staging to ``target_path``
+  before the staging dir is removed (coarse progress: one 0% snapshot, then
+  the completed result — musicdl exposes no callback).
 * **Errors** — httpx/requests failures translate to the typed
   :mod:`app.adapters.engine_errors` hierarchy (403 → PlatformBlockedError,
   timeouts → EngineTimeoutError, connect → EngineNetworkError). The worker
@@ -62,6 +62,8 @@ _MESSAGE_MEDIA_TYPE = "该引擎暂不支持此媒体类型 / Media type not sup
 _MESSAGE_MUSIC_NOT_WIRED = (
     "音乐下载暂未接入（Task 8 实现） / Music download not wired yet (Task 8)"
 )
+_MESSAGE_MISSING_SONG = "缺少音乐信息，无法下载 / Missing song info"
+_MESSAGE_DOWNLOAD_FAILED = "下载失败 / Download failed"
 _MESSAGE_INCOMPLETE = "下载不完整 / Incomplete download"
 
 _UA = {"User-Agent": "Mozilla/5.0 (KoiFetch/0.1)"}
@@ -112,12 +114,90 @@ class EngineDownloaderAdapter:
         return self._stream_to_target(request, url, total_hint=None)
 
     # -- music -------------------------------------------------------------
-    # Implemented in Task 8 (real download + progress via musicdl). The
-    # constructor already accepts ``music_sources`` so the factory contract is
-    # stable; until Task 8 the branch fails with a typed, honest error.
+    # Real download + progress via musicdl (Task 8): plain HTTP tracks are
+    # streamed directly through the shared core; HLS/encrypted tracks go
+    # through ``musicdl.MusicClient`` into a staging dir, then are moved out.
 
     def _download_music(self, request: DownloadRequest) -> DownloadResult:
-        raise EngineDownloadError(_MESSAGE_MUSIC_NOT_WIRED)
+        song = request.metadata.get("song_info") if request.metadata else None
+        if not isinstance(song, dict):
+            raise EngineDownloadError(_MESSAGE_MISSING_SONG)
+        info = _musicdl.SongInfo.fromdict(song)
+        protocol = (info.protocol or "HTTP").upper()
+        if (
+            protocol == "HTTP"
+            and isinstance(info.download_url, str)
+            and info.download_url.startswith("http")
+        ):
+            return self._stream_to_target(
+                request, info.download_url,
+                total_hint=info.file_size_bytes,
+                headers=info.default_download_headers or None,
+            )
+        return self._download_music_via_engine(request, info)
+
+    def _download_music_via_engine(
+        self, request: DownloadRequest, info: "_musicdl.SongInfo"
+    ) -> DownloadResult:
+        """Delegate HLS/encrypted tracks to musicdl, then move the file.
+
+        Ordering is load-bearing: the downloaded file lives INSIDE the
+        staging dir, so it is moved out BEFORE the staging dir is removed.
+        """
+        staging = request.target_path.parent / f".musicdl-{request.download_id[:8]}"
+        info.work_dir = str(staging)
+        client = _musicdl.MusicClient(
+            music_sources=self._music_sources,
+            init_music_clients_cfg={
+                source: {"work_dir": str(staging)} for source in self._music_sources
+            },
+            requests_overrides={
+                source: {"timeout": (self._timeout, self._download_timeout)}
+                for source in self._music_sources
+            },
+        )
+        if request.progress_callback is not None:
+            request.progress_callback(
+                DownloadProgress(
+                    download_id=request.download_id,
+                    status=DownloadStatus.DOWNLOADING,
+                    progress=0.0,
+                    speed=None,
+                    downloaded_bytes=0,
+                    total_bytes=info.file_size_bytes,
+                )
+            )
+        try:
+            downloaded = client.download(song_infos=[info])
+        except EngineError:
+            raise
+        except Exception as exc:
+            raise translate_engine_exception(
+                exc, url=info.download_url or "", operation="download"
+            ) from exc
+        try:
+            if not downloaded:
+                raise EngineDownloadError(_MESSAGE_DOWNLOAD_FAILED)
+            saved = Path(downloaded[0].save_path)
+            shutil.move(str(saved), request.target_path)
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+        written = request.target_path.stat().st_size
+        return DownloadResult(
+            download_id=request.download_id,
+            task_id=request.command.task_id,
+            title=request.title,
+            media_type=request.media_type,
+            format=request.command.format,
+            quality=request.command.quality,
+            status=DownloadStatus.COMPLETED,
+            progress=100.0,
+            speed=None,
+            total_bytes=written,
+            downloaded_bytes=written,
+            retry_count=0,
+            error_message=None,
+        )
 
     # -- shared streaming core ---------------------------------------------
 
@@ -152,9 +232,12 @@ class EngineDownloaderAdapter:
             with httpx.Client(**kwargs) as client:
                 with client.stream("GET", url, headers=request_headers) as response:
                     response.raise_for_status()  # 403 -> HTTPStatusError -> typed
-                    if total is None:
-                        length = response.headers.get("content-length")
-                        total = int(length) if length and length.isdigit() else None
+                    # The server-declared length is authoritative over any
+                    # metadata hint (hints may be stale/approximate); the
+                    # hint only fills in when the server sends no length.
+                    length = response.headers.get("content-length")
+                    if length and length.isdigit():
+                        total = int(length)
                     with target.open("wb") as out:
                         for chunk in response.iter_bytes(chunk_size=self._chunk_size):
                             out.write(chunk)

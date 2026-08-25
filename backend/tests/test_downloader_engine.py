@@ -6,6 +6,7 @@ suite never touches the network."""
 import httpx
 import pytest
 
+import app.adapters.downloader_engine as downloader_engine
 from app.adapters.downloader_engine import EngineDownloaderAdapter
 from app.adapters.engine_errors import (
     EngineDownloadError,
@@ -179,10 +180,62 @@ class TestVideoDownload:
             adapter.download(_request(tmp_path))
 
 
-class TestMusicPlaceholder:
-    def test_music_branch_raises_not_wired_yet(self, tmp_path):
+class TestMusicDownload:
+    def test_http_song_streams_directly_with_progress(self, tmp_path):
+        seen: list[DownloadProgress] = []
+        adapter = _adapter(payload=b"m" * 256)
+        result = adapter.download(
+            _request(
+                tmp_path,
+                metadata=_MUSIC_METADATA,
+                media_type=MediaType.MUSIC,
+                progress_callback=seen.append,
+            )
+        )
+        assert (tmp_path / "out" / "media.bin").read_bytes() == b"m" * 256
+        assert result.status is DownloadStatus.COMPLETED
+        assert result.media_type is MediaType.MUSIC
+        assert seen[-1].downloaded_bytes == 256
+
+    def test_hls_song_delegates_to_musicdl_and_moves_file(self, tmp_path, monkeypatch):
+        from pathlib import Path
+
+        calls = {}
+
+        class FakeMusicClient:
+            def __init__(self, **kwargs):
+                calls["kwargs"] = kwargs
+
+            def download(self, song_infos):
+                calls["song_infos"] = song_infos
+                saved = Path(song_infos[0].save_path)  # property -> staging dir
+                saved.parent.mkdir(parents=True, exist_ok=True)
+                saved.write_bytes(b"hls-bytes")  # fake downloaded content
+                return song_infos
+
+        monkeypatch.setattr(downloader_engine._musicdl, "MusicClient", FakeMusicClient)
+
+        hls_metadata = {
+            "song_info": {
+                "song_name": "晴天", "singers": "周杰伦", "ext": "m4a",
+                "identifier": "id1", "protocol": "HLS",
+                "download_url": "https://cdn.example/stream.m3u8",
+                "work_dir": "./",
+            }
+        }
+        adapter = EngineDownloaderAdapter(music_sources=["NeteaseMusicClient"])
+        result = adapter.download(
+            _request(tmp_path, metadata=hls_metadata, media_type=MediaType.MUSIC)
+        )
+        assert result.status is DownloadStatus.COMPLETED
+        assert result.media_type is MediaType.MUSIC
+        assert (tmp_path / "out" / "media.bin").read_bytes() == b"hls-bytes"
+        # staging dir is cleaned up AFTER the file was moved out of it
+        assert not list(tmp_path.glob(".musicdl-*"))
+
+    def test_missing_song_info_raises_typed_error(self, tmp_path):
         adapter = _adapter()
-        with pytest.raises(EngineDownloadError, match="not wired yet"):
+        with pytest.raises(EngineDownloadError):
             adapter.download(
-                _request(tmp_path, metadata=_MUSIC_METADATA, media_type=MediaType.MUSIC)
+                _request(tmp_path, metadata={}, media_type=MediaType.MUSIC)
             )
