@@ -17,6 +17,8 @@ from app.adapters.engine_errors import (
     translate_engine_exception,
 )
 
+requests = pytest.importorskip("requests")
+
 URL = "https://v.douyin.com/abc/"
 
 
@@ -87,3 +89,50 @@ class TestTranslation:
         with pytest.raises(EngineNetworkError) as raised:
             raise translate_engine_exception(exc, url=URL, operation="parse") from exc
         assert raised.value.__cause__ is exc
+
+    def test_builtin_timeout_maps_to_engine_timeout(self):
+        # Plain builtin TimeoutError (socket.timeout on 3.10) is not an
+        # asyncio.TimeoutError; the classifier must still map it to timeout.
+        assert isinstance(
+            translate_engine_exception(TimeoutError("boom"), url=URL, operation="parse"),
+            EngineTimeoutError,
+        )
+
+    def test_raw_engine_text_never_leaks(self):
+        exc = httpx.ConnectError(
+            "connection refused 10.0.0.1:443", request=_request()
+        )
+        translated = translate_engine_exception(exc, url=URL, operation="parse")
+        assert str(translated) == "网络错误 / Network error"
+        assert "connection refused" not in str(translated)
+        assert "10.0.0.1" not in str(translated)
+
+
+class TestRequestsTranslation:
+    """musicdl raises requests exceptions; they must map like httpx ones."""
+
+    def _translate(self, exc, operation="download"):
+        return translate_engine_exception(exc, url=URL, operation=operation)
+
+    def test_connect_timeout_maps_to_timeout(self):
+        # Order-critical: requests.ConnectTimeout subclasses BOTH Timeout and
+        # ConnectionError; the timeout branch must win.
+        exc = requests.exceptions.ConnectTimeout("slow", request=_request())
+        assert isinstance(self._translate(exc), EngineTimeoutError)
+
+    def test_connection_error_maps_to_network(self):
+        exc = requests.exceptions.ConnectionError("refused", request=_request())
+        assert isinstance(self._translate(exc), EngineNetworkError)
+
+    def test_403_maps_to_platform_blocked(self):
+        response = httpx.Response(403, request=_request())
+        exc = requests.exceptions.HTTPError("Forbidden", response=response)
+        assert isinstance(self._translate(exc), PlatformBlockedError)
+
+    def test_other_status_maps_to_operation_error(self):
+        response = httpx.Response(500, request=_request())
+        exc = requests.exceptions.HTTPError("Server Error", response=response)
+        assert isinstance(self._translate(exc), EngineDownloadError)
+        assert isinstance(
+            self._translate(exc, operation="parse"), EngineParseError
+        )

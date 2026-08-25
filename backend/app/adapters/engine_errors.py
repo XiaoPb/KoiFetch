@@ -13,7 +13,8 @@ Contract (relied on by parse_service and the worker):
   message-safety convention). The original engine exception is preserved as
   ``__cause__`` for logging.
 * :class:`UnsupportedPlatformError` maps to PRD code 1003 平台不支持 in
-  parse_service.
+  parse_service. The parser adapter raises it directly as a routing decision;
+  translation never produces it.
 * :func:`translate_engine_exception` maps the exception classes the engines
   actually raise (httpx for parse-video-py, requests for musicdl) onto this
   hierarchy. ``operation`` is "parse" or "download" and selects the
@@ -39,7 +40,6 @@ __all__ = [
 ]
 
 _MSG = {
-    "unsupported": "平台不支持 / Unsupported platform",
     "network": "网络错误 / Network error",
     "blocked": "平台风控，请求被拦截 / Platform anti-scraping blocked the request",
     "parse_timeout": "解析超时 / Parse timeout",
@@ -82,8 +82,11 @@ class EngineDownloadError(EngineError):
 def _category_of(exc: BaseException) -> str:
     """Classify an engine exception into a category string.
 
-    Order matters: httpx timeouts are not subclasses of ``NetworkError``, so
-    timeouts are checked first; 403 is checked before the generic HTTP branch.
+    The order that matters is the requests branch: ``ConnectTimeout`` is a
+    subclass of BOTH ``Timeout`` and ``ConnectionError``, so the timeout check
+    must come first. In httpx the branches are siblings (``TimeoutException``
+    is not a ``NetworkError`` subclass), so their relative order is cosmetic;
+    403 is still checked before the generic HTTP branch.
     """
     if isinstance(exc, httpx.TimeoutException):
         return "timeout"
@@ -93,7 +96,7 @@ def _category_of(exc: BaseException) -> str:
         return "blocked" if exc.response.status_code == 403 else "http"
     if isinstance(exc, httpx.HTTPError):
         return "http"
-    if isinstance(exc, asyncio.TimeoutError):
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
         return "timeout"
     try:
         import requests  # musicdl dependency; guarded so imports stay light
@@ -123,8 +126,6 @@ def translate_engine_exception(
     a parameter for future logging detail; it is never embedded in messages.
     """
     category = _category_of(exc)
-    if category == "unsupported":
-        return UnsupportedPlatformError(_MSG["unsupported"])
     if category == "network":
         return EngineNetworkError(_MSG["network"])
     if category == "blocked":
