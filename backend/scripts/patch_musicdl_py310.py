@@ -7,14 +7,18 @@ layer (``from musicdl import musicdl``) fails with
 ``ImportError: cannot import name 'Unpack' from 'typing'``. This script
 rewrites every ``Unpack`` name out of ``typing`` imports in the ACTIVE
 environment's installed musicdl package onto ``typing_extensions`` (already a
-transitive dependency of this project's stack). It covers both the single-name
-form (``from typing import Unpack``) and multi-name forms
-(``from typing import Dict, Any, Unpack``), preserves line endings, writes
-atomically, and verifies afterwards that no ``typing`` import still carries
-``Unpack`` (exit 1 if any remain).
+transitive dependency of this project's stack). It covers single-line imports
+in both plain (``from typing import Unpack``) and multi-name
+(``from typing import Dict, Any, Unpack``) and aliased
+(``from typing import Unpack as U``) forms, preserves line endings, writes
+atomically, and afterwards verifies no ``typing`` import still carries
+``Unpack`` (exit 1 if any remain). Parenthesized multi-line imports are NOT
+auto-rewritten; the post-condition detects and reports them loudly instead of
+silently missing them.
 
 Idempotent: safe to run after every fresh install; a no-op when nothing needs
-patching. Not needed on Python >= 3.11 (the script exits early there unless
+patching. Files with no ``Unpack`` usage at all are left untouched and are not
+counted. Not needed on Python >= 3.11 (the script exits early there unless
 ``--package-dir`` is given explicitly, e.g. by tests).
 
     .venv/bin/python backend/scripts/patch_musicdl_py310.py
@@ -29,16 +33,28 @@ from pathlib import Path
 
 _TYPING_IMPORT = re.compile(r"^from typing import (.+)$")
 _PATCHED_IMPORT = "from typing_extensions import Unpack"
-_IMPORT_NAMES = re.compile(r",\s*")
+_IMPORT_NAMES_SPLIT = re.compile(r",\s*")
+
+
+def _base_name(name: str) -> str:
+    """The imported name behind an alias (``Unpack as U`` -> ``Unpack``)."""
+    return name.split(" as ", 1)[0].strip().strip("()")
 
 
 def _split_names(import_body: str) -> list[str]:
     """Split an ``import`` name list, tolerating parenthesized lists."""
-    return [name.strip().strip("()") for name in _IMPORT_NAMES.split(import_body) if name.strip()]
+    return [
+        name.strip() for name in _IMPORT_NAMES_SPLIT.split(import_body) if name.strip()
+    ]
 
 
 def _rewrite_text(text: str) -> str:
-    """Rewrite ``Unpack`` out of ``typing`` imports, preserving line endings."""
+    """Rewrite ``Unpack`` out of single-line ``typing`` imports.
+
+    Line endings are preserved; a statement that ends the file without a
+    newline is terminated with ``\\n`` so the rewritten lines never fuse.
+    Aliased imports (``from typing import Unpack as U``) keep their alias.
+    """
     lines = text.splitlines(keepends=True)
     out: list[str] = []
     for line in lines:
@@ -49,23 +65,49 @@ def _rewrite_text(text: str) -> str:
             out.append(line)
             continue
         names = _split_names(match.group(1))
-        if "Unpack" not in names:
+        removed = [name for name in names if _base_name(name) == "Unpack"]
+        if not removed:
             out.append(line)
             continue
-        remaining = [name for name in names if name != "Unpack"]
-        if remaining:
-            out.append(f"from typing import {', '.join(remaining)}{newline}")
-        out.append(f"{_PATCHED_IMPORT}{newline}")
+        kept = [name for name in names if _base_name(name) != "Unpack"]
+        alias = removed[0].split(" as ", 1)[1].strip() if " as " in removed[0] else None
+        import_line = (
+            _PATCHED_IMPORT if alias is None else f"from typing_extensions import Unpack as {alias}"
+        )
+        sep = newline or "\n"  # never fuse the rewritten lines
+        if kept:
+            out.append(f"from typing import {', '.join(kept)}{sep}")
+        out.append(f"{import_line}{sep}")
     return "".join(out)
 
 
 def _unpack_typing_imports(package_dir: Path) -> list[Path]:
-    """Files still importing ``Unpack`` from ``typing`` (post-condition check)."""
+    """Files still importing ``Unpack`` from ``typing`` (post-condition check).
+
+    Detects single-line forms (plain and aliased) and parenthesized
+    multi-line blocks, which the rewriter does not auto-fix — they fail the
+    check loudly instead of being silently missed.
+    """
     bad: list[Path] = []
     for path in sorted(package_dir.rglob("*.py")):
-        for line in path.read_text(encoding="utf-8").splitlines():
-            match = _TYPING_IMPORT.match(line.strip())
-            if match and "Unpack" in _split_names(match.group(1)):
+        lines = path.read_text(encoding="utf-8").splitlines()
+        in_paren_import = False
+        for line in lines:
+            stripped = line.strip()
+            if in_paren_import:
+                if ")" in stripped:
+                    in_paren_import = False
+                elif _base_name(stripped.rstrip(",")) == "Unpack":
+                    bad.append(path)
+                    break
+                continue
+            match = _TYPING_IMPORT.match(stripped)
+            if not match:
+                continue
+            if "(" in stripped and ")" not in stripped:
+                in_paren_import = True
+                continue
+            if any(_base_name(name) == "Unpack" for name in _split_names(match.group(1))):
                 bad.append(path)
                 break
     return bad

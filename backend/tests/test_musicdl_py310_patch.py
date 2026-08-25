@@ -88,3 +88,47 @@ class TestPatchMusicdlPy310:
         assert (pkg / "crlf.py").read_bytes() == (
             b"from typing_extensions import Unpack\r\nx: Unpack[Kwargs]\r\n"
         )
+
+    def test_no_newline_final_import_is_not_corrupted(self, tmp_path):
+        # Regression: a typing import as the file's last line without a
+        # trailing newline must not fuse with the injected import line.
+        pkg = tmp_path / "musicdl"
+        pkg.mkdir()
+        _write(pkg, "__init__.py", "")
+        (pkg / "nonl.py").write_text(
+            "from typing import Dict, Unpack", encoding="utf-8"
+        )
+        result = _run(pkg)
+        assert result.returncode == 0, result.stderr
+        patched = (pkg / "nonl.py").read_text(encoding="utf-8")
+        assert patched == (
+            "from typing import Dict\nfrom typing_extensions import Unpack\n"
+        )
+        assert "Dictfrom" not in patched
+
+    def test_aliased_unpack_keeps_alias(self, tmp_path):
+        pkg = tmp_path / "musicdl"
+        pkg.mkdir()
+        _write(pkg, "__init__.py", "")
+        _write(pkg, "aliased.py", "from typing import Unpack as U\nx: U[Kwargs]\n")
+        result = _run(pkg)
+        assert result.returncode == 0, result.stderr
+        assert (pkg / "aliased.py").read_text() == (
+            "from typing_extensions import Unpack as U\nx: U[Kwargs]\n"
+        )
+
+    def test_multiline_parenthesized_import_fails_loudly(self, tmp_path):
+        # The rewriter only auto-fixes single-line imports; a parenthesized
+        # multi-line block must fail the post-condition loudly, never pass.
+        pkg = tmp_path / "musicdl"
+        pkg.mkdir()
+        _write(pkg, "__init__.py", "")
+        _write(
+            pkg,
+            "multiline.py",
+            "from typing import (\n    Dict,\n    Unpack,\n)\n",
+        )
+        result = _run(pkg)
+        assert result.returncode == 1
+        assert "still importing Unpack from typing" in result.stderr
+        assert "multiline.py" in result.stderr
