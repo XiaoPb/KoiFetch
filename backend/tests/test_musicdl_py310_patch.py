@@ -117,18 +117,44 @@ class TestPatchMusicdlPy310:
             "from typing_extensions import Unpack as U\nx: U[Kwargs]\n"
         )
 
-    def test_multiline_parenthesized_import_fails_loudly(self, tmp_path):
-        # The rewriter only auto-fixes single-line imports; a parenthesized
-        # multi-line block must fail the post-condition loudly, never pass.
+    def test_single_line_parenthesized_import_rewritten(self, tmp_path):
+        # Regression: a parenthesized single-line list must not be rewritten
+        # into an unterminated-paren SyntaxError.
         pkg = tmp_path / "musicdl"
         pkg.mkdir()
         _write(pkg, "__init__.py", "")
-        _write(
-            pkg,
-            "multiline.py",
-            "from typing import (\n    Dict,\n    Unpack,\n)\n",
-        )
+        _write(pkg, "paren.py", "from typing import (Dict, Unpack)\nx: Unpack[Kwargs]\n")
         result = _run(pkg)
-        assert result.returncode == 1
+        assert result.returncode == 0, result.stderr
+        assert (pkg / "paren.py").read_text() == (
+            "from typing import Dict\n"
+            "from typing_extensions import Unpack\n"
+            "x: Unpack[Kwargs]\n"
+        )
+
+    @pytest.mark.parametrize(
+        "block",
+        [
+            # canonical: names on their own lines
+            "from typing import (\n    Dict,\n    Unpack,\n)\n",
+            # closing paren on the Unpack line
+            "from typing import (\n    Dict,\n    Unpack)\n",
+            # Unpack on the opening line
+            "from typing import (Unpack,\n    Dict,\n)\n",
+            # inline comment after the Unpack comma
+            "from typing import (\n    Dict,\n    Unpack,  # comment\n)\n",
+            # aliased name inside the block
+            "from typing import (\n    Dict,\n    Unpack as U,\n)\n",
+        ],
+    )
+    def test_multiline_parenthesized_variants_fail_loudly(self, tmp_path, block):
+        # The rewriter only auto-fixes single-line imports; every parenthesized
+        # multi-line layout must fail the post-condition loudly, never pass.
+        pkg = tmp_path / "musicdl"
+        pkg.mkdir()
+        _write(pkg, "__init__.py", "")
+        _write(pkg, "multiline.py", block)
+        result = _run(pkg)
+        assert result.returncode == 1, result.stdout
         assert "still importing Unpack from typing" in result.stderr
         assert "multiline.py" in result.stderr

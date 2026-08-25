@@ -37,12 +37,16 @@ _IMPORT_NAMES_SPLIT = re.compile(r",\s*")
 
 
 def _base_name(name: str) -> str:
-    """The imported name behind an alias (``Unpack as U`` -> ``Unpack``)."""
-    return name.split(" as ", 1)[0].strip().strip("()")
+    """The imported name behind an alias (``Unpack as U`` -> ``Unpack``).
+
+    Strips surrounding parens and commas so callers can feed raw fragments
+    (``(Unpack,``, ``Unpack)``, ``Unpack,``) safely.
+    """
+    return name.split(" as ", 1)[0].strip().strip("(),")
 
 
 def _split_names(import_body: str) -> list[str]:
-    """Split an ``import`` name list, tolerating parenthesized lists."""
+    """Split an ``import`` name list on commas."""
     return [
         name.strip() for name in _IMPORT_NAMES_SPLIT.split(import_body) if name.strip()
     ]
@@ -53,7 +57,9 @@ def _rewrite_text(text: str) -> str:
 
     Line endings are preserved; a statement that ends the file without a
     newline is terminated with ``\\n`` so the rewritten lines never fuse.
-    Aliased imports (``from typing import Unpack as U``) keep their alias.
+    Aliased imports (``from typing import Unpack as U``) keep their alias,
+    and parenthesized single-line lists (``from typing import (Dict, Unpack)``)
+    are normalized to a plain kept-name import.
     """
     lines = text.splitlines(keepends=True)
     out: list[str] = []
@@ -62,6 +68,12 @@ def _rewrite_text(text: str) -> str:
         newline = line[len(body):]
         match = _TYPING_IMPORT.match(body)
         if not match:
+            out.append(line)
+            continue
+        if "(" in body and ")" not in body:
+            # Opening line of a parenthesized multi-line block: never rewrite
+            # it in isolation (it would mangle the block). The post-condition
+            # reports such blocks loudly.
             out.append(line)
             continue
         names = _split_names(match.group(1))
@@ -76,7 +88,7 @@ def _rewrite_text(text: str) -> str:
         )
         sep = newline or "\n"  # never fuse the rewritten lines
         if kept:
-            out.append(f"from typing import {', '.join(kept)}{sep}")
+            out.append(f"from typing import {', '.join(name.strip('(),') for name in kept)}{sep}")
         out.append(f"{import_line}{sep}")
     return "".join(out)
 
@@ -84,9 +96,10 @@ def _rewrite_text(text: str) -> str:
 def _unpack_typing_imports(package_dir: Path) -> list[Path]:
     """Files still importing ``Unpack`` from ``typing`` (post-condition check).
 
-    Detects single-line forms (plain and aliased) and parenthesized
-    multi-line blocks, which the rewriter does not auto-fix — they fail the
-    check loudly instead of being silently missed.
+    Detects single-line forms (plain, aliased, parenthesized) and parenthesized
+    multi-line blocks — including names on the opening line, the closing paren
+    on a name line, and inline comments — which the rewriter does not auto-fix;
+    they fail the check loudly instead of being silently missed.
     """
     bad: list[Path] = []
     for path in sorted(package_dir.rglob("*.py")):
@@ -95,21 +108,25 @@ def _unpack_typing_imports(package_dir: Path) -> list[Path]:
         for line in lines:
             stripped = line.strip()
             if in_paren_import:
-                if ")" in stripped:
+                # content before any inline comment, then before any closing paren
+                content = stripped.split("#", 1)[0].strip()
+                closing = content.find(")")
+                candidate = content[:closing] if closing != -1 else content
+                if closing != -1:
                     in_paren_import = False
-                elif _base_name(stripped.rstrip(",")) == "Unpack":
+                if _base_name(candidate.rstrip(",")) == "Unpack":
                     bad.append(path)
                     break
                 continue
             match = _TYPING_IMPORT.match(stripped)
             if not match:
                 continue
-            if "(" in stripped and ")" not in stripped:
-                in_paren_import = True
-                continue
-            if any(_base_name(name) == "Unpack" for name in _split_names(match.group(1))):
+            names = _split_names(match.group(1))
+            if any(_base_name(name) == "Unpack" for name in names):
                 bad.append(path)
                 break
+            if "(" in stripped and ")" not in stripped:
+                in_paren_import = True
     return bad
 
 
