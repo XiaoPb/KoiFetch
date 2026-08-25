@@ -21,16 +21,23 @@ Behaviour contract:
 * **MUSIC** — reads ``request.metadata["song_info"]`` (a persisted
   :class:`musicdl.SongInfo`-compatible dict, ``SongInfo.fromdict``-able;
   missing/not-a-dict → typed
-  :class:`~app.adapters.engine_errors.EngineDownloadError`). Plain ``HTTP``
-  tracks are streamed directly from ``download_url`` with real progress.
-  ``HLS``/encrypted tracks are delegated to ``musicdl.MusicClient`` into a
+  :class:`~app.adapters.engine_errors.EngineDownloadError`). The dict must
+  carry ``source`` (one of the configured ``music_sources``, else a typed
+  "not configured" error), a valid ``ext``, and a usable
+  ``download_url``/``download_url_status``. Plain ``HTTP`` tracks are
+  streamed directly from ``download_url`` with real progress. ``HLS``/
+  encrypted tracks are delegated to ``musicdl.MusicClient`` into a
   per-download staging dir, then moved out of staging to ``target_path``
   before the staging dir is removed (coarse progress: one 0% snapshot, then
   the completed result — musicdl exposes no callback).
 * **Errors** — httpx/requests failures translate to the typed
   :mod:`app.adapters.engine_errors` hierarchy (403 → PlatformBlockedError,
-  timeouts → EngineTimeoutError, connect → EngineNetworkError). The worker
-  removes the partial target on failure; the adapter leaves cleanup to it.
+  timeouts → EngineTimeoutError, connect → EngineNetworkError). Music-engine
+  failures mostly collapse to the stable "下载失败 / Download failed" (musicdl
+  swallows its own timeouts/403s into empty results), and the staging-move
+  step is translated the same way — no raw filesystem paths or engine text
+  reach clients. The worker removes the partial target on failure; the
+  adapter always removes its own staging dir.
 * **``transport`` is a test seam** — production ``None`` (real network);
   tests inject ``httpx.MockTransport``.
 * **Dependency** — importing this module requires ``musicdl`` (installed via
@@ -62,6 +69,7 @@ _MESSAGE_MISSING_MEDIA = "缺少媒体地址，无法下载 / Missing media URL"
 _MESSAGE_MEDIA_TYPE = "该引擎暂不支持此媒体类型 / Media type not supported by the engine yet"
 _MESSAGE_MISSING_SONG = "缺少音乐信息，无法下载 / Missing song info"
 _MESSAGE_DOWNLOAD_FAILED = "下载失败 / Download failed"
+_MESSAGE_MUSIC_SOURCE = "音乐来源未配置 / Music source not configured"
 _MESSAGE_INCOMPLETE = "下载不完整 / Incomplete download"
 
 _UA = {"User-Agent": "Mozilla/5.0 (KoiFetch/0.1)"}
@@ -142,6 +150,8 @@ class EngineDownloaderAdapter:
         Ordering is load-bearing: the downloaded file lives INSIDE the
         staging dir, so it is moved out BEFORE the staging dir is removed.
         """
+        if info.source not in self._music_sources:
+            raise EngineDownloadError(_MESSAGE_MUSIC_SOURCE)
         staging = request.target_path.parent / f".musicdl-{request.download_id[:8]}"
         info.work_dir = str(staging)
         client = _musicdl.MusicClient(
@@ -167,17 +177,16 @@ class EngineDownloaderAdapter:
             )
         try:
             downloaded = client.download(song_infos=[info])
+            if not downloaded:
+                raise EngineDownloadError(_MESSAGE_DOWNLOAD_FAILED)
+            saved = Path(downloaded[0].save_path)
+            shutil.move(str(saved), request.target_path)
         except EngineError:
             raise
         except Exception as exc:
             raise translate_engine_exception(
                 exc, url=info.download_url or "", operation="download"
             ) from exc
-        try:
-            if not downloaded:
-                raise EngineDownloadError(_MESSAGE_DOWNLOAD_FAILED)
-            saved = Path(downloaded[0].save_path)
-            shutil.move(str(saved), request.target_path)
         finally:
             shutil.rmtree(staging, ignore_errors=True)
         written = request.target_path.stat().st_size

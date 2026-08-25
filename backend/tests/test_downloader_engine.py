@@ -29,6 +29,7 @@ _MUSIC_METADATA = {
     "song_info": {
         "song_name": "晴天", "singers": "周杰伦", "ext": "mp3",
         "file_size_bytes": 1024, "identifier": "id1",
+        "source": "NeteaseMusicClient",
         "protocol": "HTTP", "download_url": "https://cdn.example/song.mp3",
         "default_download_headers": {}, "work_dir": "./",
     }
@@ -218,20 +219,36 @@ class TestMusicDownload:
         hls_metadata = {
             "song_info": {
                 "song_name": "晴天", "singers": "周杰伦", "ext": "m4a",
-                "identifier": "id1", "protocol": "HLS",
+                "identifier": "id1", "source": "NeteaseMusicClient",
+                "protocol": "HLS",
                 "download_url": "https://cdn.example/stream.m3u8",
                 "work_dir": "./",
             }
         }
+        seen: list[DownloadProgress] = []
         adapter = EngineDownloaderAdapter(music_sources=["NeteaseMusicClient"])
         result = adapter.download(
-            _request(tmp_path, metadata=hls_metadata, media_type=MediaType.MUSIC)
+            _request(
+                tmp_path,
+                metadata=hls_metadata,
+                media_type=MediaType.MUSIC,
+                progress_callback=seen.append,
+            )
         )
         assert result.status is DownloadStatus.COMPLETED
         assert result.media_type is MediaType.MUSIC
         assert (tmp_path / "out" / "media.bin").read_bytes() == b"hls-bytes"
         # staging dir is cleaned up AFTER the file was moved out of it
         assert not list(tmp_path.glob("**/.musicdl-*"))
+        # coarse progress: one 0% snapshot fired before completion
+        assert seen and seen[0].progress == 0.0
+        assert seen[0].status is DownloadStatus.DOWNLOADING
+        # delegation captured by the fake client
+        assert calls["kwargs"]["music_sources"] == ["NeteaseMusicClient"]
+        assert calls["song_infos"][0].work_dir.endswith(f".musicdl-{DOWNLOAD_ID[:8]}")
+        assert calls["kwargs"]["requests_overrides"]["NeteaseMusicClient"]["timeout"] == (
+            adapter._timeout, adapter._download_timeout,
+        )
 
     def test_missing_song_info_raises_typed_error(self, tmp_path):
         adapter = _adapter()
@@ -239,3 +256,34 @@ class TestMusicDownload:
             adapter.download(
                 _request(tmp_path, metadata={}, media_type=MediaType.MUSIC)
             )
+
+    def test_staging_cleaned_when_musicdl_raises(self, tmp_path, monkeypatch):
+        from pathlib import Path
+
+        class FailingMusicClient:
+            def __init__(self, **kwargs):
+                pass
+
+            def download(self, song_infos):
+                # musicdl wrote into the staging dir before the engine blew up
+                saved = Path(song_infos[0].save_path)
+                saved.parent.mkdir(parents=True, exist_ok=True)
+                saved.write_bytes(b"partial")
+                raise RuntimeError("musicdl engine exploded")
+
+        monkeypatch.setattr(downloader_engine._musicdl, "MusicClient", FailingMusicClient)
+
+        bad_metadata = {
+            "song_info": {
+                "song_name": "t", "singers": "s", "ext": "m4a",
+                "identifier": "id1", "source": "NeteaseMusicClient",
+                "protocol": "HLS", "download_url": "https://cdn.example/s.m3u8",
+                "work_dir": "./",
+            }
+        }
+        adapter = EngineDownloaderAdapter(music_sources=["NeteaseMusicClient"])
+        with pytest.raises(EngineDownloadError):
+            adapter.download(
+                _request(tmp_path, metadata=bad_metadata, media_type=MediaType.MUSIC)
+            )
+        assert not list(tmp_path.glob("**/.musicdl-*"))
