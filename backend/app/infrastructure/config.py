@@ -70,6 +70,30 @@ class Settings(BaseModel):
     # downloader finishes in milliseconds, see app/workers/cleanup.py).
     stale_download_minutes: int = Field(default=60, ge=1)
 
+    # --- Real engine integration (parse-video-py / musicdl, Tasks 1-10) ---
+    # Adapter mode: "stub" (default) keeps the deterministic offline adapters;
+    # "engine" selects the real parse-video-py/musicdl adapters (factory.py
+    # switches, lazily importing the engine modules so the app boots and the
+    # suite runs without the engines installed).
+    parser_engine: str = "stub"
+    downloader_engine: str = "stub"
+    # Seconds before an engine HTTP request gives up. Streaming downloads use
+    # engine_download_timeout_seconds as the per-read timeout, so a stalled
+    # connection fails within that window per chunk, not per whole file.
+    engine_timeout_seconds: float = Field(default=15.0, ge=1.0)
+    engine_download_timeout_seconds: float = Field(default=30.0, ge=1.0)
+    # Optional http(s) proxy for engine traffic (the adapters forward it to
+    # httpx; parse-video-py additionally reads PARSE_VIDEO_PROXY itself).
+    engine_proxy: str | None = None
+    # musicdl source client names for the engine downloader's music branch
+    # (the five Mainland-China defaults musicdl ships with).
+    musicdl_sources: list[str] = Field(
+        default_factory=lambda: [
+            "MiguMusicClient", "NeteaseMusicClient", "QQMusicClient",
+            "KuwoMusicClient", "QianqianMusicClient",
+        ]
+    )
+
     # --- Web/app behavior ---
     cors_origins: list[str] = Field(default_factory=list)
     debug: bool = False
@@ -122,6 +146,27 @@ class Settings(BaseModel):
         if isinstance(value, str):
             if not value.strip():
                 return []
+            return [item.strip() for item in value.split(",") if item.strip()]
+        return value
+
+    @field_validator("parser_engine", "downloader_engine", mode="after")
+    @classmethod
+    def _validate_engine_mode(cls, value: str) -> str:
+        if value not in ("stub", "engine"):
+            raise ValueError('engine mode must be "stub" or "engine"')
+        return value
+
+    @field_validator("engine_proxy", mode="after")
+    @classmethod
+    def _validate_engine_proxy(cls, value: str | None) -> str | None:
+        if value is not None and not value.startswith(("http://", "https://")):
+            raise ValueError("engine_proxy must be an http(s) URL or None")
+        return value
+
+    @field_validator("musicdl_sources", mode="before")
+    @classmethod
+    def _parse_musicdl_sources(cls, value: object) -> object:
+        if isinstance(value, str):
             return [item.strip() for item in value.split(",") if item.strip()]
         return value
 
