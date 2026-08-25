@@ -3,8 +3,9 @@
 API handlers and application services depend on these interfaces, never on
 third-party engines or filesystem details. Each protocol has a stub/local
 implementation behind it today (parser, downloader, storage, tokens); real
-platform engines, an S3/NAS store, or different token formats can be swapped
-in later without touching the API contracts.
+platform engines (engine mode, see ``app.adapters.factory``), an S3/NAS
+store, or different token formats can be swapped in without touching the
+API contracts.
 
 Design decisions (documented once, relied on by Tasks 7-12):
 

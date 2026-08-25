@@ -3,8 +3,8 @@
 This package is the *adapters* half of the ports-and-adapters architecture:
 ``protocols.py`` defines the ports (interfaces services depend on), and the
 other modules provide the concrete implementations — stub parser/downloader
-(deterministic, offline, so the whole workflow runs before real platform
-engines exist), local bubble/pond storage, and JWT token providers. ``factory``
+(deterministic, offline, so the whole workflow runs without the engine
+packages), local bubble/pond storage, and JWT token providers. ``factory``
 wires settings to implementations; services should use it instead of
 constructing adapters directly.
 

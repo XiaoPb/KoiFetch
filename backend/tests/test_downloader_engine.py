@@ -1,4 +1,4 @@
-"""Tests for the engine downloader adapter (Tasks 7-8): real HTTP streaming
+"""Tests for the engine downloader adapter: real HTTP streaming
 with byte-level progress (video), and the musicdl SongInfo path (music).
 All downloads run through httpx.MockTransport or a faked MusicClient — the
 suite never touches the network."""

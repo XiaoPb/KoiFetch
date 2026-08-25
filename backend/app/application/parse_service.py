@@ -19,7 +19,7 @@ Design decisions (stable contract for Tasks 9-12):
   valid.
 * **Per-URL isolation for runtime failures.** Domain validation rejects a
   malformed *request* wholesale (1001/1002), but a *parser* that fails on one
-  URL (a real engine later; the stub never raises) must not sink the batch:
+  URL (engine mode; the stub never raises) must not sink the batch:
   each URL is parsed *and its row built/queued* separately, so any exception
   in that per-URL step — a parser error or a result the persistence layer
   rejects (e.g. an unconvertible duration) — is collected into a ``failed``
