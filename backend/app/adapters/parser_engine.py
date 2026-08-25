@@ -21,7 +21,9 @@ Honesty contract (verified against the engine source, 2026-08-25):
   the playlist→tasks product decision is a documented v1.1 follow-up.
 * **Sync facade over an async engine.** ``parse_video_share_url`` is async;
   the protocol is sync and runs in FastAPI's threadpool, so each URL is
-  awaited with ``asyncio.run`` (no shared loop across URLs).
+  awaited with ``asyncio.run`` (no shared loop across URLs). The engine call
+  is bounded by ``self._timeout`` via ``asyncio.wait_for`` (cancellation on
+  timeout → :class:`EngineTimeoutError`).
 * **Errors are typed.** httpx/timeout/engine failures are translated to the
   :mod:`app.adapters.engine_errors` hierarchy with stable bilingual messages;
   the original exception is preserved as ``__cause__``.
@@ -41,7 +43,6 @@ import httpx
 
 from app.adapters.engine_errors import (
     EngineError,
-    EngineParseError,
     UnsupportedPlatformError,
     translate_engine_exception,
 )
@@ -73,7 +74,7 @@ _CANONICAL_BY_ENGINE_SOURCE = {
 }
 
 # Host fragment -> canonical platform, derived from the engine's own routing
-# table (single source of truth; mirrored matching: substring-in-URL).
+# table (single source of truth; see :func:`_route` for matching semantics).
 _VIDEO_ROUTES: list[tuple[str, str]] = []
 for _source, _info in video_source_info_mapping.items():
     _canonical = _CANONICAL_BY_ENGINE_SOURCE.get(_source.value)
@@ -96,12 +97,17 @@ _EXT_UNSAFE = re.compile(r"[^a-z0-9]+")
 
 
 def _route(url: str) -> tuple[str, str] | None:
-    """Return ``(engine, canonical_platform)`` for a URL, or ``None``."""
-    for host, canonical in _VIDEO_ROUTES:
-        if host in url:
+    """Return ``(engine, canonical_platform)`` for a URL, or ``None``.
+
+    Matches the hostname exactly or as a ``.``-suffixed subdomain, so
+    unrelated hosts can never false-positive into a platform route.
+    """
+    host = (urlsplit(url).hostname or "").lower()
+    for domain, canonical in _VIDEO_ROUTES:
+        if host == domain or host.endswith("." + domain):
             return "parse-video-py", canonical
-    for host, canonical in _MUSIC_ROUTES:
-        if host in url:
+    for domain, canonical in _MUSIC_ROUTES:
+        if host == domain or host.endswith("." + domain):
             return "musicdl", canonical
     return None
 
@@ -144,7 +150,9 @@ class EngineParserAdapter:
 
     def _parse_video(self, url: str, platform: str) -> ParseResult:
         try:
-            info = asyncio.run(parse_video_share_url(url))
+            info = asyncio.run(
+                asyncio.wait_for(parse_video_share_url(url), timeout=self._timeout)
+            )
         except EngineError:
             raise
         except Exception as exc:

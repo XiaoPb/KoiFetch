@@ -39,6 +39,14 @@ def _fake_video_info(**overrides) -> VideoInfo:
     return VideoInfo(**base)
 
 
+def _offline_adapter() -> EngineParserAdapter:
+    """An adapter whose size probe never touches the network (no length)."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={}, content=b"")
+
+    return EngineParserAdapter(transport=httpx.MockTransport(handler))
+
+
 class TestRouting:
     def test_video_platform_routes_to_parse_video_py(self, monkeypatch):
         calls = []
@@ -48,7 +56,7 @@ class TestRouting:
             return _fake_video_info()
 
         monkeypatch.setattr(parser_engine, "parse_video_share_url", fake_parse)
-        adapter = EngineParserAdapter()
+        adapter = _offline_adapter()
         results = adapter.parse(ParseCommand(urls=["https://v.douyin.com/abc/"]))
         assert len(results) == 1
         assert calls == ["https://v.douyin.com/abc/"]
@@ -71,7 +79,7 @@ class TestRouting:
             return _fake_video_info()
 
         monkeypatch.setattr(parser_engine, "parse_video_share_url", fake_parse)
-        result = EngineParserAdapter().parse(
+        result = _offline_adapter().parse(
             ParseCommand(urls=["https://kg.qq.com/node/play?s=abc"])
         )[0]
         assert result.platform == "quanminkge"
@@ -86,6 +94,34 @@ class TestRouting:
             for domain in info["domain_list"]:
                 assert any(domain in video_host for video_host in video_hosts), domain
 
+    def test_hostname_false_positives_rejected(self):
+        # Substring matching would route these wrongly (box.com contains
+        # "x.com", 36.cn contains "6.cn", tv.sohu.com.evil contains "sohu.com").
+        adapter = EngineParserAdapter()
+        for url in (
+            "https://box.com/video/1",
+            "https://best.co/track/1",
+            "https://36.cn/clip/1",
+            "https://tv.sohu.com.evil.example/video/1",
+        ):
+            with pytest.raises(UnsupportedPlatformError):
+                adapter.parse(ParseCommand(urls=[url]))
+
+    def test_subdomains_still_route(self, monkeypatch):
+        async def fake_parse(url):
+            return _fake_video_info()
+
+        monkeypatch.setattr(parser_engine, "parse_video_share_url", fake_parse)
+        for url in (
+            "https://v.douyin.com/abc/",
+            "https://www.bilibili.com/video/BV1xx",
+            "https://m.bilibili.com/video/BV1xx",
+            "https://b23.tv/abc",
+            "https://www.xiaohongshu.com/explore/1",
+        ):
+            result = _offline_adapter().parse(ParseCommand(urls=[url]))[0]
+            assert result.media_type is MediaType.VIDEO
+
 
 class TestVideoMapping:
     def test_parse_maps_video_info_to_parse_result(self, monkeypatch):
@@ -93,7 +129,7 @@ class TestVideoMapping:
             return _fake_video_info()
 
         monkeypatch.setattr(parser_engine, "parse_video_share_url", fake_parse)
-        adapter = EngineParserAdapter()
+        adapter = _offline_adapter()
         result = adapter.parse(ParseCommand(urls=["https://v.douyin.com/abc/"]))[0]
         assert result.title == "晴天示例"
         assert result.cover == "https://cdn.example/c.jpg"
@@ -114,7 +150,7 @@ class TestVideoMapping:
             return _fake_video_info(title="")
 
         monkeypatch.setattr(parser_engine, "parse_video_share_url", fake_parse)
-        result = EngineParserAdapter().parse(
+        result = _offline_adapter().parse(
             ParseCommand(urls=["https://v.douyin.com/abc/"])
         )[0]
         assert result.title == "douyin"
@@ -124,7 +160,7 @@ class TestVideoMapping:
             return _fake_video_info()
 
         monkeypatch.setattr(parser_engine, "parse_video_share_url", fake_parse)
-        adapter = EngineParserAdapter()
+        adapter = _offline_adapter()
         first = adapter.parse(ParseCommand(urls=["https://v.douyin.com/abc/"]))[0]
         second = adapter.parse(ParseCommand(urls=["https://v.douyin.com/abc/"]))[0]
         assert first.task_id != second.task_id
@@ -207,3 +243,13 @@ class TestEngineErrorTranslation:
         monkeypatch.setattr(parser_engine, "parse_video_share_url", fake_parse)
         with pytest.raises(EngineParseError):
             EngineParserAdapter().parse(ParseCommand(urls=["https://v.douyin.com/abc/"]))
+
+    def test_slow_engine_call_hits_configured_timeout(self, monkeypatch):
+        async def slow_parse(url):
+            await asyncio.sleep(5)
+
+        monkeypatch.setattr(parser_engine, "parse_video_share_url", slow_parse)
+        with pytest.raises(EngineTimeoutError):
+            EngineParserAdapter(timeout_seconds=0.01).parse(
+                ParseCommand(urls=["https://v.douyin.com/abc/"])
+            )
