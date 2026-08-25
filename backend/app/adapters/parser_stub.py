@@ -3,8 +3,9 @@
 Implements :class:`app.adapters.protocols.ParserAdapter`. No network access is
 ever performed — everything is derived from the URL itself, so the complete
 parse → download → store workflow can be exercised before real platform
-engines exist. Real engines (yt-dlp wrappers etc.) can be added later behind
-the same protocol.
+engines exist. The stub remains the default offline mode; the real platform
+engines (parse-video-py / musicdl) run behind the same protocol via the
+factory's engine mode.
 
 Determinism contract:
 

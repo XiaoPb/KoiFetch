@@ -341,3 +341,7 @@ class TestEngineSettings:
     def test_engine_proxy_rejects_non_http(self, clean_env):
         with pytest.raises(ValidationError):
             build(engine_proxy="ftp://x")
+
+    def test_engine_proxy_empty_maps_to_none(self, clean_env):
+        assert build(engine_proxy="").engine_proxy is None
+        assert build(engine_proxy="   ").engine_proxy is None

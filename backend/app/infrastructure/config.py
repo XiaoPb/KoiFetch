@@ -84,6 +84,7 @@ class Settings(BaseModel):
     engine_download_timeout_seconds: float = Field(default=30.0, ge=1.0)
     # Optional http(s) proxy for engine traffic (the adapters forward it to
     # httpx; parse-video-py additionally reads PARSE_VIDEO_PROXY itself).
+    # Empty/whitespace means direct.
     engine_proxy: str | None = None
     # musicdl source client names for the engine downloader's music branch
     # (the five Mainland-China defaults musicdl ships with).
@@ -159,8 +160,12 @@ class Settings(BaseModel):
     @field_validator("engine_proxy", mode="after")
     @classmethod
     def _validate_engine_proxy(cls, value: str | None) -> str | None:
-        if value is not None and not value.startswith(("http://", "https://")):
-            raise ValueError("engine_proxy must be an http(s) URL or None")
+        if value is not None:
+            value = value.strip()
+            if not value:
+                return None  # empty = direct (matches .env.example's ENGINE_PROXY=)
+            if not value.startswith(("http://", "https://")):
+                raise ValueError("engine_proxy must be an http(s) URL or None")
         return value
 
     @field_validator("musicdl_sources", mode="before")

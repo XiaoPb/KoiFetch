@@ -5,7 +5,7 @@ access is ever performed: the stub materializes a small file of deterministic
 bytes (derived from the download id + title) at the requested target path and
 fires incremental :class:`~app.domain.models.DownloadProgress` callbacks as
 chunks land, so the worker (Task 11) can exercise its full progress-persistence
-path before real platform engines exist.
+path without the engine packages installed.
 
 Behaviour contract (documented for the worker and later engines):
 
