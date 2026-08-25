@@ -356,3 +356,43 @@ class TestMusicDownload:
                 _request(tmp_path, metadata=bad_metadata, media_type=MediaType.MUSIC)
             )
         assert "BogusClient" not in str(raised.value)  # raw musicdl text never leaks
+
+    def test_stale_save_path_does_not_bypass_staging(self, tmp_path, monkeypatch):
+        # A persisted song dict may round-trip a stale _save_path (musicdl's
+        # save_path property returns it verbatim); the adapter must reset it
+        # so the file lands in the staging dir, not the stale path.
+        from pathlib import Path
+
+        stale = str(tmp_path / "stale" / "old.m4a")
+        written_to: list[Path] = []
+
+        class FakeMusicClient:
+            def __init__(self, **kwargs):
+                pass
+
+            def download(self, song_infos):
+                info = song_infos[0]
+                assert info._save_path is None, "stale _save_path not reset"
+                saved = Path(info.save_path)
+                saved.parent.mkdir(parents=True, exist_ok=True)
+                saved.write_bytes(b"hls-bytes")
+                written_to.append(saved)
+                return song_infos
+
+        monkeypatch.setattr(downloader_engine._musicdl, "MusicClient", FakeMusicClient)
+
+        stale_metadata = {
+            "song_info": {
+                "song_name": "t", "singers": "s", "ext": "m4a",
+                "identifier": "id1", "source": "NeteaseMusicClient",
+                "protocol": "HLS", "download_url": "https://cdn.example/s.m3u8",
+                "work_dir": "./", "_save_path": stale,
+            }
+        }
+        adapter = EngineDownloaderAdapter(music_sources=["NeteaseMusicClient"])
+        result = adapter.download(
+            _request(tmp_path, metadata=stale_metadata, media_type=MediaType.MUSIC)
+        )
+        assert result.status is DownloadStatus.COMPLETED
+        assert (tmp_path / "out" / "media.bin").read_bytes() == b"hls-bytes"
+        assert not Path(stale).exists()
