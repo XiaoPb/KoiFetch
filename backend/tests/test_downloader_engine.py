@@ -6,7 +6,6 @@ suite never touches the network."""
 import httpx
 import pytest
 
-import app.adapters.downloader_engine as downloader_engine
 from app.adapters.downloader_engine import EngineDownloaderAdapter
 from app.adapters.engine_errors import (
     EngineDownloadError,
@@ -101,3 +100,78 @@ class TestVideoDownload:
         adapter = _adapter()
         with pytest.raises(EngineDownloadError):
             adapter.download(_request(tmp_path, media_type=MediaType.IMAGE))
+
+    def test_truncated_body_is_not_reported_completed(self, tmp_path):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, request=request, content=b"x" * 100,
+                                  headers={"content-length": "1000"})
+
+        adapter = EngineDownloaderAdapter(transport=httpx.MockTransport(handler))
+        with pytest.raises(EngineDownloadError):
+            adapter.download(_request(tmp_path))
+
+    def test_download_without_content_length(self, tmp_path):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, request=request, content=b"abc")
+
+        adapter = EngineDownloaderAdapter(transport=httpx.MockTransport(handler))
+        result = adapter.download(_request(tmp_path))
+        assert result.status is DownloadStatus.COMPLETED
+        assert result.downloaded_bytes == 3
+        assert result.total_bytes == 3  # total or written
+        assert (tmp_path / "out" / "media.bin").read_bytes() == b"abc"
+
+    def test_progress_monotonic_across_chunks(self, tmp_path):
+        seen: list[DownloadProgress] = []
+        # > 64 KiB chunk size yields multiple chunks (httpx chunks at
+        # chunk_size), so monotonicity/interval speed are exercised.
+        adapter = _adapter(payload=b"x" * (200 * 1024))
+        adapter.download(_request(tmp_path, progress_callback=seen.append))
+        assert len(seen) >= 2
+        bytes_seen = [p.downloaded_bytes for p in seen]
+        assert bytes_seen == sorted(bytes_seen)
+        assert seen[-1].downloaded_bytes == 200 * 1024
+
+    def test_mid_stream_error_maps_to_typed_error(self, tmp_path):
+        class RaisingStream(httpx.SyncByteStream):
+            def __iter__(self):
+                yield b"partial"
+                raise httpx.ReadError(
+                    "reset", request=httpx.Request("GET", "https://cdn.example/v.mp4")
+                )
+
+            def close(self):
+                pass
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200, request=request,
+                headers={"content-length": "100"},
+                stream=RaisingStream(),
+            )
+
+        adapter = EngineDownloaderAdapter(transport=httpx.MockTransport(handler))
+        with pytest.raises(EngineNetworkError):
+            adapter.download(_request(tmp_path))
+
+    def test_500_maps_to_engine_download_error(self, tmp_path):
+        adapter = _adapter(status=500)
+        with pytest.raises(EngineDownloadError):
+            adapter.download(_request(tmp_path))
+
+    def test_timeout_maps_to_engine_timeout_error(self, tmp_path):
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ReadTimeout("slow", request=request)
+
+        adapter = EngineDownloaderAdapter(transport=httpx.MockTransport(handler))
+        with pytest.raises(EngineTimeoutError):
+            adapter.download(_request(tmp_path))
+
+
+class TestMusicPlaceholder:
+    def test_music_branch_raises_not_wired_yet(self, tmp_path):
+        adapter = _adapter()
+        with pytest.raises(EngineDownloadError, match="not wired yet"):
+            adapter.download(
+                _request(tmp_path, metadata=_MUSIC_METADATA, media_type=MediaType.MUSIC)
+            )

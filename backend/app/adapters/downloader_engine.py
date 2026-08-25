@@ -6,7 +6,9 @@ parse task's ``metadata_`` JSON as ``video_url``, handed over via
 :attr:`app.adapters.protocols.DownloadRequest.metadata`) and fires
 :class:`~app.domain.models.DownloadProgress` snapshots per chunk, honoring the
 same contract as the stub downloader (monotonic ``downloaded_bytes``,
-``progress`` = downloaded/total*100, interval ``speed``, final 100% callback).
+``progress`` = downloaded/total*100, interval ``speed``). The final callback
+reports the complete byte count when content-length is known; without it
+callbacks report 0.0 progress and the COMPLETED result reconciles the totals.
 
 Behaviour contract:
 
@@ -30,6 +32,10 @@ Behaviour contract:
   removes the partial target on failure; the adapter leaves cleanup to it.
 * **``transport`` is a test seam** — production ``None`` (real network);
   tests inject ``httpx.MockTransport``.
+* **Dependency** — importing this module requires ``musicdl`` (installed via
+  ``backend/requirements.txt``; engine mode is its only consumer). The
+  top-level ``from musicdl import musicdl`` import is deliberate and
+  documented: only engine mode needs it.
 """
 
 from __future__ import annotations
@@ -56,6 +62,7 @@ _MESSAGE_MEDIA_TYPE = "该引擎暂不支持此媒体类型 / Media type not sup
 _MESSAGE_MUSIC_NOT_WIRED = (
     "音乐下载暂未接入（Task 8 实现） / Music download not wired yet (Task 8)"
 )
+_MESSAGE_INCOMPLETE = "下载不完整 / Incomplete download"
 
 _UA = {"User-Agent": "Mozilla/5.0 (KoiFetch/0.1)"}
 _DEFAULT_CHUNK_SIZE = 64 * 1024
@@ -123,7 +130,6 @@ class EngineDownloaderAdapter:
         headers: dict | None = None,
     ) -> DownloadResult:
         target = Path(request.target_path)
-        target.parent.mkdir(parents=True, exist_ok=True)
         kwargs: dict = {
             "timeout": self._download_timeout,
             "follow_redirects": True,
@@ -142,6 +148,7 @@ class EngineDownloaderAdapter:
         written = 0
         total = total_hint
         try:
+            target.parent.mkdir(parents=True, exist_ok=True)
             with httpx.Client(**kwargs) as client:
                 with client.stream("GET", url, headers=request_headers) as response:
                     response.raise_for_status()  # 403 -> HTTPStatusError -> typed
@@ -173,6 +180,9 @@ class EngineDownloaderAdapter:
             raise
         except Exception as exc:
             raise translate_engine_exception(exc, url=url, operation="download") from exc
+
+        if total is not None and written != total:
+            raise EngineDownloadError(_MESSAGE_INCOMPLETE)
 
         elapsed = max(time.monotonic() - start, 1e-9)
         return DownloadResult(
