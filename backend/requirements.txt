@@ -55,7 +55,9 @@ apscheduler>=3.10,<4
 parse-video-py @ git+https://github.com/wujunwei928/parse-video-py.git@5fcf87256edb5ffcdebf0e4aac2a5a41745da76e
 # musicdl: music search/download (netease/qq/kugou/kuwo/migu/...). Heavy install:
 # pulls nodejs-wheel (a Node.js runtime), pywidevine, av, curl-cffi, cryptography.
-# NOTE: musicdl 2.13.x uses `typing.Unpack` (Python >= 3.11) but declares no
-# Requires-Python. On Python 3.10 run `python backend/scripts/patch_musicdl_py310.py`
-# after install (idempotent); not needed on Python >= 3.11.
+# NOTE: musicdl 2.13.x imports `Unpack` from `typing` (Python >= 3.11) but
+# declares no Requires-Python — on Python 3.10 `from musicdl import musicdl`
+# fails with ImportError. After install run
+# `.venv/bin/python backend/scripts/patch_musicdl_py310.py` (idempotent);
+# not needed on Python >= 3.11.
 musicdl>=2.13.6,<3
