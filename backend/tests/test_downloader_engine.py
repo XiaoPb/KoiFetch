@@ -231,7 +231,7 @@ class TestMusicDownload:
         assert result.media_type is MediaType.MUSIC
         assert (tmp_path / "out" / "media.bin").read_bytes() == b"hls-bytes"
         # staging dir is cleaned up AFTER the file was moved out of it
-        assert not list(tmp_path.glob(".musicdl-*"))
+        assert not list(tmp_path.glob("**/.musicdl-*"))
 
     def test_missing_song_info_raises_typed_error(self, tmp_path):
         adapter = _adapter()

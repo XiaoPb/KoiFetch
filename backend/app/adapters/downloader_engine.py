@@ -1,4 +1,5 @@
-"""Real downloader adapter: HTTP streaming with byte-level progress (Tasks 7-8).
+"""Real downloader adapter: HTTP streaming with byte-level progress for video
+and music.
 
 Implements :class:`app.adapters.protocols.DownloaderAdapter` for real media:
 the video branch streams the media URL the parser resolved (stored in the
@@ -40,12 +41,12 @@ Behaviour contract:
 
 from __future__ import annotations
 
-import shutil  # used by the Task 8 music branch (staging move/cleanup)
+import shutil  # used by the music branch (staging move/cleanup)
 import time
-from pathlib import Path  # used by the Task 8 music branch
+from pathlib import Path  # used by the music branch
 
 import httpx
-from musicdl import musicdl as _musicdl  # consumed by the Task 8 music branch
+from musicdl import musicdl as _musicdl  # consumed by the music branch
 
 from app.adapters.engine_errors import (
     EngineDownloadError,
@@ -59,16 +60,13 @@ __all__ = ["EngineDownloaderAdapter"]
 
 _MESSAGE_MISSING_MEDIA = "缺少媒体地址，无法下载 / Missing media URL"
 _MESSAGE_MEDIA_TYPE = "该引擎暂不支持此媒体类型 / Media type not supported by the engine yet"
-_MESSAGE_MUSIC_NOT_WIRED = (
-    "音乐下载暂未接入（Task 8 实现） / Music download not wired yet (Task 8)"
-)
 _MESSAGE_MISSING_SONG = "缺少音乐信息，无法下载 / Missing song info"
 _MESSAGE_DOWNLOAD_FAILED = "下载失败 / Download failed"
 _MESSAGE_INCOMPLETE = "下载不完整 / Incomplete download"
 
 _UA = {"User-Agent": "Mozilla/5.0 (KoiFetch/0.1)"}
 _DEFAULT_CHUNK_SIZE = 64 * 1024
-# musicdl source client names used by the Task 8 music branch (the five
+# musicdl source client names used by the music branch (the five
 # Mainland-China defaults musicdl ships with).
 _DEFAULT_MUSIC_SOURCES = [
     "MiguMusicClient", "NeteaseMusicClient", "QQMusicClient",
@@ -114,7 +112,7 @@ class EngineDownloaderAdapter:
         return self._stream_to_target(request, url, total_hint=None)
 
     # -- music -------------------------------------------------------------
-    # Real download + progress via musicdl (Task 8): plain HTTP tracks are
+    # Real download + progress via musicdl: plain HTTP tracks are
     # streamed directly through the shared core; HLS/encrypted tracks go
     # through ``musicdl.MusicClient`` into a staging dir, then are moved out.
 
