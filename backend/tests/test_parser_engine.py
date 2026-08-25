@@ -103,6 +103,7 @@ class TestRouting:
             "https://best.co/track/1",
             "https://36.cn/clip/1",
             "https://tv.sohu.com.evil.example/video/1",
+            "https://weibo.com.evil/video/1",
         ):
             with pytest.raises(UnsupportedPlatformError):
                 adapter.parse(ParseCommand(urls=[url]))
@@ -118,6 +119,7 @@ class TestRouting:
             "https://m.bilibili.com/video/BV1xx",
             "https://b23.tv/abc",
             "https://www.xiaohongshu.com/explore/1",
+            "https://xhslink.com/abc",
         ):
             result = _offline_adapter().parse(ParseCommand(urls=[url]))[0]
             assert result.media_type is MediaType.VIDEO
