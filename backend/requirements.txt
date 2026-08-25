@@ -47,3 +47,12 @@ pyjwt>=2.13
 # stale-task-expiry job (app/workers/cleanup.py). Pinned below 4 so the
 # 3.x BackgroundScheduler API stays stable.
 apscheduler>=3.10,<4
+
+# --- Real parsing/downloading engines (engine-mode adapters, Tasks 1-10) ---
+# parse-video-py: video share-URL parsing (douyin/kuaishou/bilibili/xiaohongshu/
+# weibo/xigua/...). NOT on PyPI (verified 404) — install from GitHub; requires
+# Python >= 3.10. The commit SHA is pinned for reproducibility (Step 3).
+parse-video-py @ git+https://github.com/wujunwei928/parse-video-py.git@5fcf87256edb5ffcdebf0e4aac2a5a41745da76e
+# musicdl: music search/download (netease/qq/kugou/kuwo/migu/...). Heavy install:
+# pulls nodejs-wheel (a Node.js runtime), pywidevine, av, curl-cffi, cryptography.
+musicdl>=2.13.6,<3
