@@ -47,9 +47,9 @@ def get_parser(settings: Settings | None = None) -> ParserAdapter:
 
     ``"stub"`` (default) → the deterministic offline :class:`StubParserAdapter`;
     ``"engine"`` → the parse-video-py-backed :class:`EngineParserAdapter`
-    (lazily imported so the app boots and the suite runs without the engine
-    packages installed — engine mode fails loudly at factory time if they are
-    missing).
+    (lazily imported so the app boots and the non-engine tests run without the
+    engine packages installed — engine mode fails loudly at factory time if
+    they are missing).
     """
     settings = settings or get_settings()
     if settings.parser_engine == "engine":

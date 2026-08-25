@@ -11,7 +11,8 @@ platform engines exist. Tests here pin down:
   touches the network,
 * the stub downloader writes deterministic bytes and fires ordered progress
   callbacks,
-* the factory returns the configured stub for each adapter type.
+* the factory returns the configured stub for each adapter type, and that
+  engine mode switches to the real adapters by settings.
 """
 
 import re
@@ -460,7 +461,14 @@ class TestAdapterFactory:
 
 
 class TestEngineModeFactory:
-    """Factory switches between stub and real engines by settings."""
+    """Factory switches between stub and real engines by settings.
+
+    Engine-mode tests need the engine packages; without them they skip
+    (the stub-mode tests above still run).
+    """
+
+    pytest.importorskip("parse_video_py")
+    pytest.importorskip("musicdl")
 
     def test_get_parser_defaults_to_stub(self, settings):
         assert isinstance(get_parser(settings), StubParserAdapter)
@@ -472,6 +480,21 @@ class TestEngineModeFactory:
         adapter = get_parser(engine_settings)
         assert isinstance(adapter, EngineParserAdapter)
         assert isinstance(adapter, ParserAdapter)
+
+    def test_engine_parser_wires_timeout_and_proxy(self, settings):
+        from app.adapters.parser_engine import EngineParserAdapter
+
+        engine_settings = settings.model_copy(
+            update={
+                "parser_engine": "engine",
+                "engine_timeout_seconds": 7.5,
+                "engine_proxy": "http://proxy.local:3128",
+            }
+        )
+        adapter = get_parser(engine_settings)
+        assert isinstance(adapter, EngineParserAdapter)
+        assert adapter._timeout == pytest.approx(7.5)
+        assert adapter._proxy == "http://proxy.local:3128"
 
     def test_get_downloader_engine_mode_returns_engine_adapter(self, settings):
         from app.adapters.downloader_engine import EngineDownloaderAdapter
@@ -497,4 +520,6 @@ class TestEngineModeFactory:
         adapter = get_downloader(engine_settings)
         assert isinstance(adapter, EngineDownloaderAdapter)
         assert adapter._download_timeout == pytest.approx(9.5)
+        assert adapter._timeout == pytest.approx(7.5)
         assert adapter._proxy == "http://proxy.local:3128"
+        assert adapter._music_sources == engine_settings.musicdl_sources

@@ -74,7 +74,7 @@ class Settings(BaseModel):
     # Adapter mode: "stub" (default) keeps the deterministic offline adapters;
     # "engine" selects the real parse-video-py/musicdl adapters (factory.py
     # switches, lazily importing the engine modules so the app boots and the
-    # suite runs without the engines installed).
+    # non-engine tests run without the engines installed).
     parser_engine: str = "stub"
     downloader_engine: str = "stub"
     # Seconds before an engine HTTP request gives up. Streaming downloads use
