@@ -199,6 +199,8 @@ class TestPartialFailure:
         assert "Parse failed" in failure["error"]
         assert "(ValueError)" in failure["error"]
         assert "platform engine unavailable" not in failure["error"]
+        # Untagged failures carry no PRD code — the additive key stays null.
+        assert failure["code"] is None
 
     def test_all_urls_failed_still_returns_200_with_empty_results(self, engine):
         app = create_app(settings=make_settings())
