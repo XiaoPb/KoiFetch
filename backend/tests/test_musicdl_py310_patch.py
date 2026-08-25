@@ -124,9 +124,10 @@ class TestPatchMusicdlPy310:
         _run("--site-packages", str(site_dir))
         env = dict(os.environ)
         # -S drops site-packages from sys.path; typing_extensions must be
-        # reachable for the shim, so add the real purelib explicitly.
+        # reachable for the shim. site_dir FIRST so `import koi_typing_compat`
+        # resolves to the tmp copy even when the venv already has its own shim.
         env["PYTHONPATH"] = os.pathsep.join(
-            [sysconfig.get_paths()["purelib"], str(site_dir)]
+            [str(site_dir), sysconfig.get_paths()["purelib"]]
         )
         code = (
             "import site\n"
@@ -146,8 +147,8 @@ class TestPatchMusicdlPy310:
         assert "pth ok" in probe.stdout
 
     def test_unwritable_site_packages_fails_cleanly(self, tmp_path):
-        if os.geteuid() == 0:
-            pytest.skip("chmod is ineffective for root")
+        if not hasattr(os, "geteuid") or os.geteuid() == 0:
+            pytest.skip("chmod is ineffective for root or unavailable (non-POSIX)")
         locked = tmp_path / "locked"
         locked.mkdir()
         locked.chmod(0o555)
