@@ -12,6 +12,7 @@ reflects what the parse endpoint persisted).
 
 import uuid
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -213,3 +214,79 @@ class TestParseThenPreview:
         assert data["format"] == "mp4"
         assert data["available_qualities"] == ["1080p", "720p", "480p"]
         assert len(data["streams"]) == 3
+
+
+class TestStreamProxyEndpoint:
+    @pytest.fixture
+    def stream_client(self, engine):
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.headers.get("range"):
+                return httpx.Response(
+                    206,
+                    headers={
+                        "content-type": "video/mp4",
+                        "content-range": "bytes 0-99/200",
+                    },
+                    content=b"x" * 100,
+                )
+            return httpx.Response(
+                200,
+                headers={"content-type": "video/mp4", "content-length": "200"},
+                content=b"x" * 200,
+            )
+
+        app = create_app(settings=make_settings())
+        app.dependency_overrides[get_preview_service] = lambda: PreviewService(
+            engine=engine,
+            transport=httpx.MockTransport(handler),
+        )
+        return TestClient(app)
+
+    def test_stream_returns_media_bytes(self, stream_client, engine):
+        _seed_task(
+            engine,
+            task_id=VIDEO_TASK_ID,
+            url=VIDEO_URL,
+            media_type=MediaType.VIDEO,
+            format="mp4",
+            metadata={"video_url": "https://cdn.example.com/v.mp4"},
+        )
+        response = stream_client.get(f"/api/preview/{VIDEO_TASK_ID}/stream")
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "video/mp4"
+        assert response.content == b"x" * 200
+
+    def test_stream_forwards_range_and_returns_206(self, stream_client, engine):
+        _seed_task(
+            engine,
+            task_id=VIDEO_TASK_ID,
+            url=VIDEO_URL,
+            media_type=MediaType.VIDEO,
+            format="mp4",
+            metadata={"video_url": "https://cdn.example.com/v.mp4"},
+        )
+        response = stream_client.get(
+            f"/api/preview/{VIDEO_TASK_ID}/stream",
+            headers={"Range": "bytes=0-99"},
+        )
+        assert response.status_code == 206
+        assert response.headers["content-range"] == "bytes 0-99/200"
+        assert len(response.content) == 100
+
+    def test_stream_unknown_task_returns_envelope_3001(self, client):
+        response = client.get(f"/api/preview/{uuid.uuid4()}/stream")
+        assert response.status_code == 400
+        assert response.json()["code"] == CODE_TASK_NOT_FOUND
+
+    def test_stream_missing_media_url_returns_400(self, client, engine):
+        _seed_task(
+            engine,
+            task_id=VIDEO_TASK_ID,
+            url=VIDEO_URL,
+            media_type=MediaType.VIDEO,
+            format="mp4",
+            metadata={},
+        )
+        response = client.get(f"/api/preview/{VIDEO_TASK_ID}/stream")
+        assert response.status_code == 400
+        assert response.json()["code"] == CODE_BAD_REQUEST

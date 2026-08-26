@@ -20,6 +20,7 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.api.responses import ok
@@ -93,3 +94,34 @@ def preview(
     ``400`` generic.
     """
     return ok(data=service.preview(task_id), message=_MESSAGE_PREVIEW_OK)
+
+
+@router.get("/{task_id}/stream")
+def stream_media(
+    task_id: UuidStr,
+    request: Request,
+    service: Annotated[PreviewService, Depends(get_preview_service)],
+) -> StreamingResponse:
+    """Proxy the task's recorded video URL for inline playback.
+
+    Same-origin byte stream: the platform URL stays server-side, the engine
+    UA is sent upstream, and the client's ``Range`` header is forwarded so
+    seeking works (206 responses pass through). Success is raw bytes (NOT the
+    envelope — the response is media, matching the file endpoint's
+    convention); failures use the shared ApiError envelope (3001/400).
+    """
+    stream = service.stream_video(task_id, request.headers.get("range"))
+
+    def iterator():
+        try:
+            for chunk in stream.chunks:
+                yield chunk
+        finally:
+            stream.close()
+
+    return StreamingResponse(
+        iterator(),
+        status_code=stream.status_code,
+        headers=stream.headers,
+        media_type=None,
+    )

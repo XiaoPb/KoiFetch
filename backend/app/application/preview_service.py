@@ -25,28 +25,84 @@ Design decisions (stable contract for Task 9+):
 * **DI over globals.** The constructor takes an optional ``engine`` (defaults
   to the configured engine); ``create_app`` wires the production instance and
   tests override the API dependency (``app.api.preview.get_preview_service``).
+* **Same-origin video proxy (Task 2).** ``stream_video`` re-fetches the
+  persisted ``metadata["video_url"]`` server-side (engine UA, Range
+  passthrough, redirects followed) so xgplayer/flv.js get a same-origin,
+  CORS-free, referer-free byte stream; the platform URL never reaches the
+  browser. The upstream httpx client is owned by the caller via
+  :class:`MediaStream.close`.
+* **HLS is rejected by design.** m3u8 playlists are not proxied (segment
+  rewriting is out of scope); the frontend falls back to the direct URL.
 """
 
 from __future__ import annotations
 
+import io
+import re
+import zipfile
+from dataclasses import dataclass
+from typing import Iterator
+
+import httpx
 from sqlalchemy import Engine
 from starlette.status import HTTP_400_BAD_REQUEST
 
-from app.api.responses import CODE_TASK_NOT_FOUND, ApiError
+from app.api.responses import CODE_BAD_REQUEST, CODE_TASK_NOT_FOUND, ApiError
 from app.domain import MediaType, format_duration
 from app.infrastructure.database import session_scope
 from app.infrastructure.models import ParseTask
 
-__all__ = ["PreviewService"]
+__all__ = ["MediaStream", "PreviewService"]
 
 _MESSAGE_TASK_NOT_FOUND = "任务不存在 / Task not found"
+_MESSAGE_NOT_VIDEO = "该任务不是视频 / Task is not a video"
+_MESSAGE_NOT_IMAGE = "该任务不是图片 / Task is not an image"
+_MESSAGE_NO_MEDIA_URL = "该任务没有可播放的媒体 / No playable media for this task"
+_MESSAGE_NO_IMAGES = "该任务没有图片 / Task has no images"
+_MESSAGE_IMAGE_INDEX = "图片序号无效 / Invalid image index"
+_MESSAGE_UPSTREAM = "上游媒体获取失败 / Upstream media fetch failed"
+_MESSAGE_HLS_UNSUPPORTED = "HLS流暂不支持代理播放 / HLS streams are not supported by the proxy"
+_MESSAGE_IMAGE_TOO_LARGE = "图片过大，无法下载 / Image too large to download"
+_MESSAGE_ALBUM_TOO_LARGE = "图集过大，无法打包 / Album too large to pack"
+
+_UA = {"User-Agent": "Mozilla/5.0 (KoiFetch/0.1)"}
+_STREAM_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
+_CHUNK_SIZE = 64 * 1024
+_MAX_IMAGE_BYTES = 20 * 1024 * 1024    # 20 MB per image
+_MAX_ALBUM_BYTES = 200 * 1024 * 1024   # 200 MB total
+
+
+@dataclass(frozen=True)
+class MediaStream:
+    """A proxied upstream media response (video passthrough).
+
+    ``chunks`` yields the upstream body; the caller MUST call ``close`` when
+    finished (it releases the upstream httpx client). ``headers`` carries the
+    passthrough metadata the transport re-emits (Content-Type is also
+    duplicated in ``content_type`` for convenience).
+    """
+
+    status_code: int
+    content_type: str
+    headers: dict[str, str]
+    chunks: Iterator[bytes]
+    close: object
 
 
 class PreviewService:
     """Load a parsed task and build its v1 single-media preview response."""
 
-    def __init__(self, *, engine: Engine | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        engine: Engine | None = None,
+        transport: httpx.BaseTransport | None = None,
+        proxy: str | None = None,
+    ) -> None:
         self._engine = engine
+        # Test seam (mirrors EngineDownloaderAdapter): None = real network.
+        self._transport = transport
+        self._proxy = proxy
 
     def preview(self, task_id: str) -> dict:
         """Return the preview metadata/stream info for ``task_id``.
@@ -60,6 +116,81 @@ class PreviewService:
                 HTTP_400_BAD_REQUEST, CODE_TASK_NOT_FOUND, _MESSAGE_TASK_NOT_FOUND
             )
         return _build_preview(task)
+
+    def stream_video(self, task_id: str, range_header: str | None) -> MediaStream:
+        """Proxy the task's recorded video URL with Range passthrough.
+
+        Raises :class:`ApiError`: ``3001`` unknown task; ``400`` for a
+        non-video task, a task with no ``video_url`` (stub-era rows), an HLS
+        upstream (playlist proxying is out of scope), or an upstream HTTP
+        failure. The returned :class:`MediaStream` yields raw bytes; the
+        caller owns ``close``.
+        """
+        url = self._video_url(task_id)
+        kwargs: dict = {"timeout": _STREAM_TIMEOUT, "follow_redirects": True}
+        if self._proxy:
+            kwargs["proxy"] = self._proxy
+        if self._transport is not None:
+            kwargs["transport"] = self._transport
+        request_headers = dict(_UA)
+        if range_header:
+            request_headers["Range"] = range_header
+
+        client = httpx.Client(**kwargs)
+        try:
+            response = client.send(
+                client.build_request("GET", url, headers=request_headers),
+                stream=True,
+            )
+            if response.is_error:
+                raise ApiError(
+                    HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_UPSTREAM
+                )
+            content_type = response.headers.get(
+                "content-type", "application/octet-stream"
+            )
+            if "mpegurl" in content_type or url.split("?", 1)[0].endswith(".m3u8"):
+                raise ApiError(
+                    HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_HLS_UNSUPPORTED
+                )
+            headers = {"Accept-Ranges": "bytes", "Content-Type": content_type}
+            if response.headers.get("content-length") is not None:
+                headers["Content-Length"] = response.headers["content-length"]
+            if response.headers.get("content-range") is not None:
+                headers["Content-Range"] = response.headers["content-range"]
+            return MediaStream(
+                status_code=response.status_code,
+                content_type=content_type,
+                headers=headers,
+                chunks=response.iter_bytes(chunk_size=_CHUNK_SIZE),
+                close=lambda: (response.close(), client.close()),
+            )
+        except ApiError:
+            client.close()
+            raise
+
+    def _video_url(self, task_id: str) -> str:
+        """The task's playable video URL, or a typed :class:`ApiError`."""
+        task = self._load_task(task_id)
+        if task.media_type != MediaType.VIDEO:
+            raise ApiError(
+                HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_NOT_VIDEO
+            )
+        url = (task.metadata_ or {}).get("video_url")
+        if not isinstance(url, str) or not url:
+            raise ApiError(
+                HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_NO_MEDIA_URL
+            )
+        return url
+
+    def _load_task(self, task_id: str) -> ParseTask:
+        with session_scope(self._engine) as session:
+            task = session.get(ParseTask, task_id)
+        if task is None:
+            raise ApiError(
+                HTTP_400_BAD_REQUEST, CODE_TASK_NOT_FOUND, _MESSAGE_TASK_NOT_FOUND
+            )
+        return task
 
 
 def _build_preview(task: ParseTask) -> dict:

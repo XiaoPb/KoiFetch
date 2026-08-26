@@ -293,6 +293,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.preview_service = PreviewService(
         engine=get_engine(settings.database_url),
+        proxy=settings.engine_proxy,
     )
     try:
         storage = get_storage(settings)
