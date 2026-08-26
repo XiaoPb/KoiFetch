@@ -1,6 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { Typography } from 'antd';
 import Player from 'xgplayer';
+// xgplayer's stylesheet is NOT auto-imported with the JS: without it the
+// `.xgplayer video` rules (position:absolute; width/height:100%) never apply,
+// the video renders at its NATIVE size in a static position and gets clipped
+// by the card — audio plays but the picture is hidden ("black video").
+import 'xgplayer/es/index.css';
 // xgplayer v3 plugin classes (verified in Task 4 Step 3): they must be listed
 // in the config `plugins` array — importing them does NOT self-register.
 import FlvPlugin from 'xgplayer-flv';
