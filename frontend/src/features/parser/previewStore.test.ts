@@ -17,6 +17,8 @@ const task: ParseResult = {
   format: 'mp4',
   available_qualities: ['1080p'],
   available_bitrates: [],
+  video_url: null,
+  images: [],
 };
 
 describe('previewStore', () => {

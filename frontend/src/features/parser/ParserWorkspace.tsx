@@ -5,7 +5,7 @@ import type { UploadProps } from 'antd';
 import { useTranslation } from '../../services/i18n';
 import { useAppStore } from '../../stores/appStore';
 import { useDownloadsStore } from '../../stores/downloadsStore';
-import { downloadApi } from '../../services/api';
+import { downloadApi, mediaApi } from '../../services/api';
 import { getErrorMessage } from '../../services/apiClient';
 import { ResultCard, type DownloadOptions } from './ResultCard';
 import { extractUrls, selectVisibleResults, useParserStore } from './parserStore';
@@ -151,6 +151,17 @@ export function ParserWorkspace(): JSX.Element {
     }
   };
 
+  const handleDownloadImage = (result: ParseResult, index: number) => {
+    // 下载当前: the backend proxies the image as an attachment — same-origin,
+    // no CDN referer issues; the browser saves the file directly.
+    window.open(mediaApi.imageUrl(result.task_id, index), '_blank', 'noopener');
+  };
+
+  const handleDownloadAlbum = (result: ParseResult) => {
+    // 下载全部: the backend bundles the album into a ZIP attachment.
+    window.open(mediaApi.albumZipUrl(result.task_id), '_blank', 'noopener');
+  };
+
   const hasOutput = status === 'success';
 
   return (
@@ -278,6 +289,8 @@ export function ParserWorkspace(): JSX.Element {
                     downloading={Boolean(submitting[result.task_id])}
                     onPreview={handlePreview}
                     onDownload={handleDownload}
+                    onDownloadImage={handleDownloadImage}
+                    onDownloadAlbum={handleDownloadAlbum}
                   />
                 </Col>
               ))}

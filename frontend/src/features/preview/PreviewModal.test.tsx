@@ -48,6 +48,8 @@ const videoTask: ParseResult = {
   format: 'mp4',
   available_qualities: ['1080p', '720p'],
   available_bitrates: [],
+  video_url: null,
+  images: [],
 };
 
 const musicTask: ParseResult = {
@@ -62,6 +64,8 @@ const musicTask: ParseResult = {
   format: 'mp3',
   available_qualities: [],
   available_bitrates: ['320kbps', 'FLAC'],
+  video_url: null,
+  images: [],
 };
 
 const imageTask: ParseResult = {
@@ -76,6 +80,8 @@ const imageTask: ParseResult = {
   format: 'jpg',
   available_qualities: [],
   available_bitrates: [],
+  video_url: null,
+  images: [],
 };
 
 const videoPreview: PreviewData = {

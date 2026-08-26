@@ -5,6 +5,7 @@ import Player from 'xgplayer';
 // in the config `plugins` array — importing them does NOT self-register.
 import FlvPlugin from 'xgplayer-flv';
 import HlsPlugin from 'xgplayer-hls';
+import { useTranslation } from '../../services/i18n';
 
 export interface PlayableSource {
   /** Playable URL: same-origin proxy, direct CDN, or tokenized file. */
@@ -62,6 +63,7 @@ function playerConfigFor(
  * component advances on every `error` event, ending in a visible failure hint.
  */
 export function VideoPlayer({ sources, poster, testId }: VideoPlayerProps): JSX.Element {
+  const { t } = useTranslation();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [sourceIndex, setSourceIndex] = useState(0);
   const [failed, setFailed] = useState(false);
@@ -102,11 +104,7 @@ export function VideoPlayer({ sources, poster, testId }: VideoPlayerProps): JSX.
     >
       {failed && (
         <div className="result-card-player-failed" data-testid={`${testId}-failed`}>
-          {/* Rendered key-as-is: 'parser.playbackFailed' does not exist in the
-              i18n dictionaries yet (Task 9 owns i18n) and `t()` would not
-              typecheck under strict mode until then — wire it up with
-              `useTranslation` once the key lands. */}
-          <Typography.Text type="secondary">{'parser.playbackFailed'}</Typography.Text>
+          <Typography.Text type="secondary">{t('parser.playbackFailed')}</Typography.Text>
         </div>
       )}
     </div>

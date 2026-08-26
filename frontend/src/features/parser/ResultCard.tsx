@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Button, Card, Image, Select, Space, Tag, Typography } from 'antd';
 import { AudioOutlined, DownloadOutlined, EyeOutlined, PictureOutlined, VideoCameraOutlined } from '@ant-design/icons';
-import { useTranslation, type TranslationKey } from '../../services/i18n';
+import { useTranslation } from '../../services/i18n';
 import { downloadApi, mediaApi } from '../../services/api';
 import { useDownloadsStore } from '../../stores/downloadsStore';
 import type { ParseResult } from '../../types/api';
@@ -143,9 +143,7 @@ export function ResultCard({
               onClick={() => onDownloadImage(result, activeImage)}
               data-testid={`download-current-${result.task_id}`}
             >
-              {/* Keys land in Task 9; until then they render raw (tests don't
-                  assert the text), and the cast keeps strict TS green. */}
-              {t('parser.downloadCurrent' as TranslationKey)}
+              {t('parser.downloadCurrent')}
             </Button>,
             <Button
               key="download-all"
@@ -154,7 +152,7 @@ export function ResultCard({
               onClick={() => onDownloadAlbum(result)}
               data-testid={`download-all-${result.task_id}`}
             >
-              {t('parser.downloadAll' as TranslationKey)}
+              {t('parser.downloadAll')}
             </Button>,
           ]
         : [

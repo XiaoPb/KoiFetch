@@ -27,6 +27,8 @@ const videoResult: ParseResult = {
   format: 'mp4',
   available_qualities: ['1080p', '720p'],
   available_bitrates: [],
+  video_url: null,
+  images: [],
 };
 
 const musicResult: ParseResult = {
@@ -41,6 +43,8 @@ const musicResult: ParseResult = {
   format: 'mp3',
   available_qualities: [],
   available_bitrates: ['320kbps', 'FLAC'],
+  video_url: null,
+  images: [],
 };
 
 const imageResult: ParseResult = {
@@ -55,6 +59,8 @@ const imageResult: ParseResult = {
   format: 'jpg',
   available_qualities: [],
   available_bitrates: [],
+  video_url: null,
+  images: [],
 };
 
 const okParse = (overrides: Partial<{ results: ParseResult[]; failed: { url: string; error: string }[] }> = {}) => ({

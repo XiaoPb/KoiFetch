@@ -13,7 +13,12 @@ import { usePreviewStore } from './previewStore';
 
 vi.mock('../../services/api', () => ({
   parseApi: { parse: vi.fn() },
-  downloadApi: { submit: vi.fn(), getProgress: vi.fn() },
+  downloadApi: { submit: vi.fn(), getProgress: vi.fn(), getFileUrl: (url: string) => url },
+  mediaApi: {
+    streamUrl: (taskId: string) => `/api/preview/${taskId}/stream`,
+    imageUrl: (taskId: string, index: number) => `/api/preview/${taskId}/images/${index}`,
+    albumZipUrl: (taskId: string) => `/api/preview/${taskId}/images.zip`,
+  },
 }));
 
 // Task 15: downloadsStore now opens a WS client per download; jsdom has no
@@ -39,6 +44,21 @@ vi.mock('../../services/wsClient', () => ({
   buildWsUrl: vi.fn((downloadId: string) => `ws://test/ws/download/${downloadId}`),
 }));
 
+// The card's inline media (xgplayer / swiper) would pull heavy real libs into
+// jsdom; mock them to lightweight stubs that expose the props under test.
+vi.mock('./VideoPlayer', () => ({
+  VideoPlayer: ({ sources, testId }: { sources: { url: string }[]; testId?: string }) => (
+    <div data-testid={testId} data-sources={sources.map((s) => s.url).join(',')} />
+  ),
+}));
+
+vi.mock('./ImageCarousel', () => ({
+  ImageCarousel: ({ images, testId }: { images: string[]; testId?: string }) => (
+    <div data-testid={testId} data-count={images.length} />
+  ),
+  COVER_FALLBACK: 'data:image/svg+xml;utf8,fallback',
+}));
+
 // --- fixtures (unchanged) ---
 
 const videoResult: ParseResult = {
@@ -53,6 +73,8 @@ const videoResult: ParseResult = {
   format: 'mp4',
   available_qualities: ['1080p', '720p'],
   available_bitrates: [],
+  video_url: null,
+  images: [],
 };
 
 const musicResult: ParseResult = {
@@ -67,6 +89,8 @@ const musicResult: ParseResult = {
   format: 'mp3',
   available_qualities: [],
   available_bitrates: ['320kbps', 'FLAC'],
+  video_url: null,
+  images: [],
 };
 
 const imageResult: ParseResult = {
@@ -81,6 +105,26 @@ const imageResult: ParseResult = {
   format: 'jpg',
   available_qualities: [],
   available_bitrates: [],
+  video_url: null,
+  images: ['https://cdn.example.com/1.jpg', 'https://cdn.example.com/2.jpg'],
+};
+
+// Engine-style video: the backend resolved a direct playable URL, so the card
+// plays it inline via the stream proxy without waiting for a download.
+const videoWithUrlResult: ParseResult = {
+  task_id: 't4',
+  url: 'https://v.douyin.com/xyz/',
+  type: 'video',
+  platform: 'douyin',
+  title: 'Video D',
+  cover: 'https://cdn.example.com/d.jpg',
+  duration: null,
+  file_size_mb: 5.2,
+  format: 'mp4',
+  available_qualities: [],
+  available_bitrates: [],
+  video_url: 'https://cdn.example.com/d.mp4',
+  images: [],
 };
 
 // --- helpers ---
@@ -312,14 +356,17 @@ describe('ParserWorkspace', () => {
     expect(parseApi.parse).toHaveBeenCalledTimes(2);
   });
 
-  it('records the clicked result in the preview seam on [预览]', async () => {
-    (parseApi.parse as Mock).mockResolvedValue({ results: [videoResult], failed: [] });
+  it('records the clicked result in the preview seam on [预览] (music only)', async () => {
+    (parseApi.parse as Mock).mockResolvedValue({ results: [musicResult], failed: [] });
+    // Music cards only render in music mode (selectVisibleResults filters the
+    // grid), so flip the header mode before submitting.
+    act(() => useAppStore.setState({ mediaMode: 'music' }));
     const user = userEvent.setup();
     renderWithProviders(<ParserWorkspace />);
-    await submitUrl('https://example.com/v/a');
+    await submitUrl('https://example.com/m/b');
 
-    await user.click(await screen.findByTestId('preview-t1'));
-    expect(usePreviewStore.getState().activeTask).toEqual(videoResult);
+    await user.click(await screen.findByTestId('preview-t2'));
+    expect(usePreviewStore.getState().activeTask).toEqual(musicResult);
   });
 
   it('auto-downloads video results after parse and bumps the badge', async () => {
@@ -379,6 +426,44 @@ describe('ParserWorkspace', () => {
     expect(await screen.findByTestId('card-player-t1')).toBeInTheDocument();
     // The cover/duration badge are replaced while the player is active.
     expect(screen.queryByTestId('duration-t1')).not.toBeInTheDocument();
+  });
+
+  it('plays an engine video inline via the stream proxy, with only a download action', async () => {
+    (parseApi.parse as Mock).mockResolvedValue({ results: [videoWithUrlResult], failed: [] });
+    renderWithProviders(<ParserWorkspace />);
+    await submitUrl('https://v.douyin.com/xyz/');
+
+    const player = await screen.findByTestId('card-player-t4');
+    // The proxy URL is the first playback candidate.
+    expect(player).toHaveAttribute('data-sources', '/api/preview/t4/stream,https://cdn.example.com/d.mp4');
+    // [预览] is gone; [下载] remains.
+    expect(screen.queryByTestId('preview-t4')).not.toBeInTheDocument();
+    expect(screen.getByTestId('download-t4')).toBeInTheDocument();
+  });
+
+  it('renders the image carousel with download-current and download-all', async () => {
+    (parseApi.parse as Mock).mockResolvedValue({ results: [imageResult], failed: [] });
+    const open = vi.spyOn(window, 'open').mockImplementation(() => null);
+    const user = userEvent.setup();
+    try {
+      renderWithProviders(<ParserWorkspace />);
+      await submitUrl('https://example.com/p/c');
+
+      const carousel = await screen.findByTestId('carousel-t3');
+      expect(carousel).toHaveAttribute('data-count', '2');
+
+      await user.click(screen.getByTestId('download-current-t3'));
+      expect(open).toHaveBeenCalledWith('/api/preview/t3/images/0', '_blank', 'noopener');
+
+      await user.click(screen.getByTestId('download-all-t3'));
+      expect(open).toHaveBeenCalledWith('/api/preview/t3/images.zip', '_blank', 'noopener');
+
+      expect(screen.queryByTestId('preview-t3')).not.toBeInTheDocument();
+    } finally {
+      // clearAllMocks() in beforeEach only clears call history — restore the
+      // spy's real implementation so no later test inherits the stub.
+      open.mockRestore();
+    }
   });
 
   it('toasts the backend message when a download submit fails', async () => {
