@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, App, Button, Descriptions, Divider, Image, Modal, Select, Space, Spin, Table, Typography } from 'antd';
 import { DownloadOutlined } from '@ant-design/icons';
+import ReactPlayer from 'react-player';
 import { useTranslation } from '../../services/i18n';
-import { previewApi } from '../../services/api';
+import { downloadApi, previewApi } from '../../services/api';
 import { getErrorMessage } from '../../services/apiClient';
 import { useDownloadsStore } from '../../stores/downloadsStore';
 import { usePreviewStore } from '../parser/previewStore';
@@ -17,13 +18,16 @@ type LoadStatus = 'loading' | 'success' | 'error';
  * (`activeTask`); this modal renders from it. On open it fetches the full
  * metadata via `previewApi.getPreview(task_id)` and renders per `preview_type`:
  * - `image` → the cover image (real media) + metadata;
- * - `video` / `music` → an honest metadata panel: the v1 backend returns
- *   METADATA + a streams ladder only (no byte streams yet), so there is
- *   deliberately NO fake player — just the stream information table.
+ * - `video` → once the task's download completed (auto-downloaded after parse,
+ *   or re-attached via `GET /api/download/by-task` after a page reload), a
+ *   real react-player inline player; before that, an honest
+ *   "play after download" hint;
+ * - `music` → the metadata panel (v1 music URLs are unsupported by the engine).
  *
- * Actions: [下载] submits through downloadsStore (the same path as the result
- * cards, so the download-center badge/drawer see it); closing calls
- * `previewStore.closePreview()`.
+ * Actions: [下载] downloads to the device — it opens the tokenized file URL
+ * directly when a completed download with a valid link exists, otherwise it
+ * submits a server-side download first (the same path as the result cards);
+ * closing calls `previewStore.closePreview()`.
  */
 export function PreviewModal(): JSX.Element {
   const { t } = useTranslation();
@@ -54,6 +58,36 @@ export function PreviewModal(): JSX.Element {
   const [error, setError] = useState('');
   const [quality, setQuality] = useState<string | null>(null);
   const [bitrate, setBitrate] = useState<string | null>(null);
+
+  // Recovery: after a page reload the session-local download list is empty,
+  // so a completed download is invisible to the preview. Ask the backend for
+  // the task's NEWEST download; if it already completed, re-attach it to the
+  // store and refresh its file link (the WS mints a fresh one-time token →
+  // `complete` event → the player appears). In-session flows (auto-download
+  // after parse) never need this: the store already has the item.
+  useEffect(() => {
+    if (!taskId || data?.preview_type !== 'video' || completedUrl) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const snap = await downloadApi.getLatestByTask(taskId);
+        if (cancelled) return;
+        if (snap.status === 'completed') {
+          useDownloadsStore.getState().upsertSnapshot(snap, {
+            taskId: snap.task_id,
+            title: data?.title ?? activeTask?.title,
+          });
+          useDownloadsStore.getState().refreshFileLink(snap.download_id);
+        }
+      } catch {
+        // 3001 (no download for this task yet) or a transient error: the
+        // "play after download" hint stays; the auto-download path covers it.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [taskId, data?.preview_type, data?.title, completedUrl, activeTask?.title]);
 
   // Monotonic request token: a slow response for a PREVIOUSLY opened task
   // must never overwrite the modal with stale metadata (open t1 → slow
@@ -93,6 +127,13 @@ export function PreviewModal(): JSX.Element {
 
   const handleDownload = async () => {
     if (!taskId) return;
+    // 下载 = 前端下载到本地: when the file is already downloaded server-side
+    // with a valid link, open it directly (the browser downloads it); the
+    // auto-download after parse usually makes this the instant path.
+    if (completedUrl) {
+      window.open(downloadApi.getFileUrl(completedUrl), '_blank', 'noopener');
+      return;
+    }
     const chosen = data
       ? data.available_qualities.length > 0
         ? quality
@@ -158,12 +199,9 @@ export function PreviewModal(): JSX.Element {
               <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 8 }}>
                 {t('preview.playing')}
               </Typography.Text>
-              <video
-                controls
-                src={completedUrl}
-                style={{ width: '100%', maxHeight: 420 }}
-                data-testid="preview-video-player"
-              />
+              <div style={{ aspectRatio: '16 / 9', maxHeight: 420 }} data-testid="preview-video-player">
+                <ReactPlayer src={completedUrl ?? undefined} controls width="100%" height="100%" />
+              </div>
             </div>
           ) : (data.preview_type === 'video' || data.preview_type === 'music') ? (
             <Alert

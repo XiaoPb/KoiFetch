@@ -5,6 +5,7 @@ import type { UploadProps } from 'antd';
 import { useTranslation } from '../../services/i18n';
 import { useAppStore } from '../../stores/appStore';
 import { useDownloadsStore } from '../../stores/downloadsStore';
+import { downloadApi } from '../../services/api';
 import { getErrorMessage } from '../../services/apiClient';
 import { ResultCard, type DownloadOptions } from './ResultCard';
 import { extractUrls, selectVisibleResults, useParserStore } from './parserStore';
@@ -71,8 +72,23 @@ export function ParserWorkspace(): JSX.Element {
     return count > 1 ? count : null;
   }, [input]);
 
-  const handleParse = () => {
-    void parse();
+  const handleParse = async () => {
+    await parse();
+    // 解析结束后默认自动下载视频（fire-and-forget）：下载完成后预览可直接
+    // 播放，下载中心/角标同步展示进度。重复/已完成等冲突静默忽略。
+    const parsed = useParserStore.getState().results;
+    for (const result of parsed) {
+      if (result.type !== 'video') continue;
+      void submitDownload(result.task_id, {
+        format: result.format ?? undefined,
+        quality: result.available_qualities[0] ?? undefined,
+        title: result.title,
+      }).catch(() => {
+        // 3002 (already downloading) / 3003 (identical variant completed) and
+        // transient errors are expected — the drawer and the explicit
+        // download button remain the recovery path.
+      });
+    }
   };
 
   const handleReset = () => {
@@ -107,6 +123,26 @@ export function ParserWorkspace(): JSX.Element {
   };
 
   const handleDownload = async (result: ParseResult, options: DownloadOptions) => {
+    // 下载 = 前端下载到本地: if the file is already downloaded server-side
+    // with a valid link, open it directly (the browser saves it locally) —
+    // the auto-download after parse usually makes this the instant path.
+    const item = useDownloadsStore
+      .getState()
+      .items.find(
+        (i) => i.task_id === result.task_id && i.status === 'completed' && i.download_url != null,
+      );
+    if (item) {
+      const url = item.download_url;
+      if (url && item.token_expire_at && Date.parse(item.token_expire_at) > Date.now()) {
+        window.open(downloadApi.getFileUrl(url), '_blank', 'noopener');
+        return;
+      }
+      // 5-minute token expired: refresh the link in the background, then let
+      // the user click again (or use the drawer's refresh action).
+      useDownloadsStore.getState().refreshFileLink(item.download_id);
+      void message.info(t('downloads.linkExpired'));
+      return;
+    }
     try {
       await submitDownload(result.task_id, { ...options, title: result.title });
       void message.success(t('parser.downloadStarted'));

@@ -280,6 +280,60 @@ class TestProgressApi:
         assert response.json()["code"] == CODE_BAD_REQUEST
 
 
+class TestLatestByTaskApi:
+    """GET /api/download/by-task/{task_id} — recovery lookup for the preview UI."""
+
+    def test_returns_newest_download_for_task(self, client, engine):
+        task_id = seed_parse_task(engine)
+        older = seed_download(
+            engine, task_id=task_id, status=DownloadStatus.FAILED, progress=10.0
+        )
+        newest = seed_download(
+            engine,
+            task_id=task_id,
+            status=DownloadStatus.DOWNLOADING,
+            progress=50.0,
+            speed=100.0,
+            total_bytes=1000,
+            downloaded_bytes=500,
+        )
+        response = client.get(f"/api/download/by-task/{task_id}")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["code"] == CODE_OK
+        data = body["data"]
+        assert data["download_id"] == newest
+        assert data["download_id"] != older
+        assert data["task_id"] == task_id
+        assert data["status"] == "downloading"
+        assert data["progress"] == 50.0
+        assert data["total_bytes"] == 1000
+        assert data["downloaded_bytes"] == 500
+
+    def test_returns_completed_snapshot_for_recovery(self, client, engine, storage):
+        # The exact preview-recovery scenario: the file finished server-side
+        # and the client re-attaches after a reload.
+        task_id = seed_parse_task(engine)
+        download_id = seed_completed_with_file(engine, task_id=task_id, storage=storage)
+        response = client.get(f"/api/download/by-task/{task_id}")
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["download_id"] == download_id
+        assert data["status"] == "completed"
+        assert data["progress"] == 100.0
+
+    def test_no_download_for_task_returns_3001(self, client, engine):
+        task_id = seed_parse_task(engine)
+        response = client.get(f"/api/download/by-task/{task_id}")
+        assert response.status_code == 400
+        assert response.json()["code"] == CODE_TASK_NOT_FOUND
+
+    def test_malformed_task_id_returns_generic_400(self, client):
+        response = client.get("/api/download/by-task/not-a-uuid")
+        assert response.status_code == 400
+        assert response.json()["code"] == CODE_BAD_REQUEST
+
+
 class TestFileApi:
     @staticmethod
     def _file_url(download_id, token=None) -> str:

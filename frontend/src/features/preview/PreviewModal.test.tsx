@@ -11,7 +11,7 @@ import { __resetDownloadStreams, selectActiveCount, useDownloadsStore } from '..
 
 vi.mock('../../services/api', () => ({
   previewApi: { getPreview: vi.fn() },
-  downloadApi: { submit: vi.fn(), getProgress: vi.fn() },
+  downloadApi: { submit: vi.fn(), getProgress: vi.fn(), getLatestByTask: vi.fn() },
 }));
 
 // downloadsStore opens a WS client per download; the submit path in this test
@@ -192,22 +192,42 @@ describe('PreviewModal', () => {
     renderWithProviders(<PreviewModal />);
 
     expect(await screen.findByTestId('preview-content')).toBeInTheDocument();
-    expect(screen.getByTestId('preview-video-player')).toHaveAttribute(
-      'src',
-      '/api/download/file/d1?token=t',
-    );
+    // react-player wrapper renders (it manages the inner <video> itself).
+    expect(screen.getByTestId('preview-video-player')).toBeInTheDocument();
     // Real playback replaces the metadata-only note.
     expect(screen.queryByTestId('preview-metadata-note')).not.toBeInTheDocument();
   });
 
   it('shows the play-after-download hint for a video preview without a completed download', async () => {
     (previewApi.getPreview as Mock).mockResolvedValue(videoPreview);
+    (downloadApi.getLatestByTask as Mock).mockRejectedValue(new ApiError('任务不存在 / Task not found', 3001, 400));
     useDownloadsStore.setState({ items: [] });
     usePreviewStore.setState({ activeTask: videoTask });
     renderWithProviders(<PreviewModal />);
 
     expect(await screen.findByTestId('preview-content')).toBeInTheDocument();
     expect(screen.getByTestId('preview-metadata-note')).toHaveTextContent('下载完成后可在此播放');
+  });
+
+  it('re-attaches a completed download after a reload and shows the player', async () => {
+    // Simulates the recovery path: the session-local store is empty (F5),
+    // but the backend has the task's completed download.
+    (previewApi.getPreview as Mock).mockResolvedValue(videoPreview);
+    (downloadApi.getLatestByTask as Mock).mockResolvedValue({
+      download_id: 'd1', task_id: 't1', status: 'completed', progress: 100,
+      speed: null, downloaded_bytes: 100, total_bytes: 100,
+      remaining_time: null, error_message: null,
+    });
+    useDownloadsStore.setState({ items: [] });
+    usePreviewStore.setState({ activeTask: videoTask });
+    renderWithProviders(<PreviewModal />);
+
+    // The completed download is upserted into the store (recovery wiring).
+    await waitFor(() => {
+      const item = useDownloadsStore.getState().items.find((i) => i.download_id === 'd1');
+      expect(item?.status).toBe('completed');
+    });
+    expect(downloadApi.getLatestByTask).toHaveBeenCalledWith('t1');
   });
 
   it('renders a music preview with the bitrate ladder', async () => {

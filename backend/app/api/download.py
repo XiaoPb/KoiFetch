@@ -96,6 +96,7 @@ ws_router = APIRouter(tags=["download"])
 
 _MESSAGE_SUBMIT_OK = "提交下载成功 / Download submitted"
 _MESSAGE_PROGRESS_OK = "获取进度成功 / Progress loaded"
+_MESSAGE_TASK_NOT_FOUND = "任务不存在 / Task not found"
 _MESSAGE_INVALID_DOWNLOAD_ID = "下载ID格式无效 / Invalid download id"
 _MESSAGE_FILE_EXPIRED = "文件已过期 / File expired"
 _MESSAGE_FILE_NOT_DOWNLOADED = "文件未下载完成 / File not fully downloaded"
@@ -179,6 +180,30 @@ class ProgressResponse(BaseModel):
     data: ProgressData | None = None
 
 
+class ByTaskData(ProgressData):
+    """A progress snapshot plus the task it belongs to (recovery lookup).
+
+    ``GET /api/download/by-task/{task_id}`` lets the frontend re-attach to a
+    download after a page reload (the session-local download list is empty
+    then): it returns the NEWEST download row for a task so the client can
+    resume reconciliation / refresh its file link.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: str
+
+
+class ByTaskResponse(BaseModel):
+    """The unified envelope for ``GET /api/download/by-task/{task_id}``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: int
+    message: str
+    data: ByTaskData | None = None
+
+
 def get_download_service(request: Request) -> DownloadService:
     """DI hook: the app-wired download service (override in tests)."""
     return request.app.state.download_service
@@ -219,6 +244,49 @@ def download_progress(
     """
     snapshot = service.get_progress(download_id)
     return ok(data=_serialize_progress(snapshot), message=_MESSAGE_PROGRESS_OK)
+
+
+@router.get("/by-task/{task_id}", response_model=ByTaskResponse)
+def latest_by_task(
+    task_id: UuidStr,
+    service: Annotated[DownloadService, Depends(get_download_service)],
+) -> dict:
+    """Return the newest download snapshot for a parsed task.
+
+    Success: ``200`` with the snapshot fields plus ``task_id``; no download
+    exists for the task → ``400`` ``3001``. Used by the preview UI to
+    re-attach to a download after a page reload (the session-local download
+    list is empty then) and by the worker wiring to locate a task's row.
+    """
+    result = service.get_latest_by_task(task_id)
+    if result is None:
+        raise ApiError(
+            CODE_BAD_REQUEST, CODE_TASK_NOT_FOUND, _MESSAGE_TASK_NOT_FOUND
+        )
+    remaining: float | None = None
+    if (
+        result.status is DownloadStatus.DOWNLOADING
+        and result.speed is not None
+        and result.speed > 0
+        and result.total_bytes is not None
+    ):
+        remaining = max(
+            result.total_bytes - (result.downloaded_bytes or 0), 0
+        ) / result.speed
+    return ok(
+        data={
+            "download_id": result.download_id,
+            "task_id": result.task_id,
+            "status": result.status.value,
+            "progress": result.progress,
+            "speed": result.speed,
+            "downloaded_bytes": result.downloaded_bytes,
+            "total_bytes": result.total_bytes,
+            "remaining_time": remaining,
+            "error_message": result.error_message,
+        },
+        message=_MESSAGE_PROGRESS_OK,
+    )
 
 
 @router.get("/file/{download_id}")

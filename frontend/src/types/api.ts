@@ -173,6 +173,15 @@ export interface WsCompleteData extends DownloadProgress {
 }
 
 /**
+ * A progress snapshot plus its task (GET /api/download/by-task/{task_id}).
+ * Recovery lookup: re-attach to a task's newest download after a page reload,
+ * when the session-local download list is empty.
+ */
+export interface ByTaskData extends DownloadProgress {
+  task_id: string;
+}
+
+/**
  * Error event payload. The backend sends TWO shapes:
  * - task-state errors (failed/expired) carry the snapshot state fields PLUS
  *   code/message, and

@@ -322,7 +322,7 @@ describe('ParserWorkspace', () => {
     expect(usePreviewStore.getState().activeTask).toEqual(videoResult);
   });
 
-  it('submits a download through downloadsStore and bumps the badge', async () => {
+  it('auto-downloads video results after parse and bumps the badge', async () => {
     (parseApi.parse as Mock).mockResolvedValue({ results: [videoResult], failed: [] });
     (downloadApi.submit as Mock).mockResolvedValue({
       download_id: 'd1',
@@ -330,20 +330,31 @@ describe('ParserWorkspace', () => {
       status: 'pending',
       created_at: '2026-01-01T00:00:00Z',
     });
-    const user = userEvent.setup();
     renderWithProviders(<ParserWorkspace />);
     await submitUrl('https://example.com/v/a');
 
-    await user.click(await screen.findByTestId('download-t1'));
+    // 解析结束默认自动下载: the badge bumps without any click.
     await waitFor(() => expect(selectActiveCount(useDownloadsStore.getState())).toBe(1));
-    expect(downloadApi.submit).toHaveBeenCalledWith('t1', { format: 'mp4', quality: '1080p' });
+    expect(downloadApi.submit).toHaveBeenCalledWith('t1', {
+      format: 'mp4',
+      quality: '1080p',
+    });
     expect(useDownloadsStore.getState().items[0]).toMatchObject({
       download_id: 'd1',
       task_id: 't1',
       status: 'pending',
       format: 'mp4',
       quality: '1080p',
+      title: 'Video A',
     });
+  });
+
+  it('does not auto-download music results (v1 engine limitation)', async () => {
+    (parseApi.parse as Mock).mockResolvedValue({ results: [musicResult], failed: [] });
+    renderWithProviders(<ParserWorkspace />);
+    await submitUrl('https://example.com/m/b');
+
+    expect(downloadApi.submit).not.toHaveBeenCalled();
   });
 
   it('toasts the backend message when a download submit fails', async () => {

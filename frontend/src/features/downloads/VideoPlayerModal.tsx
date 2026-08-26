@@ -1,4 +1,5 @@
 import { Modal } from 'antd';
+import ReactPlayer from 'react-player';
 import { useTranslation } from '../../services/i18n';
 
 export interface VideoPlayerModalProps {
@@ -6,7 +7,7 @@ export interface VideoPlayerModalProps {
   title: string | null;
   /**
    * Tokenized file URL (`/api/download/file/{id}?token=…`) — same-origin, so
-   * the native `<video>` plays it directly with no CORS work.
+   * react-player plays it directly with no CORS work.
    */
   src: string;
   open: boolean;
@@ -14,11 +15,13 @@ export interface VideoPlayerModalProps {
 }
 
 /**
- * Plays a completed download's file in a native `<video>` element.
+ * Plays a completed download's file via react-player (native HTML5 media
+ * underneath, with a wider container/format fallback surface than a bare
+ * `<video>`).
  *
  * The source is the tokenized same-origin URL captured from the WS `complete`
  * event (one-time token, ~5-minute validity). `destroyOnHidden` unmounts the
- * element when the modal closes, which stops the media stream — so the token
+ * player when the modal closes, which stops the media stream — so the token
  * is never consumed by a backgrounded player.
  */
 export function VideoPlayerModal({ title, src, open, onClose }: VideoPlayerModalProps): JSX.Element {
@@ -33,12 +36,9 @@ export function VideoPlayerModal({ title, src, open, onClose }: VideoPlayerModal
       destroyOnHidden
       data-testid="video-player-modal"
     >
-      <video
-        controls
-        src={src}
-        style={{ width: '100%', maxHeight: 440 }}
-        data-testid="video-player"
-      />
+      <div style={{ aspectRatio: '16 / 9', maxHeight: 440 }} data-testid="video-player">
+        <ReactPlayer src={src} controls width="100%" height="100%" />
+      </div>
     </Modal>
   );
 }

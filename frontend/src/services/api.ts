@@ -1,5 +1,6 @@
 import { apiClient, resolveApiUrl } from './apiClient';
 import type {
+  ByTaskData,
   HealthData,
   LoginData,
   LoginRequest,
@@ -75,6 +76,12 @@ export const downloadApi = {
   /** GET /api/download/progress/{download_id} → current snapshot. */
   async getProgress(downloadId: string): Promise<DownloadProgress> {
     const { data } = await apiClient.get<DownloadProgress>(`/download/progress/${downloadId}`);
+    return data;
+  },
+
+  /** GET /api/download/by-task/{task_id} → the task's NEWEST download snapshot. */
+  async getLatestByTask(taskId: string): Promise<ByTaskData> {
+    const { data } = await apiClient.get<ByTaskData>(`/download/by-task/${taskId}`);
     return data;
   },
 

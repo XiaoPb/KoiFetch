@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { App, Button, Drawer, List, Progress, Space, Tabs, Tag, Tooltip, Typography } from 'antd';
-import { PlayCircleOutlined, ReloadOutlined, StopOutlined } from '@ant-design/icons';
+import { PlayCircleOutlined, ReloadOutlined, SaveOutlined, StopOutlined } from '@ant-design/icons';
 import { useTranslation } from '../../services/i18n';
-import { downloadApi } from '../../services/api';
+import { downloadApi, nasApi } from '../../services/api';
 import { getErrorMessage } from '../../services/apiClient';
 import { useDownloadsStore, type DownloadItem } from '../../stores/downloadsStore';
 import { formatBytes, formatSpeed, splitRemainingTime } from './format';
@@ -41,10 +41,13 @@ export function DownloadCenterDrawer({ open, onClose }: DownloadCenterDrawerProp
   const items = useDownloadsStore((state) => state.items);
   const retry = useDownloadsStore((state) => state.retry);
   const refreshFileLink = useDownloadsStore((state) => state.refreshFileLink);
+  const remove = useDownloadsStore((state) => state.remove);
   const [tab, setTab] = useState<TabKey>('all');
   const [retrying, setRetrying] = useState<string | null>(null);
   // The completed item currently playing in the video modal (null = closed).
   const [playing, setPlaying] = useState<DownloadItem | null>(null);
+  // Per-item [保存到NAS] loading feedback.
+  const [savingNas, setSavingNas] = useState<string | null>(null);
   // Per-item [刷新链接] loading feedback: cleared when the fresh link (or a
   // terminal error) arrives, with a safety timeout for the no-socket case.
   const [refreshing, setRefreshing] = useState<Record<string, boolean>>({});
@@ -133,6 +136,26 @@ export function DownloadCenterDrawer({ open, onClose }: DownloadCenterDrawerProp
     }
   };
 
+  /**
+   * 保存到NAS = 把已完成的文件直接复制到 pond（指定 NAS 保存时）。
+   * The backend MOVES the bubble file into the pond, so afterwards the item's
+   * file link and any re-save would both fail — remove it from the task list
+   * (the store documents exactly this flow for `remove`).
+   */
+  const handleSaveToNas = async (item: DownloadItem) => {
+    setSavingNas(item.download_id);
+    try {
+      const target = item.title ? `${item.title}.${item.format ?? 'file'}` : item.download_id;
+      await nasApi.save(item.download_id, target);
+      void message.success(t('downloads.savedToNas'));
+      remove(item.download_id);
+    } catch (err) {
+      void message.error(getErrorMessage(err));
+    } finally {
+      setSavingNas(null);
+    }
+  };
+
   const statusMeta = (status: DownloadItem['status']): { label: string; color: string } => {
     switch (status) {
       case 'pending':
@@ -175,7 +198,17 @@ export function DownloadCenterDrawer({ open, onClose }: DownloadCenterDrawerProp
             onClick={() => handleGetFile(item)}
             data-testid={`get-file-${item.download_id}`}
           >
-            {t('downloads.getFile')}
+            {t('downloads.downloadLocal')}
+          </Button>,
+          <Button
+            key="nas"
+            size="small"
+            icon={<SaveOutlined />}
+            loading={savingNas === item.download_id}
+            onClick={() => void handleSaveToNas(item)}
+            data-testid={`save-nas-${item.download_id}`}
+          >
+            {t('downloads.saveToNas')}
           </Button>,
         ];
       }

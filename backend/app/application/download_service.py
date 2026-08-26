@@ -60,6 +60,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 from sqlalchemy import Engine, or_, select, update
+from sqlalchemy.orm import selectinload
 from starlette.status import (
     HTTP_400_BAD_REQUEST,
     HTTP_401_UNAUTHORIZED,
@@ -249,6 +250,30 @@ class DownloadService:
                     _MESSAGE_TASK_NOT_FOUND,
                 )
             return _progress_from_row(row)
+
+    def get_latest_by_task(self, task_id: str) -> DownloadResult | None:
+        """Return the NEWEST download row for a task, or ``None``.
+
+        Recovery lookup for the frontend: after a page reload the session-
+        local download list is empty, so the preview UI asks for the task's
+        latest download to re-attach (resume progress / refresh the file
+        link). Returns ``None`` — never raises — when the task has no
+        download row; the API layer maps that to ``3001``.
+        """
+        with session_scope(self._engine) as session:
+            row = session.scalars(
+                select(DownloadTask)
+                .options(selectinload(DownloadTask.parse_task))
+                .where(DownloadTask.task_id == task_id)
+                .order_by(
+                    DownloadTask.created_at.desc(),
+                    DownloadTask.download_id.desc(),
+                )
+                .limit(1)
+            ).first()
+            if row is None:
+                return None
+            return _result_from_row(row, media_type=row.parse_task.media_type)
 
     def get_file(self, download_id: str, token: str | None) -> DownloadedFile:
         """Validate the one-time token and resolve the completed bubble file.

@@ -3,12 +3,13 @@ import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { DownloadCenterDrawer } from './DownloadCenterDrawer';
 import { renderWithProviders } from '../../test/utils';
-import { downloadApi } from '../../services/api';
+import { downloadApi, nasApi } from '../../services/api';
 import { ApiError } from '../../types/api';
 import { __resetDownloadStreams, useDownloadsStore, type DownloadItem } from '../../stores/downloadsStore';
 
 vi.mock('../../services/api', () => ({
   downloadApi: { submit: vi.fn(), getProgress: vi.fn(), getFileUrl: vi.fn((pathOrUrl: string) => pathOrUrl) },
+  nasApi: { save: vi.fn() },
 }));
 
 // Retry/refresh re-open a WS client; drive it through the hoisted mock so the
@@ -214,10 +215,26 @@ describe('DownloadCenterDrawer', () => {
 
     await user.click(screen.getByTestId('play-d1'));
     expect(screen.getByTestId('video-player-modal')).toBeInTheDocument();
-    expect(screen.getByTestId('video-player')).toHaveAttribute(
-      'src',
-      '/api/download/file/d1?token=t',
-    );
+    expect(screen.getByTestId('video-player')).toBeInTheDocument();
+  });
+
+  it('saves a completed download to NAS and removes the item', async () => {
+    const user = userEvent.setup();
+    (nasApi.save as Mock).mockResolvedValue({ nas_path: '/pond/video/Video A.mp4', file_size: 12, saved_at: 'now' });
+    useDownloadsStore.setState({
+      items: [
+        seedItem({
+          download_id: 'd1', task_id: 't1', status: 'completed', title: 'Video A',
+          format: 'mp4', download_url: '/api/download/file/d1?token=t', token_expire_at: FUTURE,
+        }),
+      ],
+    });
+    renderDrawer();
+
+    await user.click(screen.getByTestId('save-nas-d1'));
+    expect(nasApi.save).toHaveBeenCalledWith('d1', 'Video A.mp4');
+    // The bubble file was MOVED into the pond — the item is gone from the list.
+    await waitFor(() => expect(useDownloadsStore.getState().items).toHaveLength(0));
   });
 
   it('shows an honest missing-link state with refresh for a completed item without a captured URL', async () => {

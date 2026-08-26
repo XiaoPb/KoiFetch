@@ -155,6 +155,16 @@ export interface DownloadsState {
   // --- internal reconciliation (public so WS/polling handlers can call them) ---
   /** Apply a progress/polling snapshot to an item (never clears download_url). */
   applySnapshot: (downloadId: string, snapshot: DownloadProgress) => void;
+  /**
+   * Upsert a snapshot: adds the item when unknown (recovery lookup from
+   * `GET /api/download/by-task/{task_id}` after a page reload), otherwise
+   * applies it like `applySnapshot`. The added item has no `download_url`
+   * yet — the caller can `refreshFileLink` to mint one.
+   */
+  upsertSnapshot: (
+    snapshot: DownloadProgress,
+    options?: { taskId?: string; title?: string | null },
+  ) => void;
   /** Capture the terminal completed state + tokenized file URL. */
   applyComplete: (downloadId: string, data: WsCompleteData) => void;
   /** Mark failed/expired from an error event or a failed poll. */
@@ -368,6 +378,36 @@ export const useDownloadsStore = create<DownloadsState>()((set, get) => ({
   teardown: () => {
     __resetDownloadStreams();
     set({ items: [], submitting: {} });
+  },
+
+  upsertSnapshot: (snapshot, options = {}) => {
+    const state = get();
+    if (!state.items.some((item) => item.download_id === snapshot.download_id)) {
+      set((prev) => ({
+        items: [
+          ...prev.items,
+          {
+            download_id: snapshot.download_id,
+            task_id: options.taskId ?? snapshot.download_id,
+            status: snapshot.status,
+            created_at: new Date().toISOString(),
+            title: options.title ?? null,
+            format: null,
+            quality: null,
+            progress: (snapshot.progress ?? 0) / 100,
+            speed: snapshot.speed ?? null,
+            downloaded_bytes: snapshot.downloaded_bytes ?? null,
+            total_bytes: snapshot.total_bytes ?? null,
+            remaining_time: snapshot.remaining_time ?? null,
+            error_code: null,
+            error_message: snapshot.error_message ?? null,
+            download_url: null,
+            token_expire_at: null,
+          },
+        ],
+      }));
+    }
+    get().applySnapshot(snapshot.download_id, snapshot);
   },
 
   applySnapshot: (downloadId, snapshot) =>
