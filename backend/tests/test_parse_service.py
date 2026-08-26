@@ -13,15 +13,17 @@ parse, persisted unchanged).
 import pytest
 from sqlalchemy import select
 
+from app.adapters.engine_errors import EngineTimeoutError, UnsupportedPlatformError
 from app.adapters.parser_stub import StubParserAdapter
 from app.api.responses import (
     CODE_BAD_REQUEST,
+    CODE_PLATFORM_UNSUPPORTED,
     CODE_URL_EMPTY,
     CODE_URL_INVALID,
     ApiError,
 )
 from app.application.parse_service import ParseService
-from app.domain import MediaType, parse_duration
+from app.domain import MediaType, ParseResult, parse_duration
 from app.infrastructure.database import Base, build_engine, session_scope
 from app.infrastructure.models import ParseTask
 
@@ -195,3 +197,48 @@ class TestPartialFailure:
         stored = rows(engine)
         assert len(stored) == 2
         assert {row.url for row in stored} == {VIDEO_URL, MUSIC_URL}
+
+
+class TestEngineUnsupportedPlatform:
+    def test_unsupported_platform_failure_carries_code_1003(self, engine):
+        class RejectingParser:
+            def parse(self, command):
+                raise UnsupportedPlatformError("平台不支持 / Unsupported platform")
+
+        service = ParseService(parser=RejectingParser(), engine=engine)
+        batch = service.parse(["https://music.163.com/#/song?id=1"])
+        assert batch.results == []
+        assert len(batch.failed) == 1
+        failure = batch.failed[0]
+        assert failure.url == "https://music.163.com/#/song?id=1"
+        assert failure.code == CODE_PLATFORM_UNSUPPORTED
+        assert failure.error == "平台不支持 / Unsupported platform"
+
+    def test_unsupported_platform_does_not_block_other_urls(self, engine):
+        class MixedParser:
+            def parse(self, command):
+                if "music.163.com" in command.urls[0]:
+                    raise UnsupportedPlatformError("平台不支持 / Unsupported platform")
+                return [ParseResult(
+                    task_id="11111111-1111-1111-1111-111111111111",
+                    url=command.urls[0], media_type=MediaType.VIDEO,
+                    platform="douyin", title="demo",
+                )]
+
+        service = ParseService(parser=MixedParser(), engine=engine)
+        batch = service.parse(["https://music.163.com/#/song?id=1", "https://v.douyin.com/abc/"])
+        assert len(batch.results) == 1
+        assert len(batch.failed) == 1
+        assert batch.failed[0].code == CODE_PLATFORM_UNSUPPORTED
+
+    def test_other_engine_error_surfaces_stable_message_without_code(self, engine):
+        class TimeoutParser:
+            def parse(self, command):
+                raise EngineTimeoutError("解析超时 / Parse timeout")
+
+        service = ParseService(parser=TimeoutParser(), engine=engine)
+        batch = service.parse(["https://v.douyin.com/abc/"])
+        assert len(batch.failed) == 1
+        failure = batch.failed[0]
+        assert failure.code is None
+        assert failure.error == "解析超时 / Parse timeout"

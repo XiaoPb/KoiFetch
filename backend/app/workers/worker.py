@@ -66,9 +66,13 @@ Design decisions (stable contract for Tasks 12+):
 * **The downloader writes the bubble file.** ``DownloadRequest.target_path``
   is resolved here through the storage adapter (a contained absolute bubble
   path); the adapter writes bytes there and returns a ``COMPLETED``
-  :class:`DownloadResult`. The worker verifies the file exists, then records
-  the path on the row. A failed attempt removes its partial target
-  (best-effort) so a re-queue starts clean.
+  :class:`DownloadResult`. The request also carries ``source_url`` and the
+  parse task's ``metadata_`` JSON so engine downloaders can resolve the media
+  URL / song info the parser found; engine errors carry stable client
+  messages by contract (see ``app.adapters.engine_errors``). The worker
+  verifies the file exists, then records the path on the row. A failed
+  attempt removes its partial target (best-effort) so a re-queue starts
+  clean.
 """
 
 from __future__ import annotations
@@ -238,6 +242,8 @@ def _execute_download(
         target_path=target,
         title=title,
         media_type=media_type,
+        source_url=row.parse_task.url,
+        metadata=dict(row.parse_task.metadata_ or {}),
         progress_callback=_progress_callback_for(engine, event_hub, download_id),
     )
     try:
@@ -342,14 +348,17 @@ def _record_failure(
     roll back the recorded state (same rule as :func:`_record_completion`).
     The partial target file is removed best-effort so a re-queue starts clean.
 
-    Note for real engines: ``error_message = str(error)`` may surface adapter
-    internals (paths, exception text); map to user-facing messages there.
+    Message contract: engine adapters raise typed ``EngineError`` subclasses
+    (``app.adapters.engine_errors``) whose ``str()`` is a stable bilingual
+    user-facing message, so ``error_message = str(error)`` is already
+    client-safe for real engines. Untyped exceptions (genuine bugs) still
+    forward raw exception text; those are sanitized upstream where possible
+    rather than here.
 
-    v1 decision (documented): the raw exception text IS forwarded to the
-    client — the row's ``error_message`` feeds the terminal WS ``error`` event
-    (see :func:`_failed_event`) and the progress endpoint. This is accepted
-    because the stub downloader's exceptions contain no secrets; a real
-    engine must switch to stable, mapped messages here instead.
+    v1 decision (documented): the row's ``error_message`` feeds the terminal
+    WS ``error`` event (see :func:`_failed_event`) and the progress endpoint,
+    so whatever an adapter raises ends up client-visible — which is why
+    engine adapters are contractually required to raise mapped error types.
     """
     failure_event: dict | None = None
     with session_scope(engine) as session:

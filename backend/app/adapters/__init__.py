@@ -3,8 +3,8 @@
 This package is the *adapters* half of the ports-and-adapters architecture:
 ``protocols.py`` defines the ports (interfaces services depend on), and the
 other modules provide the concrete implementations — stub parser/downloader
-(deterministic, offline, so the whole workflow runs before real platform
-engines exist), local bubble/pond storage, and JWT token providers. ``factory``
+(deterministic, offline, so the whole workflow runs without the engine
+packages), local bubble/pond storage, and JWT token providers. ``factory``
 wires settings to implementations; services should use it instead of
 constructing adapters directly.
 
@@ -14,9 +14,17 @@ Public surface (import from ``app.adapters``):
   :class:`StorageAdapter`, :class:`AccessTokenProvider`,
   :class:`OneTimeTokenProvider` plus their claim/value types and the
   :class:`TokenError` hierarchy.
-* Stubs — :class:`StubParserAdapter`, :class:`StubDownloaderAdapter`,
-  :class:`LocalStorageAdapter`, :class:`JwtAccessTokenProvider`,
-  :class:`JwtOneTimeTokenProvider`.
+* Stubs (the default, selected by ``settings.parser_engine`` /
+  ``downloader_engine`` = "stub") — :class:`StubParserAdapter`,
+  :class:`StubDownloaderAdapter`, :class:`LocalStorageAdapter`,
+  :class:`JwtAccessTokenProvider`, :class:`JwtOneTimeTokenProvider`.
+* Engine mode (real engines, selected by ``settings.parser_engine`` /
+  ``downloader_engine`` = "engine") — :class:`app.adapters.parser_engine.EngineParserAdapter`,
+  :class:`app.adapters.downloader_engine.EngineDownloaderAdapter`, and the
+  :mod:`app.adapters.engine_errors` hierarchy. These modules import the engine
+  packages and are intentionally NOT re-exported here (so importing
+  ``app.adapters`` never requires parse-video-py/musicdl); the factory imports
+  them lazily in engine mode.
 * Selection — :func:`get_parser`, :func:`get_downloader`,
   :func:`get_storage`, :func:`get_access_token_provider`,
   :func:`get_one_time_token_provider`.

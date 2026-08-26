@@ -2,8 +2,8 @@
 downloader, and the adapter factory.
 
 The stub adapters are deterministic and offline: they exist so the complete
-parse → download → store workflow can be exercised end-to-end before real
-platform engines exist. Tests here pin down:
+parse → download → store workflow can be exercised end-to-end without the
+engine packages installed. Tests here pin down:
 
 * the protocol contracts are importable and structurally satisfied by the
   stubs (``typing.Protocol`` + ``runtime_checkable``),
@@ -11,7 +11,8 @@ platform engines exist. Tests here pin down:
   touches the network,
 * the stub downloader writes deterministic bytes and fires ordered progress
   callbacks,
-* the factory returns the configured stub for each adapter type.
+* the factory returns the configured stub for each adapter type, and that
+  engine mode switches to the real adapters by settings.
 """
 
 import re
@@ -59,6 +60,22 @@ TEST_SECRET = "test-secret-key-0123456789abcdef"
 _UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 )
+
+
+@pytest.fixture
+def settings(tmp_path):
+    from app.infrastructure.config import Settings
+
+    return Settings(
+        admin_password="pw",
+        secret_key=TEST_SECRET,
+        video_storage_path=tmp_path / "pond/video",
+        image_storage_path=tmp_path / "pond/image",
+        music_storage_path=tmp_path / "pond/music",
+        temp_video_path=tmp_path / "bubble/video",
+        temp_image_path=tmp_path / "bubble/image",
+        temp_music_path=tmp_path / "bubble/music",
+    )
 
 
 def protocol_members(protocol: type) -> set[str]:
@@ -392,21 +409,6 @@ class TestStubDownloader:
 class TestAdapterFactory:
     """Adapter selection: factory returns the configured stub for each type."""
 
-    @pytest.fixture
-    def settings(self, tmp_path):
-        from app.infrastructure.config import Settings
-
-        return Settings(
-            admin_password="pw",
-            secret_key=TEST_SECRET,
-            video_storage_path=tmp_path / "pond/video",
-            image_storage_path=tmp_path / "pond/image",
-            music_storage_path=tmp_path / "pond/music",
-            temp_video_path=tmp_path / "bubble/video",
-            temp_image_path=tmp_path / "bubble/image",
-            temp_music_path=tmp_path / "bubble/music",
-        )
-
     def test_get_parser_returns_stub(self):
         assert isinstance(get_parser(), StubParserAdapter)
         assert isinstance(get_parser(), ParserAdapter)
@@ -456,3 +458,69 @@ class TestAdapterFactory:
         root = storage.pond_root(MediaType.VIDEO)
         assert root.is_absolute()
         assert root == (tmp_path / "data" / "pond" / "video").resolve()
+
+
+class TestEngineModeFactory:
+    """Factory switches between stub and real engines by settings.
+
+    Engine-mode tests need the engine packages and skip individually when they
+    are missing; the stub-mode tests always run.
+    """
+
+    def test_get_parser_defaults_to_stub(self, settings):
+        assert isinstance(get_parser(settings), StubParserAdapter)
+
+    def test_get_parser_engine_mode_returns_engine_adapter(self, settings):
+        pytest.importorskip("parse_video_py")
+        from app.adapters.parser_engine import EngineParserAdapter
+
+        engine_settings = settings.model_copy(update={"parser_engine": "engine"})
+        adapter = get_parser(engine_settings)
+        assert isinstance(adapter, EngineParserAdapter)
+        assert isinstance(adapter, ParserAdapter)
+
+    def test_engine_parser_wires_timeout_and_proxy(self, settings):
+        pytest.importorskip("parse_video_py")
+        from app.adapters.parser_engine import EngineParserAdapter
+
+        engine_settings = settings.model_copy(
+            update={
+                "parser_engine": "engine",
+                "engine_timeout_seconds": 7.5,
+                "engine_proxy": "http://proxy.local:3128",
+            }
+        )
+        adapter = get_parser(engine_settings)
+        assert isinstance(adapter, EngineParserAdapter)
+        assert adapter._timeout == pytest.approx(7.5)
+        assert adapter._proxy == "http://proxy.local:3128"
+
+    def test_get_downloader_engine_mode_returns_engine_adapter(self, settings):
+        pytest.importorskip("musicdl")
+        from app.adapters.downloader_engine import EngineDownloaderAdapter
+
+        engine_settings = settings.model_copy(
+            update={"downloader_engine": "engine"}
+        )
+        adapter = get_downloader(engine_settings)
+        assert isinstance(adapter, EngineDownloaderAdapter)
+        assert isinstance(adapter, DownloaderAdapter)
+
+    def test_engine_adapter_wires_timeout_and_proxy(self, settings):
+        pytest.importorskip("musicdl")
+        from app.adapters.downloader_engine import EngineDownloaderAdapter
+
+        engine_settings = settings.model_copy(
+            update={
+                "downloader_engine": "engine",
+                "engine_timeout_seconds": 7.5,
+                "engine_download_timeout_seconds": 9.5,
+                "engine_proxy": "http://proxy.local:3128",
+            }
+        )
+        adapter = get_downloader(engine_settings)
+        assert isinstance(adapter, EngineDownloaderAdapter)
+        assert adapter._download_timeout == pytest.approx(9.5)
+        assert adapter._timeout == pytest.approx(7.5)
+        assert adapter._proxy == "http://proxy.local:3128"
+        assert adapter._music_sources == engine_settings.musicdl_sources

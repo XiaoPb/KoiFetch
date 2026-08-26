@@ -1,9 +1,11 @@
-"""Adapter selection: wire settings to the stub/local adapter implementations.
+"""Adapter selection: wire settings to the stub/local or engine implementations.
 
-Tasks 7-12 must obtain adapters through these functions instead of
-constructing implementations directly, so a future swap (real platform
-engines, S3/NAS storage, different token formats) only touches this module and
-the implementations — never the services or API handlers.
+Tasks 7-12 obtain adapters through these functions instead of constructing
+implementations directly, so swapping stub ↔ real engines (and, in the future,
+S3/NAS storage or different token formats) only touches this module and the
+implementations — never the services or API handlers. The factory switches
+stub ↔ real engines by settings; engine modules are imported lazily so stub
+mode never requires the engine packages.
 
 Each function takes an optional :class:`app.infrastructure.config.Settings`;
 when omitted, the process-wide ``get_settings()`` singleton is used. Functions
@@ -41,18 +43,43 @@ __all__ = [
 
 
 def get_parser(settings: Settings | None = None) -> ParserAdapter:
-    """Return the stub parser (deterministic, offline)."""
+    """Return the parser for ``settings.parser_engine``.
+
+    ``"stub"`` (default) → the deterministic offline :class:`StubParserAdapter`;
+    ``"engine"`` → the parse-video-py-backed :class:`EngineParserAdapter`
+    (lazily imported so the app boots and the non-engine tests run without the
+    engine packages installed — engine mode fails loudly at factory time if
+    they are missing).
+    """
+    settings = settings or get_settings()
+    if settings.parser_engine == "engine":
+        from app.adapters.parser_engine import EngineParserAdapter
+
+        return EngineParserAdapter(
+            timeout_seconds=settings.engine_timeout_seconds,
+            proxy=settings.engine_proxy,
+        )
     return StubParserAdapter()
 
 
 def get_downloader(settings: Settings | None = None) -> DownloaderAdapter:
-    """Return the stub downloader, throttled by the configured speed limit.
+    """Return the downloader for ``settings.downloader_engine``.
 
-    ``settings.download_speed_limit`` (MB/s; 0 = unlimited) maps to a
-    per-chunk delay inside the stub, so the worker's progress speed is
-    observable end-to-end (the setting has no other consumer in v1).
+    ``"stub"`` (default) → the throttled stub downloader (the configured speed
+    limit maps to a per-chunk delay so progress speed stays observable);
+    ``"engine"`` → the real :class:`EngineDownloaderAdapter` (lazily imported,
+    same boot-without-engines property as :func:`get_parser`).
     """
     settings = settings or get_settings()
+    if settings.downloader_engine == "engine":
+        from app.adapters.downloader_engine import EngineDownloaderAdapter
+
+        return EngineDownloaderAdapter(
+            timeout_seconds=settings.engine_timeout_seconds,
+            download_timeout_seconds=settings.engine_download_timeout_seconds,
+            proxy=settings.engine_proxy,
+            music_sources=settings.musicdl_sources,
+        )
     return StubDownloaderAdapter(
         speed_limit_mb_s=float(settings.download_speed_limit)
     )

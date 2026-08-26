@@ -314,3 +314,38 @@ class TestSingleton:
                 get_settings()
         finally:
             get_settings.cache_clear()
+
+
+class TestEngineSettings:
+    """Real-engine configuration: mode switches, timeouts, proxy, sources."""
+
+    def test_engine_mode_defaults_to_stub(self, clean_env):
+        settings = build()
+        assert settings.parser_engine == "stub"
+        assert settings.downloader_engine == "stub"
+
+    def test_engine_mode_rejects_unknown_values(self, clean_env):
+        with pytest.raises(ValidationError):
+            build(parser_engine="turbo")
+
+    def test_musicdl_sources_parse_from_comma_string(self, clean_env):
+        settings = build(musicdl_sources="NeteaseMusicClient,QQMusicClient")
+        assert settings.musicdl_sources == ["NeteaseMusicClient", "QQMusicClient"]
+
+    def test_musicdl_sources_default(self, clean_env):
+        assert build().musicdl_sources == [
+            "MiguMusicClient", "NeteaseMusicClient", "QQMusicClient",
+            "KuwoMusicClient", "QianqianMusicClient",
+        ]
+
+    def test_engine_proxy_rejects_non_http(self, clean_env):
+        with pytest.raises(ValidationError):
+            build(engine_proxy="ftp://x")
+
+    def test_engine_proxy_empty_maps_to_none(self, clean_env):
+        assert build(engine_proxy="").engine_proxy is None
+        assert build(engine_proxy="   ").engine_proxy is None
+
+    def test_engine_proxy_valid_url_passes_through(self, clean_env):
+        settings = build(engine_proxy="http://proxy.local:3128")
+        assert settings.engine_proxy == "http://proxy.local:3128"
