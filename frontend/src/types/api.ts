@@ -91,6 +91,14 @@ export interface ParseResult {
   format: string | null;
   available_qualities: string[];
   available_bitrates: string[];
+  /**
+   * Real playable media URL resolved by the engine at parse time (douyin/
+   * bilibili/... CDN). Null in stub mode — the card then shows the cover and
+   * only becomes playable once a download completes.
+   */
+  video_url: string | null;
+  /** Album image URLs (图集/动图). Empty in stub mode — fall back to `cover`. */
+  images: string[];
 }
 
 export interface ParseFailure {

@@ -59,6 +59,25 @@ export const previewApi = {
   },
 };
 
+export const mediaApi = {
+  /**
+   * Same-origin stream-proxy URL for inline video playback
+   * (GET /api/preview/{task_id}/stream). Plays through the backend so
+   * flv.js/hls.js work without CORS and platform URLs never reach the client.
+   */
+  streamUrl(taskId: string): string {
+    return resolveApiUrl(`/api/preview/${taskId}/stream`);
+  },
+  /** Attachment URL for one album image (browser saves the file). */
+  imageUrl(taskId: string, index: number): string {
+    return resolveApiUrl(`/api/preview/${taskId}/images/${index}`);
+  },
+  /** Attachment URL for the whole album as a ZIP. */
+  albumZipUrl(taskId: string): string {
+    return resolveApiUrl(`/api/preview/${taskId}/images.zip`);
+  },
+};
+
 export const downloadApi = {
   /** POST /api/download/submit → {download_id, task_id, status, created_at}. */
   async submit(
