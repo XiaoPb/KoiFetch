@@ -62,6 +62,8 @@ PRD_RESULT_KEYS = {
     "format",
     "available_qualities",
     "available_bitrates",
+    "video_url",
+    "images",
 }
 
 
@@ -111,6 +113,8 @@ class TestParseSuccess:
         assert result["file_size_mb"]
         assert result["format"] == "mp4"
         assert result["available_qualities"] == ["1080p", "720p", "480p"]
+        assert result["video_url"] is None  # stub metadata carries no media URL
+        assert result["images"] == []
 
     def test_multiple_urls_return_ordered_results(self, client):
         response = client.post("/api/parse", json={"urls": [VIDEO_URL, MUSIC_URL]})
@@ -266,3 +270,75 @@ class TestParsePersistence:
         assert len(stored) == 1
         assert stored[0].url == VIDEO_URL
         assert stored[0].media_type.value == "video"
+
+
+class TestParseMediaUrls:
+    """Engine-style metadata (video_url / images) must survive serialization."""
+
+    def test_video_result_exposes_video_url(self, engine):
+        from app.domain import MediaType, ParseResult
+        import uuid as _uuid
+
+        class _EngineStyleParser:
+            def parse(self, command):
+                return [
+                    ParseResult(
+                        task_id=str(_uuid.uuid4()),
+                        url=command.urls[0],
+                        media_type=MediaType.VIDEO,
+                        platform="douyin",
+                        title="clip",
+                        format="mp4",
+                        metadata={"video_url": "https://cdn.example.com/v.mp4"},
+                    )
+                ]
+
+        app = create_app(settings=make_settings())
+        app.dependency_overrides[get_parse_service] = lambda: ParseService(
+            parser=_EngineStyleParser(), engine=engine
+        )
+        response = TestClient(app).post(
+            "/api/parse", json={"urls": ["https://v.douyin.com/abc/"]}
+        )
+        assert response.status_code == 200
+        result = response.json()["data"]["results"][0]
+        assert result["video_url"] == "https://cdn.example.com/v.mp4"
+        assert result["images"] == []
+
+    def test_image_result_exposes_album_images(self, engine):
+        from app.domain import MediaType, ParseResult
+        import uuid as _uuid
+
+        class _AlbumParser:
+            def parse(self, command):
+                return [
+                    ParseResult(
+                        task_id=str(_uuid.uuid4()),
+                        url=command.urls[0],
+                        media_type=MediaType.IMAGE,
+                        platform="xiaohongshu",
+                        title="album",
+                        format="jpg",
+                        metadata={
+                            "images": [
+                                {"url": "https://cdn.example.com/1.jpg"},
+                                {"url": "https://cdn.example.com/2.jpg"},
+                            ]
+                        },
+                    )
+                ]
+
+        app = create_app(settings=make_settings())
+        app.dependency_overrides[get_parse_service] = lambda: ParseService(
+            parser=_AlbumParser(), engine=engine
+        )
+        response = TestClient(app).post(
+            "/api/parse", json={"urls": ["https://www.xiaohongshu.com/explore/abc"]}
+        )
+        assert response.status_code == 200
+        result = response.json()["data"]["results"][0]
+        assert result["images"] == [
+            "https://cdn.example.com/1.jpg",
+            "https://cdn.example.com/2.jpg",
+        ]
+        assert result["video_url"] is None

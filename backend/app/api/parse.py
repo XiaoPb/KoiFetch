@@ -81,6 +81,8 @@ class ParseResultData(BaseModel):
     format: str | None = None
     available_qualities: list[str] = Field(default_factory=list)
     available_bitrates: list[str] = Field(default_factory=list)
+    video_url: str | None = None
+    images: list[str] = Field(default_factory=list)
 
 
 class ParseData(BaseModel):
@@ -104,7 +106,20 @@ def get_parse_service(request: Request) -> ParseService:
 
 
 def _serialize_result(result: ParseResult) -> dict:
-    """Map a domain :class:`ParseResult` to the PRD ParseResult keys."""
+    """Map a domain :class:`ParseResult` to the PRD ParseResult keys.
+
+    ``video_url``/``images`` come from the engine's persisted metadata
+    (stub-mode rows carry neither, so both are None/[]). ``images`` flattens
+    the album's ``[{url, live_photo_url}, ...]`` list to plain URLs; entries
+    without a string ``url`` are dropped defensively.
+    """
+    metadata = result.metadata or {}
+    video_url = metadata.get("video_url")
+    images = [
+        img["url"]
+        for img in metadata.get("images") or []
+        if isinstance(img, dict) and isinstance(img.get("url"), str)
+    ]
     return {
         "task_id": result.task_id,
         "url": result.url,
@@ -117,6 +132,8 @@ def _serialize_result(result: ParseResult) -> dict:
         "format": result.format,
         "available_qualities": list(result.available_qualities),
         "available_bitrates": list(result.available_bitrates),
+        "video_url": video_url if isinstance(video_url, str) else None,
+        "images": images,
     }
 
 
