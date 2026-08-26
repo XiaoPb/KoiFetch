@@ -71,6 +71,33 @@ _CHUNK_SIZE = 64 * 1024
 _MAX_IMAGE_BYTES = 20 * 1024 * 1024    # 20 MB per image
 _MAX_ALBUM_BYTES = 200 * 1024 * 1024   # 200 MB total
 
+_EXT_UNSAFE = re.compile(r"[^a-z0-9]+")
+
+
+def _extension_of(url: str) -> str:
+    """Lowercase alnum extension of the last path segment (default ``jpg``)."""
+    last = url.split("?", 1)[0].rsplit("/", 1)[-1]
+    dot = last.rfind(".")
+    if dot == -1 or not last[dot + 1 :]:
+        return "jpg"
+    cleaned = _EXT_UNSAFE.sub("", last[dot + 1 :].lower())
+    return cleaned or "jpg"
+
+
+def _image_content_type(ext: str) -> str:
+    return {
+        "png": "image/png",
+        "gif": "image/gif",
+        "webp": "image/webp",
+        "bmp": "image/bmp",
+    }.get(ext, "image/jpeg")
+
+
+def _slug(text: str) -> str:
+    """ASCII-safe filename slug (header safety); falls back to ``album``."""
+    slug = _EXT_UNSAFE.sub("-", (text or "").lower()).strip("-")[:40]
+    return slug or "album"
+
 
 @dataclass(frozen=True)
 class MediaStream:
@@ -201,6 +228,90 @@ class PreviewService:
                 HTTP_400_BAD_REQUEST, CODE_TASK_NOT_FOUND, _MESSAGE_TASK_NOT_FOUND
             )
         return task
+
+    def image_bytes(self, task_id: str, index: int) -> tuple[bytes, str, str]:
+        """Fetch one album image: ``(body, content_type, attachment_filename)``.
+
+        ``index`` is validated against the persisted album; ``3001`` unknown
+        task, ``400`` non-image task / no images / out-of-range index /
+        oversized image / upstream failure.
+        """
+        urls = self._album_urls(task_id)
+        if not 0 <= index < len(urls):
+            raise ApiError(
+                HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_IMAGE_INDEX
+            )
+        url = urls[index]
+        body = self._fetch_bytes(url)
+        if len(body) > _MAX_IMAGE_BYTES:
+            raise ApiError(
+                HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_IMAGE_TOO_LARGE
+            )
+        ext = _extension_of(url)
+        return body, _image_content_type(ext), f"image-{index + 1:04d}.{ext}"
+
+    def album_zip(self, task_id: str) -> tuple[bytes, str]:
+        """Bundle every album image into an in-memory ZIP.
+
+        Returns ``(zip_bytes, attachment_filename)``. Size guard: any single
+        image over ``_MAX_IMAGE_BYTES`` or a total over ``_MAX_ALBUM_BYTES``
+        aborts with a typed ``400`` (never a half-built archive — the buffer
+        is only returned after all entries are written).
+        """
+        urls, title = self._album(task_id)
+        buffer = io.BytesIO()
+        total = 0
+        with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_STORED) as archive:
+            for index, url in enumerate(urls):
+                body = self._fetch_bytes(url)
+                if len(body) > _MAX_IMAGE_BYTES or total + len(body) > _MAX_ALBUM_BYTES:
+                    raise ApiError(
+                        HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_ALBUM_TOO_LARGE
+                    )
+                total += len(body)
+                archive.writestr(f"image-{index + 1:04d}.{_extension_of(url)}", body)
+        slug = _slug(title)
+        return buffer.getvalue(), f"{slug}-{len(urls)}-images.zip"
+
+    def _album_urls(self, task_id: str) -> list[str]:
+        return self._album(task_id)[0]
+
+    def _album(self, task_id: str) -> tuple[list[str], str]:
+        """The task's album image URLs plus its title, or a typed error."""
+        task = self._load_task(task_id)
+        if task.media_type != MediaType.IMAGE:
+            raise ApiError(
+                HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_NOT_IMAGE
+            )
+        images = (task.metadata_ or {}).get("images") or []
+        urls = [
+            img["url"]
+            for img in images
+            if isinstance(img, dict) and isinstance(img.get("url"), str)
+        ]
+        if not urls:
+            raise ApiError(
+                HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_NO_IMAGES
+            )
+        return urls, task.title
+
+    def _fetch_bytes(self, url: str) -> bytes:
+        kwargs: dict = {"timeout": _STREAM_TIMEOUT, "follow_redirects": True}
+        if self._proxy:
+            kwargs["proxy"] = self._proxy
+        if self._transport is not None:
+            kwargs["transport"] = self._transport
+        try:
+            with httpx.Client(**kwargs) as client:
+                response = client.get(url, headers=_UA)
+                response.raise_for_status()
+                return response.content
+        except ApiError:
+            raise
+        except Exception as exc:
+            raise ApiError(
+                HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_UPSTREAM
+            ) from exc
 
 
 def _build_preview(task: ParseTask) -> dict:

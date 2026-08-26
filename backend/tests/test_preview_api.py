@@ -290,3 +290,73 @@ class TestStreamProxyEndpoint:
         response = client.get(f"/api/preview/{VIDEO_TASK_ID}/stream")
         assert response.status_code == 400
         assert response.json()["code"] == CODE_BAD_REQUEST
+
+
+class TestImageEndpoints:
+    @pytest.fixture
+    def image_client(self, engine):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                headers={"content-type": "image/jpeg"},
+                content=b"JPEG-fake",
+            )
+
+        app = create_app(settings=make_settings())
+        app.dependency_overrides[get_preview_service] = lambda: PreviewService(
+            engine=engine,
+            transport=httpx.MockTransport(handler),
+        )
+        return TestClient(app)
+
+    def test_single_image_returns_attachment(self, image_client, engine):
+        _seed_task(
+            engine,
+            task_id=IMAGE_TASK_ID,
+            url="https://www.xiaohongshu.com/photo/1.jpg",
+            media_type=MediaType.IMAGE,
+            format="jpg",
+            title="album",
+            metadata={"images": [{"url": "https://cdn.example.com/a.jpg"}]},
+        )
+        response = image_client.get(f"/api/preview/{IMAGE_TASK_ID}/images/0")
+        assert response.status_code == 200
+        assert response.content == b"JPEG-fake"
+        assert response.headers["content-disposition"].startswith("attachment")
+
+    def test_album_zip_returns_zip_attachment(self, image_client, engine):
+        _seed_task(
+            engine,
+            task_id=IMAGE_TASK_ID,
+            url="https://www.xiaohongshu.com/photo/1.jpg",
+            media_type=MediaType.IMAGE,
+            format="jpg",
+            title="album",
+            metadata={
+                "images": [
+                    {"url": "https://cdn.example.com/a.jpg"},
+                    {"url": "https://cdn.example.com/b.jpg"},
+                ]
+            },
+        )
+        import io as _io
+        import zipfile as _zipfile
+
+        response = image_client.get(f"/api/preview/{IMAGE_TASK_ID}/images.zip")
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "application/zip"
+        with _zipfile.ZipFile(_io.BytesIO(response.content)) as archive:
+            assert archive.namelist() == ["image-0001.jpg", "image-0002.jpg"]
+
+    def test_image_index_out_of_range_returns_400(self, client, engine):
+        _seed_task(
+            engine,
+            task_id=IMAGE_TASK_ID,
+            url="https://www.xiaohongshu.com/photo/1.jpg",
+            media_type=MediaType.IMAGE,
+            format="jpg",
+            metadata={"images": [{"url": "https://cdn.example.com/a.jpg"}]},
+        )
+        response = client.get(f"/api/preview/{IMAGE_TASK_ID}/images/9")
+        assert response.status_code == 400
+        assert response.json()["code"] == CODE_BAD_REQUEST

@@ -10,7 +10,9 @@ and the ``None``/``[]`` fallbacks for rows whose metadata lacks the enriched
 keys (older rows or future engines that skip the parse-service enrichment).
 """
 
+import io
 import uuid
+import zipfile
 
 import httpx
 import pytest
@@ -51,7 +53,8 @@ def _seed_task(engine, *, task_id, url, media_type, format, title="t", duration=
         )
 
 
-def _seed_media_task(engine, *, task_id, media_type=MediaType.VIDEO, metadata=None) -> None:
+def _seed_media_task(engine, *, task_id, media_type=MediaType.VIDEO, metadata=None,
+                     title="t") -> None:
     """Seed a minimal media task row (defaults: bilibili video, mp4)."""
     with session_scope(engine) as session:
         session.add(
@@ -60,7 +63,7 @@ def _seed_media_task(engine, *, task_id, media_type=MediaType.VIDEO, metadata=No
                 url="https://example.com/source",
                 platform="bilibili" if media_type is MediaType.VIDEO else "xiaohongshu",
                 media_type=media_type,
-                title="t",
+                title=title,
                 format="mp4",
                 metadata_=metadata or {},
             )
@@ -272,4 +275,84 @@ class TestVideoStreamProxy:
         )
         with pytest.raises(Exception) as exc_info:
             service.stream_video(task_id, range_header=None)
+        assert getattr(exc_info.value, "code", None) == CODE_BAD_REQUEST
+
+
+class TestImageDownload:
+    def _image_handler(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            name = request.url.path.rsplit("/", 1)[-1]
+            ext = name.rsplit(".", 1)[-1] if "." in name else "jpg"
+            if ext == "png":
+                body = b"\x89PNG-fake"
+            else:
+                body = b"JPEG-fake"
+            return httpx.Response(200, headers={"content-type": "image/jpeg"}, content=body)
+        return handler
+
+    def test_image_bytes_returns_single_image(self, engine):
+        service = PreviewService(
+            engine=engine, transport=httpx.MockTransport(self._image_handler())
+        )
+        _seed_media_task(
+            engine,
+            task_id=IMAGE_TASK_ID,
+            media_type=MediaType.IMAGE,
+            metadata={
+                "images": [
+                    {"url": "https://cdn.example.com/a.jpg"},
+                    {"url": "https://cdn.example.com/b.png"},
+                ]
+            },
+        )
+        body, content_type, filename = service.image_bytes(IMAGE_TASK_ID, 1)
+        assert body == b"\x89PNG-fake"
+        assert filename == "image-0002.png"
+
+    def test_image_bytes_index_out_of_range_raises(self, engine):
+        service = PreviewService(engine=engine, transport=httpx.MockTransport(handler=None))
+        _seed_media_task(
+            engine,
+            task_id=IMAGE_TASK_ID,
+            media_type=MediaType.IMAGE,
+            metadata={"images": [{"url": "https://cdn.example.com/a.jpg"}]},
+        )
+        with pytest.raises(Exception) as exc_info:
+            service.image_bytes(IMAGE_TASK_ID, 5)
+        assert getattr(exc_info.value, "code", None) == CODE_BAD_REQUEST
+
+    def test_album_zip_bundles_all_images(self, engine):
+        service = PreviewService(
+            engine=engine, transport=httpx.MockTransport(self._image_handler())
+        )
+        _seed_media_task(
+            engine,
+            task_id=IMAGE_TASK_ID,
+            media_type=MediaType.IMAGE,
+            title="度假相册",
+            metadata={
+                "images": [
+                    {"url": "https://cdn.example.com/a.jpg"},
+                    {"url": "https://cdn.example.com/b.png"},
+                ]
+            },
+        )
+        body, filename = service.album_zip(IMAGE_TASK_ID)
+        assert filename == "du-jia-xiang-ce-2-images.zip" or filename.endswith("-2-images.zip")
+        with zipfile.ZipFile(io.BytesIO(body)) as archive:
+            names = archive.namelist()
+            assert names == ["image-0001.jpg", "image-0002.png"]
+            assert archive.read("image-0001.jpg") == b"JPEG-fake"
+            assert archive.read("image-0002.png") == b"\x89PNG-fake"
+
+    def test_album_zip_empty_album_raises(self, engine):
+        service = PreviewService(engine=engine, transport=httpx.MockTransport(handler=None))
+        _seed_media_task(
+            engine,
+            task_id=IMAGE_TASK_ID,
+            media_type=MediaType.IMAGE,
+            metadata={},
+        )
+        with pytest.raises(Exception) as exc_info:
+            service.album_zip(IMAGE_TASK_ID)
         assert getattr(exc_info.value, "code", None) == CODE_BAD_REQUEST

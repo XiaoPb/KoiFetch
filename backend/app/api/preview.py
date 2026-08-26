@@ -125,3 +125,36 @@ def stream_media(
         headers=stream.headers,
         media_type=None,
     )
+
+
+@router.get("/{task_id}/images/{index}")
+def image_file(
+    task_id: UuidStr,
+    index: int,
+    service: Annotated[PreviewService, Depends(get_preview_service)],
+) -> Response:
+    """Serve one album image as an attachment (download-current).
+
+    Raw bytes with a ``Content-Disposition: attachment`` header; failures use
+    the shared ApiError envelope (3001/400).
+    """
+    body, content_type, filename = service.image_bytes(task_id, index)
+    return Response(
+        content=body,
+        media_type=content_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/{task_id}/images.zip")
+def album_zip(
+    task_id: UuidStr,
+    service: Annotated[PreviewService, Depends(get_preview_service)],
+) -> Response:
+    """Serve the whole album as a ZIP attachment (download-all)."""
+    body, filename = service.album_zip(task_id)
+    return Response(
+        content=body,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
