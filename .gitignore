@@ -36,3 +36,8 @@ node_modules/
 frontend/dist/
 frontend/node_modules/
 frontend/.npm-cache/
+
+.docker-config/
+
+# Local deployment runtime artifacts (logs + PID files)
+.deploy-logs/
