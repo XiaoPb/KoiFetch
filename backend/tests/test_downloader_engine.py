@@ -98,10 +98,32 @@ class TestVideoDownload:
         with pytest.raises(EngineNetworkError):
             adapter.download(_request(tmp_path))
 
-    def test_unknown_media_type_raises_typed_error(self, tmp_path):
+    def test_image_download_streams_first_album_image(self, tmp_path):
+        # 图集/动图: IMAGE tasks stream the first image URL (v1 single-file
+        # model) with the same progress contract as video.
+        seen: list[DownloadProgress] = []
+        adapter = _adapter(payload=b"gif-bytes")
+        metadata = {
+            "images": [
+                {"url": "https://cdn.example/a.gif", "live_photo_url": ""},
+                {"url": "https://cdn.example/b.jpg", "live_photo_url": ""},
+            ]
+        }
+        result = adapter.download(
+            _request(tmp_path, metadata=metadata, media_type=MediaType.IMAGE,
+                     progress_callback=seen.append)
+        )
+        assert result.status is DownloadStatus.COMPLETED
+        assert result.media_type is MediaType.IMAGE
+        assert (tmp_path / "out" / "media.bin").read_bytes() == b"gif-bytes"
+        assert seen and seen[-1].downloaded_bytes == 9
+
+    def test_image_without_url_raises_typed_error(self, tmp_path):
         adapter = _adapter()
         with pytest.raises(EngineDownloadError):
-            adapter.download(_request(tmp_path, media_type=MediaType.IMAGE))
+            adapter.download(
+                _request(tmp_path, metadata={"stub": True}, media_type=MediaType.IMAGE)
+            )
 
     def test_truncated_body_is_not_reported_completed(self, tmp_path):
         def handler(request: httpx.Request) -> httpx.Response:

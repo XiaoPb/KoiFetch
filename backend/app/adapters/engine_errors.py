@@ -133,5 +133,10 @@ def translate_engine_exception(
     if category == "timeout":
         message = _MSG["parse_timeout" if operation == "parse" else "download_timeout"]
         return EngineTimeoutError(message)
+    # Generic HTTP/unknown failures carry the exception CLASS NAME so the
+    # client can tell an engine-side bug (e.g. "KeyError") from a normal
+    # refusal — the class name is message-safe (never exception text/paths).
     message = _MSG["parse_failed" if operation == "parse" else "download_failed"]
+    if category in ("http", "unknown"):
+        message = f"{message} ({type(exc).__name__})"
     return EngineParseError(message) if operation == "parse" else EngineDownloadError(message)

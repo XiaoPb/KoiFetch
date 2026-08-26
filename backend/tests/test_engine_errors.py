@@ -79,10 +79,13 @@ class TestTranslation:
         )
 
     def test_unknown_exception_maps_to_operation_error(self):
-        assert isinstance(
-            translate_engine_exception(RuntimeError("boom"), url=URL, operation="parse"),
-            EngineParseError,
+        translated = translate_engine_exception(
+            RuntimeError("boom"), url=URL, operation="parse"
         )
+        assert isinstance(translated, EngineParseError)
+        # The exception CLASS NAME is appended (message-safe) so engine-side
+        # bugs (e.g. a KeyError in the upstream parser) are diagnosable.
+        assert str(translated) == "解析失败 / Parse failed (RuntimeError)"
 
     def test_original_exception_is_preserved_as_cause(self):
         exc = httpx.ConnectError("nope", request=_request())

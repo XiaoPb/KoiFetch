@@ -67,6 +67,7 @@ from app.domain import DownloadProgress, DownloadResult, DownloadStatus, MediaTy
 __all__ = ["EngineDownloaderAdapter"]
 
 _MESSAGE_MISSING_MEDIA = "缺少媒体地址，无法下载 / Missing media URL"
+_MESSAGE_MISSING_IMAGE = "缺少图片地址，无法下载 / Missing image URL"
 _MESSAGE_MEDIA_TYPE = "该引擎暂不支持此媒体类型 / Media type not supported by the engine yet"
 _MESSAGE_MISSING_SONG = "缺少音乐信息，无法下载 / Missing song info"
 _MESSAGE_DOWNLOAD_FAILED = "下载失败 / Download failed"
@@ -110,6 +111,8 @@ class EngineDownloaderAdapter:
             return self._download_video(request)
         if request.media_type is MediaType.MUSIC:
             return self._download_music(request)
+        if request.media_type is MediaType.IMAGE:
+            return self._download_image(request)
         raise EngineDownloadError(_MESSAGE_MEDIA_TYPE)
 
     # -- video -------------------------------------------------------------
@@ -118,6 +121,28 @@ class EngineDownloaderAdapter:
         url = request.metadata.get("video_url") if request.metadata else None
         if not url:
             raise EngineDownloadError(_MESSAGE_MISSING_MEDIA)
+        return self._stream_to_target(request, url, total_hint=None)
+
+    # -- image (图集 / 动图) ------------------------------------------------
+
+    def _download_image(self, request: DownloadRequest) -> DownloadResult:
+        """Stream an image (single, animated GIF, or the FIRST of an album).
+
+        v1's single-file task model downloads one file per task, so an image
+        album downloads its first image; the full album URL list stays in the
+        parse metadata (``metadata["images"]``) for the UI. Real download with
+        per-chunk progress via the shared streaming core.
+        """
+        url = None
+        if request.metadata:
+            images = request.metadata.get("images")
+            if isinstance(images, list) and images:
+                first = images[0]
+                url = first.get("url") if isinstance(first, dict) else None
+            if not url:
+                url = request.metadata.get("video_url")
+        if not url:
+            raise EngineDownloadError(_MESSAGE_MISSING_IMAGE)
         return self._stream_to_target(request, url, total_hint=None)
 
     # -- music -------------------------------------------------------------

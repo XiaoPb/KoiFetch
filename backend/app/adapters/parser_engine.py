@@ -13,7 +13,16 @@ Honesty contract (verified against the engine source, 2026-08-25):
   only, so the result reports ``duration=None`` and empty quality/bitrate
   lists (both optional in :class:`app.domain.models.ParseResult`), and
   ``file_size_mb`` comes from a best-effort Content-Length probe of the
-  video URL (never fatal — ``None`` on failure).
+  media URL (never fatal — ``None`` on failure).
+* **图集 / 动图 (image albums) are classified as IMAGE.** When the engine
+  returns ``images`` with no ``video_url``, the result is ``media_type
+  == IMAGE`` with the format derived from the first image's extension
+  (``jpg``/``gif``/``webp``/...; an animated GIF stays an image). The full
+  album URL list lives in ``metadata["images"]``; the v1 downloader fetches
+  the first image (single-file task model). Known engine gap: parse-video-py
+  currently fails on douyin ``/note/`` (图集) pages with ``KeyError:
+  'videoInfoRes'`` — an upstream parser issue, surfaced here as a typed
+  parse failure whose message carries the exception class name.
 * **musicdl is search-based, not URL-based** (verified: its only URL entry is
   ``parseplaylist`` for playlist URLs, and ``#/song?id=`` URLs return empty).
   Music-platform URLs are therefore rejected with
@@ -153,16 +162,28 @@ class EngineParserAdapter:
             info = asyncio.run(
                 asyncio.wait_for(parse_video_share_url(url), timeout=self._timeout)
             )
+            # 图集 / 动图: the engine returns the album (or animated image) in
+            # `images` with no video_url — classify honestly as IMAGE and
+            # format from the first image's extension (jpg/gif/webp/...).
+            is_album = not info.video_url and bool(info.images)
+            if is_album:
+                media_type = MediaType.IMAGE
+                size_url = info.images[0].url
+                media_format = _extension_of(size_url) or "jpg"
+            else:
+                media_type = MediaType.VIDEO
+                size_url = info.video_url
+                media_format = _extension_of(size_url) or "mp4"
             return ParseResult(
                 task_id=str(uuid.uuid4()),
                 url=url,
-                media_type=MediaType.VIDEO,
+                media_type=media_type,
                 platform=platform,
                 title=(info.title or "").strip() or platform,
                 cover=info.cover_url or None,
                 duration=None,  # engine exposes no duration (documented)
-                file_size_mb=self._probe_file_size_mb(info.video_url),
-                format=_extension_of(info.video_url) or "mp4",
+                file_size_mb=self._probe_file_size_mb(size_url),
+                format=media_format,
                 available_qualities=[],  # engine exposes no quality ladder
                 available_bitrates=[],
                 metadata={

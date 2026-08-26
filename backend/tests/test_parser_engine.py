@@ -19,7 +19,7 @@ from app.adapters.engine_errors import (
 )
 from app.adapters.parser_engine import EngineParserAdapter
 from app.domain import MediaType, ParseCommand
-from parse_video_py import VideoAuthor, VideoInfo
+from parse_video_py import ImgInfo, VideoAuthor, VideoInfo
 
 _URL_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
@@ -166,6 +166,42 @@ class TestVideoMapping:
         first = adapter.parse(ParseCommand(urls=["https://v.douyin.com/abc/"]))[0]
         second = adapter.parse(ParseCommand(urls=["https://v.douyin.com/abc/"]))[0]
         assert first.task_id != second.task_id
+
+    def test_image_album_classified_as_image(self, monkeypatch):
+        # 图集/动图: the engine returns the album in `images` with no
+        # video_url — the result must be IMAGE with a real image format.
+        async def fake_parse(url):
+            return _fake_video_info(
+                video_url="",
+                cover_url="https://cdn.example/cover.jpg",
+                images=[
+                    ImgInfo(url="https://cdn.example/a.gif", live_photo_url=""),
+                    ImgInfo(url="https://cdn.example/b.jpg", live_photo_url=""),
+                ],
+            )
+
+        monkeypatch.setattr(parser_engine, "parse_video_share_url", fake_parse)
+        result = _offline_adapter().parse(
+            ParseCommand(urls=["https://v.douyin.com/abc/"])
+        )[0]
+        assert result.media_type is MediaType.IMAGE
+        assert result.format == "gif"  # 动图: animated image stays an image
+        assert result.cover == "https://cdn.example/cover.jpg"
+        assert len(result.metadata["images"]) == 2
+        assert result.metadata["images"][0]["url"] == "https://cdn.example/a.gif"
+
+    def test_video_with_images_stays_video(self, monkeypatch):
+        # Some platforms return BOTH a video_url and thumbnails — that is a
+        # video, not an album.
+        async def fake_parse(url):
+            return _fake_video_info(images=[ImgInfo(url="https://cdn.example/t.jpg", live_photo_url="")])
+
+        monkeypatch.setattr(parser_engine, "parse_video_share_url", fake_parse)
+        result = _offline_adapter().parse(
+            ParseCommand(urls=["https://v.douyin.com/abc/"])
+        )[0]
+        assert result.media_type is MediaType.VIDEO
+        assert result.format == "mp4"
 
 
 class TestFileSizeProbe:
