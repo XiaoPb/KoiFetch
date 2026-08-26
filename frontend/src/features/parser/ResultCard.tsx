@@ -1,20 +1,12 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Button, Card, Image, Select, Space, Tag, Typography } from 'antd';
 import { AudioOutlined, DownloadOutlined, EyeOutlined, PictureOutlined, VideoCameraOutlined } from '@ant-design/icons';
-import ReactPlayer from 'react-player';
-import { useTranslation } from '../../services/i18n';
+import { useTranslation, type TranslationKey } from '../../services/i18n';
+import { downloadApi, mediaApi } from '../../services/api';
 import { useDownloadsStore } from '../../stores/downloadsStore';
 import type { ParseResult } from '../../types/api';
-
-// Tiny inline SVG placeholder shown when a cover fails to load or is absent.
-const COVER_FALLBACK =
-  'data:image/svg+xml;utf8,' +
-  encodeURIComponent(
-    '<svg xmlns="http://www.w3.org/2000/svg" width="300" height="170">' +
-      '<rect width="100%" height="100%" fill="#f0f0f0"/>' +
-      '<text x="50%" y="50%" fill="#bfbfbf" font-size="14" text-anchor="middle" dominant-baseline="middle">Koi Fetch</text>' +
-      '</svg>',
-  );
+import { VideoPlayer, type PlayableSource } from './VideoPlayer';
+import { ImageCarousel, COVER_FALLBACK } from './ImageCarousel';
 
 /** Small translucent badge on the cover corner identifying the media type. */
 const TYPE_BADGE: Record<string, JSX.Element> = {
@@ -33,28 +25,38 @@ export interface ResultCardProps {
   result: ParseResult;
   /** True while this task's download is being submitted (button spinner). */
   downloading: boolean;
+  /** Music only: opens the metadata preview modal. */
   onPreview: (result: ParseResult) => void;
   onDownload: (result: ParseResult, options: DownloadOptions) => void;
+  /** Image only: download the currently displayed album image. */
+  onDownloadImage: (result: ParseResult, index: number) => void;
+  /** Image only: download the whole album as a ZIP. */
+  onDownloadAlbum: (result: ParseResult) => void;
 }
 
 /**
- * One result-card grid item (PRD §4.2.2): cover with duration badge, title,
- * platform/format tags, file size, a quality or bitrate picker when the
- * backend offered one, and [预览] / [下载] actions. Single card level only.
- *
- * The quality/bitrate pickers are card-local state; switching the header
- * media mode unmounts non-matching cards, which resets their selection to the
- * first option. Accepted trade-off: the mode filter is presentation-layer
- * only, and a re-parse is not needed to see the card again.
+ * One result-card grid item (PRD §4.2.2): media is visible in place — a video
+ * plays inline via xgplayer as soon as the engine resolved a playable URL
+ * (same-origin proxy → direct CDN → completed download file), and an image
+ * album renders as a Swiper carousel with [下载当前]/[下载全部]. Music keeps the
+ * cover + [预览]/[下载]. Video cards keep ONLY [下载] (the old [预览] modal is
+ * gone for video/image).
  */
-export function ResultCard({ result, downloading, onPreview, onDownload }: ResultCardProps): JSX.Element {
+export function ResultCard({
+  result,
+  downloading,
+  onPreview,
+  onDownload,
+  onDownloadImage,
+  onDownloadAlbum,
+}: ResultCardProps): JSX.Element {
   const { t } = useTranslation();
   const [quality, setQuality] = useState<string | null>(result.available_qualities[0] ?? null);
   const [bitrate, setBitrate] = useState<string | null>(result.available_bitrates[0] ?? null);
+  const [activeImage, setActiveImage] = useState(0);
 
-  // A completed download's still-valid file link for this task. With the
-  // auto-download after parse, a video card swaps its cover for an inline
-  // player as soon as the file lands — playback right on the main page.
+  // A completed download's still-valid file link for this task — the LAST
+  // playback fallback for videos (the auto-download keeps making it appear).
   const completedUrl = useDownloadsStore((state) => {
     const item = state.items.find(
       (i) => i.task_id === result.task_id && i.status === 'completed' && i.download_url != null,
@@ -67,7 +69,30 @@ export function ResultCard({ result, downloading, onPreview, onDownload }: Resul
   const hasQuality = result.available_qualities.length > 0;
   const hasBitrate = result.available_bitrates.length > 0;
   const sizeText = result.file_size_mb != null ? `${result.file_size_mb} MB` : '—';
-  const showPlayer = result.type === 'video' && completedUrl != null;
+
+  // Ordered playback candidates: stream proxy first (same-origin, robust),
+  // then the engine's direct CDN URL, then the completed local file.
+  const playableSources: PlayableSource[] = useMemo(() => {
+    if (result.type !== 'video') return [];
+    const sources: PlayableSource[] = [];
+    if (result.video_url) {
+      sources.push({ url: mediaApi.streamUrl(result.task_id), format: result.format });
+      sources.push({ url: result.video_url, format: result.format });
+    }
+    if (completedUrl) {
+      sources.push({ url: downloadApi.getFileUrl(completedUrl), format: result.format });
+    }
+    return sources;
+  }, [result, completedUrl]);
+
+  const showPlayer = result.type === 'video' && playableSources.length > 0;
+
+  // Album slide URLs: the engine's list, else the single cover.
+  const albumImages: string[] = useMemo(() => {
+    if (result.type !== 'image') return [];
+    if (result.images.length > 0) return result.images;
+    return result.cover ? [result.cover] : [];
+  }, [result]);
 
   const handleDownload = () => {
     // Music uses the bitrate picker, video the quality picker; both map to the
@@ -76,6 +101,85 @@ export function ResultCard({ result, downloading, onPreview, onDownload }: Resul
     onDownload(result, { format: result.format ?? null, quality: chosen });
   };
 
+  const cover = showPlayer ? (
+    <VideoPlayer
+      sources={playableSources}
+      poster={result.cover}
+      testId={`card-player-${result.task_id}`}
+    />
+  ) : result.type === 'image' && albumImages.length > 0 ? (
+    <ImageCarousel
+      images={albumImages}
+      title={result.title}
+      onIndexChange={setActiveImage}
+      testId={`carousel-${result.task_id}`}
+    />
+  ) : result.cover ? (
+    <Image src={result.cover} alt={result.title} preview={false} fallback={COVER_FALLBACK} />
+  ) : (
+    <div className="result-card-cover-empty" aria-label={result.title} />
+  );
+
+  const actions = (
+    result.type === 'video'
+      ? [
+          <Button
+            key="download"
+            type="text"
+            icon={<DownloadOutlined />}
+            loading={downloading}
+            onClick={handleDownload}
+            data-testid={`download-${result.task_id}`}
+          >
+            {t('parser.download')}
+          </Button>,
+        ]
+      : result.type === 'image'
+        ? [
+            <Button
+              key="download-current"
+              type="text"
+              icon={<DownloadOutlined />}
+              onClick={() => onDownloadImage(result, activeImage)}
+              data-testid={`download-current-${result.task_id}`}
+            >
+              {/* Keys land in Task 9; until then they render raw (tests don't
+                  assert the text), and the cast keeps strict TS green. */}
+              {t('parser.downloadCurrent' as TranslationKey)}
+            </Button>,
+            <Button
+              key="download-all"
+              type="text"
+              icon={<DownloadOutlined />}
+              onClick={() => onDownloadAlbum(result)}
+              data-testid={`download-all-${result.task_id}`}
+            >
+              {t('parser.downloadAll' as TranslationKey)}
+            </Button>,
+          ]
+        : [
+            <Button
+              key="preview"
+              type="text"
+              icon={<EyeOutlined />}
+              onClick={() => onPreview(result)}
+              data-testid={`preview-${result.task_id}`}
+            >
+              {t('parser.preview')}
+            </Button>,
+            <Button
+              key="download"
+              type="text"
+              icon={<DownloadOutlined />}
+              loading={downloading}
+              onClick={handleDownload}
+              data-testid={`download-${result.task_id}`}
+            >
+              {t('parser.download')}
+            </Button>,
+          ]
+  );
+
   return (
     <Card
       hoverable
@@ -83,18 +187,7 @@ export function ResultCard({ result, downloading, onPreview, onDownload }: Resul
       data-testid={`result-card-${result.task_id}`}
       cover={
         <div className="result-card-cover">
-          {showPlayer ? (
-            <div
-              style={{ aspectRatio: '16 / 9', width: '100%', background: '#000' }}
-              data-testid={`card-player-${result.task_id}`}
-            >
-              <ReactPlayer src={completedUrl ?? undefined} controls width="100%" height="100%" />
-            </div>
-          ) : result.cover ? (
-            <Image src={result.cover} alt={result.title} preview={false} fallback={COVER_FALLBACK} />
-          ) : (
-            <div className="result-card-cover-empty" aria-label={result.title} />
-          )}
+          {cover}
           <div
             className="result-card-type"
             data-testid={`type-badge-${result.task_id}`}
@@ -109,27 +202,7 @@ export function ResultCard({ result, downloading, onPreview, onDownload }: Resul
           )}
         </div>
       }
-      actions={[
-        <Button
-          key="preview"
-          type="text"
-          icon={<EyeOutlined />}
-          onClick={() => onPreview(result)}
-          data-testid={`preview-${result.task_id}`}
-        >
-          {t('parser.preview')}
-        </Button>,
-        <Button
-          key="download"
-          type="text"
-          icon={<DownloadOutlined />}
-          loading={downloading}
-          onClick={handleDownload}
-          data-testid={`download-${result.task_id}`}
-        >
-          {t('parser.download')}
-        </Button>,
-      ]}
+      actions={actions}
     >
       <Card.Meta
         title={
