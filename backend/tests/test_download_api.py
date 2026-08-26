@@ -11,7 +11,7 @@ Covers the wire contract:
   download → ``400`` ``3001``; malformed id → ``400`` generic.
 * ``GET /api/download/file/{download_id}?token=...`` — serves the raw bytes
   with a Content-Disposition header for a completed download; missing/invalid/
-  expired/reused token → ``401`` ``5003``; not completed → ``400`` ``5002``;
+  expired/mis-bound token → ``401`` ``5003`` (reuse within the 5-minute window is allowed — playback needs repeated/range requests); not completed → ``400`` ``5002``;
   expired task → ``410`` ``5004``; missing bubble file → ``404`` ``5001``.
 """
 
@@ -379,15 +379,18 @@ class TestFileApi:
         assert response.status_code == 401
         assert response.json()["code"] == CODE_FILE_TOKEN_INVALID
 
-    def test_file_reused_token_returns_5003(self, client, engine, app, storage):
+    def test_file_reused_token_serves_again_within_expiry(self, client, engine, app, storage):
+        # Playback compatibility: the token is short-lived (5 min), NOT
+        # single-use — a media player's repeated/range requests must all serve.
         task_id = seed_parse_task(engine)
         download_id = seed_completed_with_file(engine, task_id=task_id, storage=storage)
         token = app.state.download_service.issue_download_token(download_id).token
         first = client.get(self._file_url(download_id, token))
         assert first.status_code == 200
         second = client.get(self._file_url(download_id, token))
-        assert second.status_code == 401
-        assert second.json()["code"] == CODE_FILE_TOKEN_INVALID
+        assert second.status_code == 200
+        third = client.get(self._file_url(download_id, token))
+        assert third.status_code == 200
 
     def test_file_not_completed_returns_5002(self, client, engine, env):
         settings = env[0]

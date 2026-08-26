@@ -10,13 +10,14 @@ Covers :class:`app.application.download_service.DownloadService`:
   block; blank selections → generic 400.
 * ``get_progress`` — a snapshot with ``remaining_time`` computed from speed
   while downloading; unknown download → ``3001``.
-* ``get_file`` — token rules: missing/invalid/expired/reused/mis-targeted
-  token → ``5003`` (401); single-use enforced atomically via ``token_id``
+* ``get_file`` — token rules: missing/invalid/expired/mis-targeted
+  token → ``5003`` (401); the token is short-lived (5 minutes), NOT
+  single-use — repeated/range playback requests all serve until expiry.
   (same token twice → 5003, a fresh token still works); status rules: not
   completed → ``5002``, expired → ``5004`` (410); the bubble file must exist
   inside the bubble root (missing/absent path → ``5001`` (404), traversal
   attempt → ``5001``).
-* ``issue_download_token`` — mints a 5-minute one-time token for a completed
+* ``issue_download_token`` — mints a 5-minute short-lived token for a completed
   download; unknown → ``3001``; not completed → ``5002``.
 """
 
@@ -449,20 +450,20 @@ class TestGetFile:
         exc = api_error(excinfo.value)
         assert exc.code == CODE_FILE_TOKEN_INVALID
 
-    def test_token_single_use_first_ok_second_5003(self, service, engine, storage):
+    def test_token_is_short_lived_not_single_use(self, service, engine, storage):
+        # Playback compatibility: a media player issues multiple requests per
+        # session (initial load + Range/seek + HEAD probes), so a valid token
+        # must serve the file repeatedly until its 5-minute expiry.
         task_id = seed_parse_task(engine)
         download_id = seed_completed_with_file(engine, storage, task_id=task_id)
         token = service.issue_download_token(download_id).token
         assert service.get_file(download_id, token).path.is_file()
-        with pytest.raises(ApiError) as excinfo:
-            service.get_file(download_id, token)
-        exc = api_error(excinfo.value)
-        assert exc.http_status == HTTP_401_UNAUTHORIZED
-        assert exc.code == CODE_FILE_TOKEN_INVALID
+        assert service.get_file(download_id, token).path.is_file()  # reuse OK
+        assert service.get_file(download_id, token).path.is_file()
 
     def test_fresh_token_after_use_still_works(self, service, engine, storage):
-        # Single-use is per token issuance (token_id), not per download: a
-        # fresh one-time token is a new link and must still serve the file.
+        # The token is bound per download; a fresh issuance is always a valid
+        # new link even while an older one is still within its window.
         task_id = seed_parse_task(engine)
         download_id = seed_completed_with_file(engine, storage, task_id=task_id)
         first = service.issue_download_token(download_id).token
@@ -470,33 +471,27 @@ class TestGetFile:
         second = service.issue_download_token(download_id).token
         assert service.get_file(download_id, second).path.is_file()
 
-    def test_concurrent_same_token_serves_exactly_once(self, service, engine, storage):
-        # Two simultaneous get_file calls with the SAME token: the atomic
-        # claim must let exactly one serve and reject the other with 5003
-        # (SQLite serializes the writes; only the first UPDATE matches).
+    def test_concurrent_requests_with_same_token_all_serve(self, service, engine, storage):
+        # No atomic single-use claim anymore: concurrent playback requests
+        # (e.g. a video element issuing several Range requests at once) all
+        # serve as long as the token is valid and correctly bound.
         task_id = seed_parse_task(engine)
         download_id = seed_completed_with_file(engine, storage, task_id=task_id)
         token = service.issue_download_token(download_id).token
         barrier = threading.Barrier(2)
         served: list[bool] = []
-        rejected: list[int] = []
 
         def attempt() -> None:
             barrier.wait()
-            try:
-                service.get_file(download_id, token)
-                served.append(True)
-            except ApiError as exc:
-                assert exc.code == CODE_FILE_TOKEN_INVALID
-                rejected.append(exc.code)
+            assert service.get_file(download_id, token).path.is_file()
+            served.append(True)
 
         threads = [threading.Thread(target=attempt) for _ in range(2)]
         for thread in threads:
             thread.start()
         for thread in threads:
             thread.join()
-        assert len(served) == 1
-        assert len(rejected) == 1
+        assert len(served) == 2
 
     def test_missing_bubble_file_raises_5001(self, service, engine, storage):
         task_id = seed_parse_task(engine)

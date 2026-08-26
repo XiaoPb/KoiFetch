@@ -1,7 +1,9 @@
 import { useState } from 'react';
 import { Button, Card, Image, Select, Space, Tag, Typography } from 'antd';
 import { AudioOutlined, DownloadOutlined, EyeOutlined, PictureOutlined, VideoCameraOutlined } from '@ant-design/icons';
+import ReactPlayer from 'react-player';
 import { useTranslation } from '../../services/i18n';
+import { useDownloadsStore } from '../../stores/downloadsStore';
 import type { ParseResult } from '../../types/api';
 
 // Tiny inline SVG placeholder shown when a cover fails to load or is absent.
@@ -50,9 +52,22 @@ export function ResultCard({ result, downloading, onPreview, onDownload }: Resul
   const [quality, setQuality] = useState<string | null>(result.available_qualities[0] ?? null);
   const [bitrate, setBitrate] = useState<string | null>(result.available_bitrates[0] ?? null);
 
+  // A completed download's still-valid file link for this task. With the
+  // auto-download after parse, a video card swaps its cover for an inline
+  // player as soon as the file lands — playback right on the main page.
+  const completedUrl = useDownloadsStore((state) => {
+    const item = state.items.find(
+      (i) => i.task_id === result.task_id && i.status === 'completed' && i.download_url != null,
+    );
+    if (!item) return null;
+    if (item.token_expire_at && Date.parse(item.token_expire_at) <= Date.now()) return null;
+    return item.download_url;
+  });
+
   const hasQuality = result.available_qualities.length > 0;
   const hasBitrate = result.available_bitrates.length > 0;
   const sizeText = result.file_size_mb != null ? `${result.file_size_mb} MB` : '—';
+  const showPlayer = result.type === 'video' && completedUrl != null;
 
   const handleDownload = () => {
     // Music uses the bitrate picker, video the quality picker; both map to the
@@ -68,7 +83,14 @@ export function ResultCard({ result, downloading, onPreview, onDownload }: Resul
       data-testid={`result-card-${result.task_id}`}
       cover={
         <div className="result-card-cover">
-          {result.cover ? (
+          {showPlayer ? (
+            <div
+              style={{ aspectRatio: '16 / 9', width: '100%', background: '#000' }}
+              data-testid={`card-player-${result.task_id}`}
+            >
+              <ReactPlayer src={completedUrl ?? undefined} controls width="100%" height="100%" />
+            </div>
+          ) : result.cover ? (
             <Image src={result.cover} alt={result.title} preview={false} fallback={COVER_FALLBACK} />
           ) : (
             <div className="result-card-cover-empty" aria-label={result.title} />
@@ -80,7 +102,7 @@ export function ResultCard({ result, downloading, onPreview, onDownload }: Resul
           >
             {TYPE_BADGE[result.type] ?? null}
           </div>
-          {result.duration && (
+          {!showPlayer && result.duration && (
             <Tag className="result-card-duration" data-testid={`duration-${result.task_id}`}>
               {result.duration}
             </Tag>

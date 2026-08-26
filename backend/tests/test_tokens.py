@@ -166,11 +166,11 @@ class TestJwtOneTimeTokenProvider:
         assert first.token_id != second.token_id
         assert first.download_id == second.download_id == DOWNLOAD_ID
 
-    def test_validate_is_stateless_single_use_is_caller_concern(self):
+    def test_validate_is_stateless_reuse_is_caller_concern(self):
         # Documented design decision: the adapter never marks a token used;
         # validate() may be called repeatedly and returns the same claims.
-        # Task 9 enforces single-use by recording the returned token_id
-        # (atomically) before serving the file.
+        # The file endpoint treats the token as SHORT-LIVED (5 minutes), not
+        # single-use, so playback's repeated requests all validate.
         provider = JwtOneTimeTokenProvider(SECRET)
         token = provider.issue(download_id=DOWNLOAD_ID)
         first = provider.validate(token)

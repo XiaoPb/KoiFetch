@@ -357,6 +357,30 @@ describe('ParserWorkspace', () => {
     expect(downloadApi.submit).not.toHaveBeenCalled();
   });
 
+  it('plays a completed video download inline on the result card', async () => {
+    // 主页面直接播放: a completed download with a valid link swaps the cover
+    // for an inline react-player, no modal needed.
+    (parseApi.parse as Mock).mockResolvedValue({ results: [videoResult], failed: [] });
+    useDownloadsStore.setState({
+      items: [
+        {
+          download_id: 'd1', task_id: 't1', status: 'completed', title: 'Video A',
+          format: 'mp4', quality: '1080p', created_at: '2026-01-01T00:00:00Z',
+          progress: 1, speed: null, downloaded_bytes: 100, total_bytes: 100,
+          remaining_time: null, error_code: null, error_message: null,
+          download_url: '/api/download/file/d1?token=t',
+          token_expire_at: '2099-01-01T00:00:00Z',
+        },
+      ],
+    });
+    renderWithProviders(<ParserWorkspace />);
+    await submitUrl('https://example.com/v/a');
+
+    expect(await screen.findByTestId('card-player-t1')).toBeInTheDocument();
+    // The cover/duration badge are replaced while the player is active.
+    expect(screen.queryByTestId('duration-t1')).not.toBeInTheDocument();
+  });
+
   it('toasts the backend message when a download submit fails', async () => {
     (parseApi.parse as Mock).mockResolvedValue({ results: [videoResult], failed: [] });
     (downloadApi.submit as Mock).mockRejectedValue(new ApiError('任务不存在 / Task not found', 3001, 400));

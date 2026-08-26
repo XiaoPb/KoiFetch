@@ -33,11 +33,12 @@ re-derives the expected bytes from the response values and verifies the served
 file byte-for-byte (sha256 of the served bytes), plus the pond copy after the
 NAS save.
 
-**Token choice (documented).** The one-time download token is taken from the
+**Token choice (documented).** The short-lived download token is taken from the
 real WebSocket ``complete`` event (snapshot-on-connect for the completed
 download) — the exact ``download_url`` a frontend client would click — and then
-used against ``GET /api/download/file/{id}?token=...``; the file endpoint's
-single-use rule is verified by replaying the same token. The worker's
+used against ``GET /api/download/file/{id}?token=...``; the token is verified
+short-lived (5 minutes), NOT single-use, by replaying the same token (playback
+needs repeated/range requests). The worker's
 ``complete`` event (also carrying ``download_url`` + ``token_expire_at``) is
 asserted from the hub capture and its *own* minted token is fetched too,
 closing the last hop of the worker-minted link, while the worker's per-chunk
@@ -237,9 +238,10 @@ class TestEndToEndSmoke:
 
             # -- 8. retrieve the tokenized file via the real WS link ---------
             # The WebSocket snapshot for a completed download mints a fresh
-            # one-time link — the exact event a frontend client receives — so
-            # the smoke uses its token for the file endpoint, then proves the
-            # single-use rule by replaying the same token.
+            # link — the exact event a frontend client receives — so the smoke
+            # uses its token for the file endpoint, then replays the same
+            # token: the token is SHORT-LIVED (5 minutes), not single-use, so
+            # playback's repeated/range requests all keep serving.
             with client.websocket_connect(f"/ws/download/{download_id}") as ws:
                 ws_event = ws.receive_json()
             assert ws_event["type"] == "complete"
@@ -255,8 +257,8 @@ class TestEndToEndSmoke:
             assert "content-disposition" in file_response.headers
 
             replay = client.get(f"/api/download/file/{download_id}?token={token}")
-            assert replay.status_code == 401
-            assert replay.json()["code"] == CODE_FILE_TOKEN_INVALID
+            assert replay.status_code == 200
+            assert replay.content == expected
 
             # The token the WORKER minted into its complete event also serves
             # the file (the last hop of the worker-minted link, distinct from

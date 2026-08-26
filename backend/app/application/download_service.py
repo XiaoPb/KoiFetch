@@ -3,7 +3,7 @@
 Sits in the application layer between the API transport (``app.api.download``)
 and persistence/adapters. The worker (Task 11) executes downloads; this service
 is the API contract side: it creates pending rows, serves progress snapshots,
-and hands a verified bubble file to the file endpoint behind a one-time token.
+and hands a verified bubble file to the file endpoint behind a short-lived token.
 
 Design decisions (stable contract for Tasks 10-12):
 
@@ -20,23 +20,26 @@ Design decisions (stable contract for Tasks 10-12):
   constraint exists by design); SQLite WAL serializes writes, so a duplicate
   pair can only slip through an exact same-instant race — documented, accepted
   for v1, and worth a partial unique index if it ever matters.
-* **One-time token flow.** The client obtains a token from the WebSocket
-  ``complete`` event (``download_url``) or by calling ``issue_download_token``
-  — never from the file endpoint itself, which *requires* a token. ``get_file``
-  validates it (``TokenError`` subclasses all map to the single PRD code
-  ``5003``), checks the token targets this download, then records the token's
-  ``tid`` claim on the row **atomically** (a conditional ``UPDATE`` that only
-  matches when the row holds no token_id or a *different* one), so reusing the
-  same token always fails while a fresh issuance is a valid new link. Single
-  use is therefore per *issuance*.
+* **Short-lived (not single-use) file token.** The client obtains a token
+  from the WebSocket ``complete`` event (``download_url``) or by calling
+  ``issue_download_token`` — never from the file endpoint itself, which
+  *requires* a token. ``get_file`` validates it (``TokenError`` subclasses all
+  map to the single PRD code ``5003``) and checks the token targets this
+  download. The token is deliberately NOT consumed on first use: media
+  playback issues multiple requests per session (initial load plus
+  Range/seek requests and HEAD probes), so single-use would 401 the rest of a
+  playing video. A valid, unexpired, correctly-bound token serves the file
+  any number of times until its 5-minute expiry; expiry is the security
+  boundary. The ``tid``/``token_expires_at`` columns remain recorded on
+  issuance (the WS complete event) for audit, but no longer gate serving.
 * **Error precedence in ``get_file`` (documented).** a blank/missing token
   short-circuits to ``5003`` (401) *before* any task/status lookup (a request
   with no credential reveals nothing about the task); otherwise: task missing →
   ``3001``; expired task → ``5004`` (410); not completed → ``5002`` (400); token
   rules → ``5003`` (401); bubble file missing/escaped → ``5001`` (404). Status
   rules run before token rules (they are about the task, not the credential)
-  and the file is verified *before* the token is consumed, so a failed attempt
-  never burns the link.
+  and the file is verified before serving, so a failed attempt (e.g. file
+  swept by cleanup) never looks like a token problem.
 * **Containment at resolution and at I/O.** The stored ``bubble_path`` is
   re-derived against the live bubble root via
   :func:`app.application.stored_paths.resolve_bubble_path` (traversal/corrupt
@@ -59,7 +62,7 @@ from datetime import datetime
 from pathlib import Path
 
 from pydantic import ValidationError
-from sqlalchemy import Engine, or_, select, update
+from sqlalchemy import Engine, select
 from sqlalchemy.orm import selectinload
 from starlette.status import (
     HTTP_400_BAD_REQUEST,
@@ -129,7 +132,7 @@ class DownloadedFile:
 
 @dataclass(frozen=True)
 class IssuedDownloadToken:
-    """A freshly minted one-time download token plus its expiry.
+    """A freshly minted short-lived download token plus its expiry.
 
     Returned by :meth:`DownloadService.issue_download_token` so the transport
     can surface both the token and the link's 5-minute validity window (the WS
@@ -276,13 +279,14 @@ class DownloadService:
             return _result_from_row(row, media_type=row.parse_task.media_type)
 
     def get_file(self, download_id: str, token: str | None) -> DownloadedFile:
-        """Validate the one-time token and resolve the completed bubble file.
+        """Validate the short-lived token and resolve the completed bubble file.
 
         Error precedence (see module docstring): a blank token short-circuits
         to ``5003`` (401) ahead of every lookup; otherwise ``3001``, ``5004``
-        (410), ``5002`` (400), ``5003`` (401) for any token failure including
-        reuse, ``5001`` (404) for a missing/escaped bubble file. The token is
-        consumed atomically only after every other check passed.
+        (410), ``5002`` (400), ``5003`` (401) for an invalid/expired/mis-bound
+        token, ``5001`` (404) for a missing/escaped bubble file. A valid token
+        serves the file repeatedly until its 5-minute expiry (playback needs
+        multiple requests — Range/seek and HEAD probes).
         """
         if not token or not token.strip():
             raise ApiError(
@@ -346,41 +350,16 @@ class DownloadService:
                     HTTP_404_NOT_FOUND, CODE_FILE_NOT_FOUND, _MESSAGE_FILE_NOT_FOUND
                 )
 
-            # Single use, atomically: the UPDATE only matches when the row is
-            # still COMPLETED and holds no token_id or a *different* one, so
-            # the same token can never serve twice (reuse → rowcount 0 → 5003)
-            # while a fresh issuance remains a valid new link. Concurrent
-            # same-token requests serialize on SQLite's write lock: only the
-            # first matches. The status guard closes the TOCTOU where the task
-            # is swept to ``expired`` between our check above and the claim.
-            result = session.execute(
-                update(DownloadTask)
-                .where(
-                    DownloadTask.download_id == download_id,
-                    DownloadTask.status == DownloadStatus.COMPLETED,
-                    or_(
-                        DownloadTask.token_id.is_(None),
-                        DownloadTask.token_id != claims.token_id,
-                    ),
-                )
-                .values(token_id=claims.token_id, token_expires_at=claims.expires_at)
-            )
-            if result.rowcount == 0:
-                # Either this token was already used, or the task left
-                # COMPLETED (cleanup swept it to expired) mid-flight. Re-read
-                # the row to report the correct code; best-effort — under an
-                # in-flight write race the snapshot may still show COMPLETED,
-                # in which case reuse (5003) is the honest answer.
-                session.refresh(row)
-                if row.status == DownloadStatus.EXPIRED:
-                    raise ApiError(
-                        HTTP_410_GONE, CODE_FILE_EXPIRED, _MESSAGE_FILE_EXPIRED
-                    )
-                raise ApiError(
-                    HTTP_401_UNAUTHORIZED,
-                    CODE_FILE_TOKEN_INVALID,
-                    _MESSAGE_FILE_TOKEN_INVALID,
-                )
+            # The token is SHORT-LIVED (5 minutes), not single-use: a media
+            # player issues multiple requests for one playback session (the
+            # initial load plus Range/seek requests, HEAD probes), so burning
+            # the token on the first request would 401 the rest. A valid,
+            # unexpired token bound to this download therefore serves the file
+            # any number of times until it expires; expiry/invalidation is the
+            # security boundary. (The task was already verified COMPLETED and
+            # the bubble file exists above — re-reading the row here is not
+            # needed; the status guard at the top already closed the TOCTOU
+            # against cleanup sweeping it mid-request.)
             return DownloadedFile(
                 path=path,
                 media_type=media_type,
@@ -388,11 +367,12 @@ class DownloadService:
             )
 
     def issue_download_token(self, download_id: str) -> IssuedDownloadToken:
-        """Mint a 5-minute one-time token for a completed download.
+        """Mint a 5-minute file token for a completed download.
 
-        This is how clients obtain a download link (the WS ``complete`` event
-        calls it); ``3001`` (400) unknown download, ``5002`` (400) not yet
-        completed. Single use is enforced later, at :meth:`get_file`.
+        This is how clients obtain a file/playback link (the WS ``complete``
+        event calls it); ``3001`` (400) unknown download, ``5002`` (400) not
+        yet completed. The token stays valid until expiry — see
+        :meth:`get_file` (short-lived, not single-use, so playback works).
         """
         with session_scope(self._engine) as session:
             row = session.get(DownloadTask, download_id)

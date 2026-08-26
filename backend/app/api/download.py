@@ -10,7 +10,7 @@ endpoints plus one WebSocket:
 * ``GET /api/download/progress/{download_id}`` — the current snapshot
   (status/progress/speed/bytes/remaining_time); unknown id → ``3001``.
 * ``GET /api/download/file/{download_id}?token=...`` — serve the completed
-  bubble file behind a five-minute one-time token via
+  bubble file behind a five-minute short-lived token via
   :class:`fastapi.responses.FileResponse` (raw bytes + Content-Disposition;
   error envelopes only on failure). A missing ``token`` is itself a ``5003``.
 * ``WS /ws/download/{download_id}`` — on connect, one structured snapshot
@@ -295,7 +295,7 @@ def download_file(
     service: Annotated[DownloadService, Depends(get_download_service)],
     token: str | None = Query(default=None),
 ) -> FileResponse:
-    """Serve a completed bubble file behind a five-minute one-time token.
+    """Serve a completed bubble file behind a five-minute short-lived token.
 
     Success: the raw file bytes with a ``Content-Disposition`` attachment
     header (extension-derived media type). Failure is always an envelope:

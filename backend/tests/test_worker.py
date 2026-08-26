@@ -9,7 +9,7 @@ Covers :mod:`app.workers.worker` and :mod:`app.workers.main`:
 * ``run_once`` — executes claimed tasks through the downloader adapter, writing
   the bubble file, persisting progress/speed/bytes during the download,
   recording completion (status/progress/bubble_path/completed_at) and issuing a
-  one-time token in the WS ``complete`` event. A DB outage during progress
+  short-lived token in the WS ``complete`` event. A DB outage during progress
   writes must not abort the transfer.
 * Main-loop wiring — ``build_worker_deps`` pipes ``download_speed_limit`` into
   the stub downloader; ``run_forever`` polls until the stop event fires and
@@ -238,7 +238,7 @@ class TestRunOnce:
         assert url.startswith(f"/api/download/file/{download_id}?token=")
         assert complete[0]["data"]["token_expire_at"]
 
-    def test_complete_event_token_serves_the_file_once(self, engine, storage, token_provider):
+    def test_complete_event_token_serves_repeatedly(self, engine, storage, token_provider):
         task_id = seed_parse_task(engine, title="示例视频")
         download_id = seed_download(engine, task_id=task_id)
         hub = FakeHub()
@@ -258,9 +258,11 @@ class TestRunOnce:
         assert downloaded.path.read_bytes() == expected_stub_bytes(
             download_id, "示例视频", STUB_TOTAL
         )
-        with pytest.raises(Exception) as excinfo:
-            service.get_file(download_id, token)  # single use
-        assert excinfo.value.code == CODE_FILE_TOKEN_INVALID
+        # Short-lived, not single-use: playback issues repeated requests.
+        again = service.get_file(download_id, token)
+        assert again.path.read_bytes() == expected_stub_bytes(
+            download_id, "示例视频", STUB_TOTAL
+        )
 
     def test_persists_progress_midflight(self, engine, storage, token_provider):
         task_id = seed_parse_task(engine)
