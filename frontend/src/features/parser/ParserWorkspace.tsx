@@ -279,8 +279,8 @@ export function ParserWorkspace(): JSX.Element {
                   key={result.task_id}
                   xs={24}
                   sm={12}
-                  md={8}
-                  lg={6}
+                  md={12}
+                  lg={8}
                   className="parser-grid-item"
                   style={{ animationDelay: `${Math.min(index, 12) * 45}ms` }}
                 >

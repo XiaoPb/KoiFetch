@@ -209,7 +209,12 @@ body {
 
 .result-card-cover {
   position: relative;
-  height: 150px;
+  width: 100%;
+  /* 16:9 media container: the inline xgplayer player is 16:9, so a fixed
+     height (150px) clipped it on wider cards — the video/controls got
+     covered (reported black-video-with-audio). Aspect-ratio makes the cover
+     exactly match the player at every card width. */
+  aspect-ratio: 16 / 9;
   overflow: hidden;
   background: #f0f0f0;
 }
@@ -275,7 +280,7 @@ body {
 
 .image-carousel {
   position: relative;
-  height: 150px;
+  height: 100%;
   background: #f0f0f0;
 }
 
@@ -378,10 +383,6 @@ body {
 
   .status-indicator {
     font-size: 12px;
-  }
-
-  .result-card-cover {
-    height: 110px;
   }
 }
 
