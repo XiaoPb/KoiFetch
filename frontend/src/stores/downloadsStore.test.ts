@@ -368,7 +368,7 @@ describe('downloadsStore', () => {
     expect(useDownloadsStore.getState().items[0].progress).toBe(0.5);
   });
 
-  it('covers the connecting window with polling and stops once the socket opens', async () => {
+  it('polls during the connecting window and KEEPS polling once the socket opens', async () => {
     vi.useFakeTimers();
     (downloadApi.submit as Mock).mockResolvedValue(submitData);
     (downloadApi.getProgress as Mock).mockResolvedValue({
@@ -378,19 +378,22 @@ describe('downloadsStore', () => {
 
     await useDownloadsStore.getState().submit('t1');
     const client = lastClient();
-    // Handshake in progress — hasLiveSocket only counts OPEN, so the poll
-    // loop must cover this window (a black-holed socket otherwise starves
-    // the item; the client abandons it after connectTimeoutMs).
+    // Handshake in progress — polling must cover this window (a black-holed
+    // socket otherwise starves the item; the client abandons it after
+    // connectTimeoutMs).
     expect(client.status).toBe('connecting');
 
     await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
     expect(downloadApi.getProgress).toHaveBeenCalledWith('d1');
 
-    // Socket opens → polling stops for this item.
+    // Two-process deployment: the worker's events never reach the API's WS
+    // hub, so the socket can be OPEN but silent. Polling must NOT stop on an
+    // open socket — that would freeze the item at its connect snapshot.
     client.status = 'open';
     const callCount = (downloadApi.getProgress as Mock).mock.calls.length;
     await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 3);
-    expect(downloadApi.getProgress).toHaveBeenCalledTimes(callCount);
+    expect(downloadApi.getProgress).toHaveBeenCalledTimes(callCount + 3);
+    expect(downloadApi.getProgress).toHaveBeenCalledWith('d1');
   });
 
   it('stops polling once a terminal state is reached via polling (no link from polling)', async () => {

@@ -62,6 +62,8 @@ const zh = {
   'preview.bitrate': '码率',
   'preview.streams': '可用流',
   'preview.noStreams': '暂无流信息',
+  'preview.videoHint': '下载完成后可在此播放',
+  'preview.playing': '已下载文件预览',
 
   // Download center (Task 15)
   'downloads.empty': '暂无下载任务',
@@ -77,6 +79,7 @@ const zh = {
   'downloads.status.expired': '已过期',
   'downloads.unknownTitle': '未命名任务',
   'downloads.getFile': '获取文件',
+  'downloads.play': '播放',
   'downloads.refreshLink': '刷新链接',
   'downloads.retry': '重试',
   'downloads.retryStarted': '已重新提交下载任务',
@@ -198,6 +201,8 @@ const en: Record<TranslationKey, string> = {
   'preview.bitrate': 'Bitrate',
   'preview.streams': 'Streams',
   'preview.noStreams': 'No stream info',
+  'preview.videoHint': 'Play here after the download completes',
+  'preview.playing': 'Downloaded file preview',
 
   // Download center (Task 15)
   'downloads.empty': 'No download tasks yet',
@@ -213,6 +218,7 @@ const en: Record<TranslationKey, string> = {
   'downloads.status.expired': 'Expired',
   'downloads.unknownTitle': 'Untitled task',
   'downloads.getFile': 'Get file',
+  'downloads.play': 'Play',
   'downloads.refreshLink': 'Refresh link',
   'downloads.retry': 'Retry',
   'downloads.retryStarted': 'Download resubmitted',

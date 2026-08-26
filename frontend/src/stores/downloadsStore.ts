@@ -18,15 +18,21 @@ import type {
  *
  * Reconciliation policy (documented):
  *
- * - **WS primary.** Every new download opens one `DownloadWsClient` to
- *   `/ws/download/{id}`. `progress` events update the item in place; the
- *   terminal events (`complete` / `error`) capture the final state and close
- *   the socket (the client itself also closes on terminal events).
- * - **Polling fallback.** A single 3s interval polls `getProgress` for every
- *   non-terminal item that has NO live socket (server down, socket dropped,
- *   environment without WebSocket, or a missed event). WS is primary, so the
- *   poll loop skips items with a connecting/open socket and stops entirely
- *   once no item needs it. Polling can never mint a file link — see below.
+ * - **WS primary, polling reconciles continuously.** Every new download opens
+ *   one `DownloadWsClient` to `/ws/download/{id}`. `progress` events update
+ *   the item in place; the terminal events (`complete` / `error`) capture the
+ *   final state and close the socket (the client itself also closes on
+ *   terminal events).
+ * - **Polling reconciles ALL active items, socket or not.** A 3s interval
+ *   polls `getProgress` for every pending/downloading item regardless of
+ *   socket state. WS events (when they arrive) update faster; HTTP polling is
+ *   what keeps the UI moving when the worker runs in a SEPARATE process whose
+ *   events never reach the API's WS hub — there the socket is OPEN but
+ *   silent, and socket-suppressed polling would freeze the item at its
+ *   connect-time snapshot (exactly the two-process deployment shape). Poll
+ *   snapshots are idempotent and terminal-guarded, so the overlap with live
+ *   WS events is harmless. The loop stops entirely once no active item needs
+ *   it. Polling can never mint a file link — see below.
  * - **Terminal states stop everything.** Once an item reaches
  *   completed/failed/expired, its socket is released and it stops being
  *   polled; the loop self-terminates when no active item remains.
@@ -201,19 +207,14 @@ function isTerminalStatus(status: DownloadStatus): boolean {
 }
 
 /**
- * A socket counts as "live" only while OPEN. A CONNECTING socket delivers no
- * events yet, so polling must cover that window (otherwise a black-holed
- * handshake — which the client abandons after `connectTimeoutMs` — would
- * starve the item of updates). Snapshots are idempotent, so the duplicate
- * poll during the brief normal connecting phase is harmless.
+ * A socket counts as "live" only while OPEN — but polling no longer consults
+ * it: in a two-process deployment the worker's events never reach the API's
+ * WS hub, so an OPEN socket can be silent and WS-suppressed polling would
+ * freeze the item at its connect snapshot. HTTP polling therefore reconciles
+ * every active item regardless of socket state (idempotent, terminal-guarded).
  */
-function hasLiveSocket(downloadId: string): boolean {
-  const client = wsClients.get(downloadId);
-  return client !== undefined && client.status === 'open';
-}
-
 function needsPolling(items: DownloadItem[]): boolean {
-  return items.some((item) => isActiveStatus(item.status) && !hasLiveSocket(item.download_id));
+  return items.some((item) => isActiveStatus(item.status));
 }
 
 function maybeStartPolling(): void {
@@ -239,9 +240,7 @@ function maybeStopPolling(): void {
 
 async function pollTick(): Promise<void> {
   const state = useDownloadsStore.getState();
-  const targets = state.items.filter(
-    (item) => isActiveStatus(item.status) && !hasLiveSocket(item.download_id),
-  );
+  const targets = state.items.filter((item) => isActiveStatus(item.status));
   if (targets.length === 0) {
     maybeStopPolling();
     return;

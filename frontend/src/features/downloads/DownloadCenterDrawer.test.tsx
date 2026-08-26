@@ -200,6 +200,26 @@ describe('DownloadCenterDrawer', () => {
     expect(open).toHaveBeenCalledWith('/api/download/file/d1?token=t', '_blank', 'noopener');
   });
 
+  it('plays a completed video in the player modal', async () => {
+    const user = userEvent.setup();
+    useDownloadsStore.setState({
+      items: [
+        seedItem({
+          download_id: 'd1', task_id: 't1', status: 'completed', title: 'Video A',
+          download_url: '/api/download/file/d1?token=t', token_expire_at: FUTURE,
+        }),
+      ],
+    });
+    renderDrawer();
+
+    await user.click(screen.getByTestId('play-d1'));
+    expect(screen.getByTestId('video-player-modal')).toBeInTheDocument();
+    expect(screen.getByTestId('video-player')).toHaveAttribute(
+      'src',
+      '/api/download/file/d1?token=t',
+    );
+  });
+
   it('shows an honest missing-link state with refresh for a completed item without a captured URL', async () => {
     useDownloadsStore.setState({
       items: [

@@ -35,6 +35,20 @@ export function PreviewModal(): JSX.Element {
 
   const taskId = activeTask?.task_id ?? null;
 
+  // A completed download's tokenized file URL for this task (null until a
+  // download completes AND its 5-minute link is still valid). Session-local:
+  // like the download drawer, the store has no server-side list, so after an
+  // F5 the link is unknown until a new download completes here.
+  const completedUrl = useDownloadsStore((state) => {
+    if (!taskId) return null;
+    const item = state.items.find(
+      (i) => i.task_id === taskId && i.status === 'completed' && i.download_url != null,
+    );
+    if (!item) return null;
+    if (item.token_expire_at && Date.parse(item.token_expire_at) <= Date.now()) return null;
+    return item.download_url;
+  });
+
   const [data, setData] = useState<PreviewData | null>(null);
   const [loadStatus, setLoadStatus] = useState<LoadStatus>('loading');
   const [error, setError] = useState('');
@@ -139,15 +153,27 @@ export function PreviewModal(): JSX.Element {
             </div>
           )}
 
-          {(data.preview_type === 'video' || data.preview_type === 'music') && (
+          {data.preview_type === 'video' && completedUrl ? (
+            <div style={{ marginBottom: 16 }} data-testid="preview-video">
+              <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 8 }}>
+                {t('preview.playing')}
+              </Typography.Text>
+              <video
+                controls
+                src={completedUrl}
+                style={{ width: '100%', maxHeight: 420 }}
+                data-testid="preview-video-player"
+              />
+            </div>
+          ) : (data.preview_type === 'video' || data.preview_type === 'music') ? (
             <Alert
               type="info"
               showIcon
-              message={t('preview.metadataOnly')}
+              message={data.preview_type === 'video' ? t('preview.videoHint') : t('preview.metadataOnly')}
               style={{ marginBottom: 16 }}
               data-testid="preview-metadata-note"
             />
-          )}
+          ) : null}
 
           <Descriptions column={1} size="small" bordered>
             <Descriptions.Item label={t('preview.platform')}>{data.platform}</Descriptions.Item>

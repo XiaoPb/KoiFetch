@@ -174,6 +174,42 @@ describe('PreviewModal', () => {
     expect(screen.queryByTestId('preview-bitrate-select')).not.toBeInTheDocument();
   });
 
+  it('plays a completed download inline for a video preview', async () => {
+    (previewApi.getPreview as Mock).mockResolvedValue(videoPreview);
+    useDownloadsStore.setState({
+      items: [
+        {
+          download_id: 'd1', task_id: 't1', status: 'completed', title: 'Video A',
+          format: 'mp4', quality: '1080p', created_at: '2026-01-01T00:00:00Z',
+          progress: 1, speed: null, downloaded_bytes: null, total_bytes: null,
+          remaining_time: null, error_code: null, error_message: null,
+          download_url: '/api/download/file/d1?token=t',
+          token_expire_at: '2099-01-01T00:00:00Z',
+        },
+      ],
+    });
+    usePreviewStore.setState({ activeTask: videoTask });
+    renderWithProviders(<PreviewModal />);
+
+    expect(await screen.findByTestId('preview-content')).toBeInTheDocument();
+    expect(screen.getByTestId('preview-video-player')).toHaveAttribute(
+      'src',
+      '/api/download/file/d1?token=t',
+    );
+    // Real playback replaces the metadata-only note.
+    expect(screen.queryByTestId('preview-metadata-note')).not.toBeInTheDocument();
+  });
+
+  it('shows the play-after-download hint for a video preview without a completed download', async () => {
+    (previewApi.getPreview as Mock).mockResolvedValue(videoPreview);
+    useDownloadsStore.setState({ items: [] });
+    usePreviewStore.setState({ activeTask: videoTask });
+    renderWithProviders(<PreviewModal />);
+
+    expect(await screen.findByTestId('preview-content')).toBeInTheDocument();
+    expect(screen.getByTestId('preview-metadata-note')).toHaveTextContent('下载完成后可在此播放');
+  });
+
   it('renders a music preview with the bitrate ladder', async () => {
     (previewApi.getPreview as Mock).mockResolvedValue(musicPreview);
     usePreviewStore.setState({ activeTask: musicTask });

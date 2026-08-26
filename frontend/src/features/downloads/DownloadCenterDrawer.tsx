@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { App, Button, Drawer, List, Progress, Space, Tabs, Tag, Tooltip, Typography } from 'antd';
-import { ReloadOutlined, StopOutlined } from '@ant-design/icons';
+import { PlayCircleOutlined, ReloadOutlined, StopOutlined } from '@ant-design/icons';
 import { useTranslation } from '../../services/i18n';
 import { downloadApi } from '../../services/api';
 import { getErrorMessage } from '../../services/apiClient';
 import { useDownloadsStore, type DownloadItem } from '../../stores/downloadsStore';
 import { formatBytes, formatSpeed, splitRemainingTime } from './format';
+import { VideoPlayerModal } from './VideoPlayerModal';
 
 export interface DownloadCenterDrawerProps {
   open: boolean;
@@ -42,6 +43,8 @@ export function DownloadCenterDrawer({ open, onClose }: DownloadCenterDrawerProp
   const refreshFileLink = useDownloadsStore((state) => state.refreshFileLink);
   const [tab, setTab] = useState<TabKey>('all');
   const [retrying, setRetrying] = useState<string | null>(null);
+  // The completed item currently playing in the video modal (null = closed).
+  const [playing, setPlaying] = useState<DownloadItem | null>(null);
   // Per-item [刷新链接] loading feedback: cleared when the fresh link (or a
   // terminal error) arrives, with a safety timeout for the no-socket case.
   const [refreshing, setRefreshing] = useState<Record<string, boolean>>({});
@@ -156,6 +159,15 @@ export function DownloadCenterDrawer({ open, onClose }: DownloadCenterDrawerProp
       const linkReady = item.download_url != null && !isLinkExpired(item);
       if (linkReady) {
         return [
+          <Button
+            key="play"
+            size="small"
+            icon={<PlayCircleOutlined />}
+            onClick={() => setPlaying(item)}
+            data-testid={`play-${item.download_id}`}
+          >
+            {t('downloads.play')}
+          </Button>,
           <Button
             key="file"
             type="primary"
@@ -295,6 +307,12 @@ export function DownloadCenterDrawer({ open, onClose }: DownloadCenterDrawerProp
           />
         </>
       )}
+      <VideoPlayerModal
+        open={playing !== null && playing.download_url != null && !isLinkExpired(playing)}
+        title={playing?.title ?? null}
+        src={playing?.download_url ?? ''}
+        onClose={() => setPlaying(null)}
+      />
     </Drawer>
   );
 }
