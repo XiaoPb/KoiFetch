@@ -41,7 +41,7 @@ import io
 import re
 import zipfile
 from dataclasses import dataclass
-from typing import Iterator
+from typing import Callable, Iterator
 
 import httpx
 from sqlalchemy import Engine
@@ -86,7 +86,7 @@ class MediaStream:
     content_type: str
     headers: dict[str, str]
     chunks: Iterator[bytes]
-    close: object
+    close: Callable[[], None]
 
 
 class PreviewService:
@@ -122,9 +122,9 @@ class PreviewService:
 
         Raises :class:`ApiError`: ``3001`` unknown task; ``400`` for a
         non-video task, a task with no ``video_url`` (stub-era rows), an HLS
-        upstream (playlist proxying is out of scope), or an upstream HTTP
-        failure. The returned :class:`MediaStream` yields raw bytes; the
-        caller owns ``close``.
+        upstream (playlist proxying is out of scope), or an upstream HTTP or
+        transport failure. The returned :class:`MediaStream` yields raw bytes;
+        the caller owns ``close``.
         """
         url = self._video_url(task_id)
         kwargs: dict = {"timeout": _STREAM_TIMEOUT, "follow_redirects": True}
@@ -149,7 +149,12 @@ class PreviewService:
             content_type = response.headers.get(
                 "content-type", "application/octet-stream"
             )
-            if "mpegurl" in content_type or url.split("?", 1)[0].endswith(".m3u8"):
+            # Lowercase a copy for HLS detection only; the original casing is
+            # kept for the passthrough Content-Type header.
+            if (
+                "mpegurl" in content_type.lower()
+                or url.split("?", 1)[0].lower().endswith(".m3u8")
+            ):
                 raise ApiError(
                     HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_HLS_UNSUPPORTED
                 )
@@ -168,6 +173,11 @@ class PreviewService:
         except ApiError:
             client.close()
             raise
+        except httpx.RequestError as exc:
+            client.close()
+            raise ApiError(
+                HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_UPSTREAM
+            ) from exc
 
     def _video_url(self, task_id: str) -> str:
         """The task's playable video URL, or a typed :class:`ApiError`."""

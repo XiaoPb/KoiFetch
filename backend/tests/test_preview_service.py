@@ -221,3 +221,55 @@ class TestVideoStreamProxy:
         with pytest.raises(Exception) as exc_info:
             service.stream_video(VIDEO_TASK_ID, range_header=None)
         assert getattr(exc_info.value, "code", None) == CODE_BAD_REQUEST
+
+    def test_stream_video_upstream_transport_error_raises_400(self, engine):
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectTimeout("boom", request=request)
+
+        service = PreviewService(engine=engine, transport=httpx.MockTransport(handler))
+        _seed_media_task(
+            engine,
+            task_id=VIDEO_TASK_ID,
+            metadata={"video_url": "https://cdn.example.com/v.mp4"},
+        )
+        with pytest.raises(Exception) as exc_info:
+            service.stream_video(VIDEO_TASK_ID, range_header=None)
+        assert getattr(exc_info.value, "code", None) == CODE_BAD_REQUEST
+
+    def test_stream_video_rejects_hls_case_variants(self, engine):
+        # Content-Type case variant: application/x-mpegURL.
+        def handler_mpegurl(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                headers={"content-type": "application/x-mpegURL"},
+                content=b"#EXTM3U\n",
+            )
+
+        service = PreviewService(engine=engine, transport=httpx.MockTransport(handler_mpegurl))
+        _seed_media_task(
+            engine,
+            task_id=VIDEO_TASK_ID,
+            metadata={"video_url": "https://cdn.example.com/playlist.m3u8"},
+        )
+        with pytest.raises(Exception) as exc_info:
+            service.stream_video(VIDEO_TASK_ID, range_header=None)
+        assert getattr(exc_info.value, "code", None) == CODE_BAD_REQUEST
+
+        # URL extension case variant: playlist.M3U8 with an opaque content type.
+        def handler_octet(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                headers={"content-type": "application/octet-stream"},
+                content=b"#EXTM3U\n",
+            )
+
+        service = PreviewService(engine=engine, transport=httpx.MockTransport(handler_octet))
+        task_id = make_task_id()
+        _seed_media_task(
+            engine,
+            task_id=task_id,
+            metadata={"video_url": "https://cdn.example.com/playlist.M3U8"},
+        )
+        with pytest.raises(Exception) as exc_info:
+            service.stream_video(task_id, range_header=None)
+        assert getattr(exc_info.value, "code", None) == CODE_BAD_REQUEST
