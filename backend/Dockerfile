@@ -44,8 +44,10 @@ WORKDIR /app
 # System timezone database so the TZ env var (Asia/Shanghai per PRD) is
 # effective for container-local time; slim images ship without /usr/share/zoneinfo.
 # (The PyPI `tzdata` package in requirements.txt already covers ZoneInfo lookups.)
+# `git` is required by pip for the git-installed parse-video-py dependency
+# (backend/requirements.txt) — without it the pip install step fails.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends tzdata \
+    && apt-get install -y --no-install-recommends tzdata git \
     && rm -rf /var/lib/apt/lists/*
 
 # Install dependencies first so dependency changes do not invalidate the app layer.
