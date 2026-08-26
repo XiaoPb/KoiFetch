@@ -1,18 +1,21 @@
-"""Preview use cases (Task 8): v1 single-media preview metadata/stream info.
+"""Preview use cases (Task 8): single-media preview metadata + media proxying.
 
 Sits in the application layer between the API transport (``app.api.preview``)
-and persistence: it loads a :class:`ParseTask` by id and builds a safe,
-metadata-only preview response the frontend can render. v1 deliberately
-streams no media bytes — the design defers full preview streaming; this
-service returns the persisted parse metadata plus a ``streams`` ladder
-(quality ladder for video, bitrate ladder for music, none for images) so the
-preview page has everything it needs without touching a file store.
+and persistence: it loads a :class:`ParseTask` by id and builds a safe
+preview response the frontend can render. The metadata preview (``preview``)
+is derived entirely from the ORM row and its persisted ``metadata`` JSON —
+no file store is touched — and exposes a ``streams`` ladder (quality for
+video, bitrate for music, none for images). Task 2+ added real media
+serving on top: ``stream_video`` proxies the task's recorded ``video_url``
+(same-origin, Range passthrough), and ``image_bytes``/``album_zip`` serve
+album images individually or as a ZIP attachment.
 
 Design decisions (stable contract for Task 9+):
 
-* **Metadata-only and safe.** Nothing here reads or serves file bytes; the
-  response is derived entirely from the ORM row and its persisted ``metadata``
-  JSON, so a preview can never leak storage paths or stream content.
+* **Metadata preview is safe and store-free.** The ``preview`` response is
+  derived entirely from the ORM row and its persisted ``metadata`` JSON, so
+  it can never leak storage paths; the media-proxy methods (Task 2+) re-fetch
+  the engine-persisted URLs server-side, never local files.
 * **Code 3001 任务不存在.** A well-formed task_id with no row raises
   :class:`~app.api.responses.ApiError` (400/3001); malformed task_ids are
   rejected earlier by the transport (``UuidStr`` path parameter → generic 400).
