@@ -1,18 +1,19 @@
-/* Music search page (route /music). The page renders OUTSIDE the app shell,
-   so it owns its full-height layout and its own (fixed) top bar. All styles
-   are scoped to .music-* selectors; app.css is untouched. */
+/* Music content area (single main page — the Topbar's 音乐 tab). Renders
+   INSIDE the app shell below the Topbar: the app-content--music wrapper drops
+   its padding so this flex column fills the viewport exactly (header height is
+   64px desktop / 56px mobile). All styles are scoped to .music-* selectors. */
 
 .music-page {
-  height: 100vh;
+  height: calc(100vh - 64px);
   display: flex;
   flex-direction: column;
   background: #f5f5f5;
   overflow: hidden;
 }
 
-/* --- Top search bar (fixed at the top of the page) --- */
+/* --- Search row (fixed at the top of the content area) --- */
 
-.music-top-bar {
+.music-search-row {
   flex: 0 0 auto;
   background: #fff;
   border-bottom: 1px solid #f0f0f0;
@@ -56,14 +57,14 @@
   }
 }
 
-/* --- Stats + filter tabs bar --- */
+/* --- Stats + filter tabs bar (centered group: count + tabs) --- */
 
 .music-filter-bar {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  justify-content: center;
+  gap: 16px;
   flex-wrap: wrap;
   background: #fff;
   border-bottom: 1px solid #f0f0f0;
@@ -418,6 +419,11 @@
 /* --- Mobile --- */
 
 @media (max-width: 768px) {
+  /* The Topbar shrinks to 56px on mobile. */
+  .music-page {
+    height: calc(100vh - 56px);
+  }
+
   .music-search-bar {
     padding: 8px 12px;
   }

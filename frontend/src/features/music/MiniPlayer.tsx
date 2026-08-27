@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { Button, Image, Typography } from 'antd';
 import { CaretRightOutlined, CloseOutlined, PauseOutlined } from '@ant-design/icons';
 import { useTranslation } from '../../services/i18n';
@@ -7,10 +7,19 @@ import { formatSeconds, parseDurationSeconds } from './format';
 import { useMusicStore } from './musicStore';
 
 /**
- * Bottom mini player (spec §3 View A interaction + §关键交互). v1 simulates
- * playback with a 1-second timer because mock songs carry `play_url: null`;
- * a real <audio> source replaces the timer when the backend plan lands. The
- * bar slides up with a CSS animation on mount.
+ * Bottom mini player (spec §3 View A interaction + §关键交互). The bar slides
+ * up with a CSS animation on mount.
+ *
+ * Playback has two paths:
+ * 1. REAL audio — when `song.play_url` exists (mock songs now carry a tone
+ *    WAV; the future backend supplies real URLs), a hidden <audio> element
+ *    plays it: `timeupdate` drives the progress bar, `ended` stops at the end,
+ *    and replay restarts from 0.
+ * 2. SIMULATED fallback — when `play_url` is null (e.g. stub mode), a 1-second
+ *    timer advances the progress. Reads the live store position on every tick
+ *    instead of a render-time ref: store updates are batched inside test `act`
+ *    scopes, so a ref would go stale between ticks; getState() always sees the
+ *    latest simulated time.
  */
 export function MiniPlayer(): JSX.Element | null {
   const { t } = useTranslation();
@@ -22,22 +31,27 @@ export function MiniPlayer(): JSX.Element | null {
   const pause = useMusicStore((state) => state.pause);
   const closePlayer = useMusicStore((state) => state.closePlayer);
 
-  // Read the live store position on every tick instead of a render-time ref:
-  // store updates are batched inside test `act` scopes, so a ref would go
-  // stale between ticks; getState() always sees the latest simulated time.
+  const audioRef = useRef<HTMLAudioElement>(null);
   const durationSeconds = song ? parseDurationSeconds(song.duration) : 0;
+  const hasAudio = Boolean(song?.play_url);
 
   const handleToggle = () => {
-    if (!isPlaying && durationSeconds > 0 && currentTime >= durationSeconds) {
-      // Replaying a finished song: restart from 0 (the first tick would
-      // otherwise immediately re-pause at the end).
-      updateProgress(0);
+    if (!isPlaying) {
+      const audio = audioRef.current;
+      if (hasAudio && audio) {
+        // Replaying a finished (or any) song: restart the audio from 0.
+        audio.currentTime = 0;
+      } else if (durationSeconds > 0 && currentTime >= durationSeconds) {
+        // Simulated path: a finished song would otherwise immediately re-pause.
+        updateProgress(0);
+      }
     }
     togglePlay();
   };
 
+  // Simulated playback (only when the song has no playable source).
   useEffect(() => {
-    if (!isPlaying || !song) return;
+    if (hasAudio || !isPlaying || !song) return;
     const timer = setInterval(() => {
       const next = useMusicStore.getState().currentTime + 1;
       if (durationSeconds > 0 && next >= durationSeconds) {
@@ -48,7 +62,21 @@ export function MiniPlayer(): JSX.Element | null {
       }
     }, 1000);
     return () => clearInterval(timer);
-  }, [isPlaying, song, durationSeconds, updateProgress, pause]);
+  }, [hasAudio, isPlaying, song, durationSeconds, updateProgress, pause]);
+
+  // Real playback: keep the hidden <audio> element in sync with the store.
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio || !hasAudio) return;
+    if (isPlaying) {
+      // Browsers return a promise (rejecting on autoplay blocks); jsdom
+      // returns undefined — guard both.
+      const playResult = audio.play();
+      if (playResult) void playResult.catch(() => pause());
+    } else {
+      audio.pause();
+    }
+  }, [isPlaying, hasAudio, song, pause]);
 
   if (!song) return null;
 
@@ -56,6 +84,17 @@ export function MiniPlayer(): JSX.Element | null {
 
   return (
     <div className="music-mini-player" data-testid="music-mini-player">
+      <audio
+        ref={audioRef}
+        src={song.play_url ?? undefined}
+        preload="none"
+        onTimeUpdate={(event) => updateProgress(event.currentTarget.currentTime)}
+        onEnded={() => {
+          updateProgress(durationSeconds);
+          pause();
+        }}
+        data-testid="mini-audio"
+      />
       <Image
         width={40}
         height={40}

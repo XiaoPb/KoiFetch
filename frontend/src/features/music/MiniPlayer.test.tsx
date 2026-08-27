@@ -20,6 +20,7 @@ const SONG: MusicSong = {
 describe('MiniPlayer', () => {
   afterEach(() => {
     vi.useRealTimers();
+    vi.restoreAllMocks();
     useMusicStore.setState({ currentSong: null, isPlaying: false, currentTime: 0 });
   });
 
@@ -71,5 +72,34 @@ describe('MiniPlayer', () => {
     renderWithProviders(<MiniPlayer />);
     await user.click(screen.getByTestId('mini-player-close'));
     expect(useMusicStore.getState().currentSong).toBeNull();
+  });
+
+  it('plays real audio when the song has a playable source', async () => {
+    const user = userEvent.setup();
+    const playMock = vi.fn().mockResolvedValue(undefined);
+    const pauseMock = vi.fn();
+    // jsdom does not implement HTMLMediaElement playback — stub it.
+    vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(playMock);
+    vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(pauseMock);
+
+    act(() =>
+      useMusicStore.setState({
+        currentSong: { ...SONG, play_url: 'data:audio/wav;base64,AAAA' },
+        isPlaying: true,
+        currentTime: 0,
+      }),
+    );
+    renderWithProviders(<MiniPlayer />);
+    expect(screen.getByTestId('mini-audio')).toBeInTheDocument();
+    expect(playMock).toHaveBeenCalled();
+
+    // Pausing stops the audio element; replay restarts it from 0.
+    await user.click(screen.getByTestId('mini-player-toggle'));
+    expect(useMusicStore.getState().isPlaying).toBe(false);
+    expect(pauseMock).toHaveBeenCalled();
+
+    await user.click(screen.getByTestId('mini-player-toggle'));
+    expect(useMusicStore.getState().isPlaying).toBe(true);
+    expect(playMock).toHaveBeenCalledTimes(2);
   });
 });

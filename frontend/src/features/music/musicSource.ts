@@ -22,7 +22,6 @@ const SONG_TITLES = [
   '晴天', '七里香', '稻香', '夜曲', '告白气球', '光年之外', '泡沫', '平凡之路',
   '成都', '消愁', '年少有为', '起风了', '演员', '体面', '说散就散',
 ] as const;
-const ARTIST_NAMES = ['周杰伦', '邓紫棋', '许嵩', '薛之谦', '陈奕迅', '李荣浩', '赵雷', '毛不易', '林俊杰', '王菲'] as const;
 const ALBUM_WORDS = ['精选', '合集', '现场', '翻唱', '经典', '原声'] as const;
 
 function hashString(input: string): number {
@@ -56,6 +55,63 @@ function coverUrl(id: string): string {
   return `https://picsum.photos/seed/koi-${encodeURIComponent(id)}/120/120`;
 }
 
+function writeAscii(view: DataView, offset: number, text: string): void {
+  for (let i = 0; i < text.length; i++) view.setUint8(offset + i, text.charCodeAt(i));
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+
+/**
+ * Deterministic ~4-second 8 kHz mono 8-bit PCM WAV data URI playing a short
+ * rising arpeggio — a REAL playable source so the mini player actually
+ * produces sound in mock mode. `seed` selects the root note; the same seed
+ * always yields the same bytes. `btoa` exists in browsers and Node ≥ 16.
+ *
+ * Results are MEMOIZED (8 distinct tones max): a search can build ~2000 songs,
+ * and generating a 32 KB WAV per song would cost tens of megabytes and seconds.
+ */
+const toneCache = new Map<number, string>();
+
+export function toneWavUri(seed: number, seconds = 4): string {
+  const cached = toneCache.get(seed);
+  if (cached) return cached;
+  const sampleRate = 8000;
+  const samples = sampleRate * seconds;
+  const dataSize = samples;
+  const buffer = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buffer);
+  writeAscii(view, 0, 'RIFF');
+  view.setUint32(4, 36 + dataSize, true);
+  writeAscii(view, 8, 'WAVE');
+  writeAscii(view, 12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); // PCM
+  view.setUint16(22, 1, true); // mono
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate, true); // byte rate
+  view.setUint16(32, 1, true); // block align
+  view.setUint16(34, 8, true); // bits per sample
+  writeAscii(view, 36, 'data');
+  view.setUint32(40, dataSize, true);
+  const roots = [261.63, 293.66, 329.63, 392.0]; // C4 D4 E4 G4
+  const root = roots[seed % roots.length];
+  for (let i = 0; i < samples; i++) {
+    const t = i / sampleRate;
+    const step = Math.floor(t / 0.5) % 4;
+    const freq = root * (1 + step * 0.25);
+    const envelope = Math.min(1, t * 30, (seconds - t) * 15); // fade in/out
+    const value = Math.sin(2 * Math.PI * freq * t) * envelope;
+    view.setUint8(44 + i, Math.round((value * 0.5 + 0.5) * 255));
+  }
+  const uri = `data:audio/wav;base64,${bytesToBase64(new Uint8Array(buffer))}`;
+  toneCache.set(seed, uri);
+  return uri;
+}
+
 function buildMockData(keyword: string): {
   totals: Record<MusicCategory, number>;
   songs: MusicSong[];
@@ -75,10 +131,15 @@ function buildMockData(keyword: string): {
     playlist: 10 + int(1, 60),
   };
 
+  // Every entity derives from the KEYWORD so the results are visibly related
+  // to the query: the keyword is the primary artist/creator (e.g. searching
+  // "周杰伦" yields songs by 周杰伦, the album "周杰伦精选", etc.).
+  const base = keyword.trim();
+
   const artists: MusicArtist[] = Array.from({ length: 10 }, (_, index) => ({
     kind: 'artist',
     id: `artist-${index}`,
-    name: index === 0 ? pick(ARTIST_NAMES) : `${pick(ARTIST_NAMES)} ${index + 1}`,
+    name: index === 0 ? base : `${base} ${index + 1}`,
     avatar: coverUrl(`artist-${index}`),
     fans: int(10_000, 9_000_000),
     songCount: int(5, 200),
@@ -87,7 +148,7 @@ function buildMockData(keyword: string): {
   const albums: MusicAlbum[] = Array.from({ length: totals.album }, (_, index) => ({
     kind: 'album',
     id: `album-${index}`,
-    title: `${pick(SONG_TITLES)}${pick(ALBUM_WORDS)}`,
+    title: `${base}${pick(ALBUM_WORDS)}`,
     artist: artists[index % artists.length].name,
     cover: coverUrl(`album-${index}`),
     songCount: int(4, 60),
@@ -96,7 +157,7 @@ function buildMockData(keyword: string): {
   const playlists: MusicPlaylist[] = Array.from({ length: totals.playlist }, (_, index) => ({
     kind: 'playlist',
     id: `playlist-${index}`,
-    title: `${pick(ARTIST_NAMES)}的热门歌单`,
+    title: `${base}的热门歌单`,
     creator: artists[index % artists.length].name,
     cover: coverUrl(`playlist-${index}`),
     songCount: int(10, 200),
@@ -110,7 +171,9 @@ function buildMockData(keyword: string): {
     album: albums[index % albums.length].title,
     cover: coverUrl(`song-${index}`),
     duration: formatDuration(int(120, 360)),
-    play_url: null,
+    // A REAL audio source (deterministic tone) so the mini player produces
+    // sound in mock mode; tones repeat across songs (8 variants, memoized).
+    play_url: toneWavUri(index % 8),
   }));
 
   return { totals, songs, artists, albums, playlists };
@@ -119,7 +182,9 @@ function buildMockData(keyword: string): {
 /**
  * Deterministic mock behind `MusicSearchSource`, standing in until a backend
  * music-search endpoint exists (follow-up plan). Data is derived entirely from
- * the keyword hash, so repeated searches are stable for tests.
+ * the keyword (hash-seeded PRNG + keyword-derived names), so results are
+ * visibly related to the query and repeated searches are stable for tests.
+ * Songs carry a REAL playable tone WAV in `play_url` so the demo has sound.
  * Mock rule: keywords longer than 10 characters return no results, so the
  * empty state is reachable deterministically.
  */
