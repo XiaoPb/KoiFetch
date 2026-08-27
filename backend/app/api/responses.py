@@ -21,6 +21,9 @@ code          meaning                 HTTP        notes
 1003          平台不支持              400         parse: unsupported platform —
                                                     live in engine mode (the stub
                                                     supports every URL)
+1006          Cookie缺失/无效        400         parse: the platform needs a
+                                                    cookie that is missing or
+                                                    was rejected (f2 engines)
 3001          任务不存在              400         preview/download/NAS save:
                                                     unknown task_id or
                                                     download_id
@@ -69,7 +72,8 @@ onward — must use explicit PRD codes (parse 1001-1005, download 3001-3003,
 NAS 5001-5004) raised via :class:`ApiError`; do not reuse the HTTP-mirroring
 convention for them. The parse range is only partially live today: ``1001``
 URL为空, ``1002`` URL格式无效, ``1003`` 平台不支持 (live for real engines; the
-stub supports every URL) have constants above; ``1004`` 解析超时 and ``1005``
+stub supports every URL) and ``1006`` Cookie缺失/无效 (live for the f2 engines:
+douyin/tiktok) have constants above; ``1004`` 解析超时 and ``1005``
 请求过于频繁 are reserved for later tasks (parse timeout, rate limiter) and
 deliberately have no constants yet, so the table and the constants cannot
 drift apart.
@@ -111,6 +115,7 @@ __all__ = [
     "CODE_INVALID_TOKEN",
     "CODE_OK",
     "CODE_PLATFORM_UNSUPPORTED",
+    "CODE_COOKIE_ERROR",
     "CODE_TASK_ALREADY_COMPLETED",
     "CODE_TASK_ALREADY_DOWNLOADING",
     "CODE_TASK_NOT_FOUND",
@@ -129,6 +134,7 @@ CODE_BAD_REQUEST = 400
 CODE_URL_EMPTY = 1001
 CODE_URL_INVALID = 1002
 CODE_PLATFORM_UNSUPPORTED = 1003
+CODE_COOKIE_ERROR = 1006
 CODE_TASK_NOT_FOUND = 3001
 CODE_TASK_ALREADY_DOWNLOADING = 3002
 CODE_TASK_ALREADY_COMPLETED = 3003

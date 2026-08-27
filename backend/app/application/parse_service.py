@@ -55,11 +55,16 @@ from pydantic import ValidationError
 from sqlalchemy import Engine
 from starlette.status import HTTP_400_BAD_REQUEST
 
-from app.adapters.engine_errors import EngineError, UnsupportedPlatformError
+from app.adapters.engine_errors import (
+    CookieError,
+    EngineError,
+    UnsupportedPlatformError,
+)
 from app.adapters.factory import get_parser
 from app.adapters.protocols import ParserAdapter
 from app.api.responses import (
     CODE_BAD_REQUEST,
+    CODE_COOKIE_ERROR,
     CODE_PLATFORM_UNSUPPORTED,
     CODE_URL_EMPTY,
     CODE_URL_INVALID,
@@ -162,6 +167,8 @@ class ParseService:
                             code=(
                                 CODE_PLATFORM_UNSUPPORTED
                                 if isinstance(exc, UnsupportedPlatformError)
+                                else CODE_COOKIE_ERROR
+                                if isinstance(exc, CookieError)
                                 else None
                             ),
                         )

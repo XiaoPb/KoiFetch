@@ -17,6 +17,7 @@ from app.adapters.engine_errors import EngineTimeoutError, UnsupportedPlatformEr
 from app.adapters.parser_stub import StubParserAdapter
 from app.api.responses import (
     CODE_BAD_REQUEST,
+    CODE_COOKIE_ERROR,
     CODE_PLATFORM_UNSUPPORTED,
     CODE_URL_EMPTY,
     CODE_URL_INVALID,
@@ -230,6 +231,37 @@ class TestEngineUnsupportedPlatform:
         assert len(batch.results) == 1
         assert len(batch.failed) == 1
         assert batch.failed[0].code == CODE_PLATFORM_UNSUPPORTED
+
+    def test_cookie_error_failure_carries_code_1006(self, engine):
+        from app.adapters.engine_errors import CookieInvalidError
+
+        class CookieRejectingParser:
+            def parse(self, command):
+                raise CookieInvalidError(
+                    "Cookie 无效或已过期，请重新设置 / Cookie invalid or expired — please update it"
+                )
+
+        service = ParseService(parser=CookieRejectingParser(), engine=engine)
+        batch = service.parse(["https://v.douyin.com/abc/"])
+        assert batch.results == []
+        assert len(batch.failed) == 1
+        failure = batch.failed[0]
+        assert failure.code == CODE_COOKIE_ERROR
+        assert "Cookie 无效" in failure.error
+
+    def test_cookie_missing_error_failure_carries_code_1006(self, engine):
+        from app.adapters.engine_errors import CookieMissingError
+
+        class CookieMissingParser:
+            def parse(self, command):
+                raise CookieMissingError(
+                    "该平台需要 Cookie，请先在设置中配置 / This platform requires a cookie — configure it in Settings"
+                )
+
+        service = ParseService(parser=CookieMissingParser(), engine=engine)
+        batch = service.parse(["https://v.douyin.com/abc/"])
+        assert len(batch.failed) == 1
+        assert batch.failed[0].code == CODE_COOKIE_ERROR
 
     def test_other_engine_error_surfaces_stable_message_without_code(self, engine):
         class TimeoutParser:

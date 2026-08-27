@@ -37,6 +37,9 @@ __all__ = [
     "PlatformBlockedError",
     "UnsupportedPlatformError",
     "translate_engine_exception",
+    "CookieError",
+    "CookieInvalidError",
+    "CookieMissingError",
 ]
 
 _MSG = {
@@ -77,6 +80,18 @@ class EngineParseError(EngineError):
 
 class EngineDownloadError(EngineError):
     """The download failed (HTTP error mid-stream, missing media, engine error)."""
+
+
+class CookieError(EngineError):
+    """A platform request was rejected because of a missing/invalid cookie."""
+
+
+class CookieMissingError(CookieError):
+    """No cookie is configured for a platform that requires one (douyin/tiktok)."""
+
+
+class CookieInvalidError(CookieError):
+    """A configured cookie was rejected (expired/invalid/permission-gated)."""
 
 
 def _category_of(exc: BaseException) -> str:
