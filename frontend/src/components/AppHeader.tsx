@@ -3,11 +3,14 @@ import { App, Badge, Button, Dropdown, Grid, Layout, Segmented, Tooltip } from '
 import {
   InboxOutlined,
   LogoutOutlined,
+  SettingOutlined,
   UserOutlined,
 } from '@ant-design/icons';
 import { Link, useNavigate } from 'react-router-dom';
 import { StatusIndicator } from './StatusIndicator';
 import { DownloadCenterDrawer } from '../features/downloads/DownloadCenterDrawer';
+import { CookieSettingsDrawer } from '../features/cookies/CookieSettingsDrawer';
+import { useCookieStore } from '../features/cookies/cookieStore';
 import { useTranslation } from '../services/i18n';
 import { useAppStore, type MediaMode } from '../stores/appStore';
 import { selectIsAuthenticated, useAuthStore } from '../stores/authStore';
@@ -16,10 +19,11 @@ import { logoutSession } from '../services/session';
 
 /**
  * PRD header: logo 🎏 Koi Fetch / video-music mode switch / status indicator /
- * login button (or admin dropdown) / download-center icon with badge that
- * opens the Task 15 download-center Drawer. The 视频/音乐 mode switch shows
- * BOTH tabs directly on every viewport (a compact Segmented shrinks on
- * mobile) — no dropdown; the language toggle is always visible.
+ * login button (or admin dropdown + settings gear) / download-center icon with
+ * badge that opens the Task 15 download-center Drawer. The gear opens the
+ * admin-only platform-cookie settings drawer (Task 15). The 视频/音乐 mode
+ * switch shows BOTH tabs directly on every viewport (a compact Segmented
+ * shrinks on mobile) — no dropdown; the language toggle is always visible.
  */
 export function AppHeader(): JSX.Element {
   const { t, language, toggleLanguage } = useTranslation();
@@ -77,6 +81,18 @@ export function AppHeader(): JSX.Element {
         />
 
         <div className="app-header-actions">
+          {isAuthenticated && (
+            <Tooltip title={t('header.settings')}>
+              <Button
+                size="small"
+                icon={<SettingOutlined />}
+                aria-label={t('header.settings')}
+                data-testid="settings-button"
+                onClick={() => useCookieStore.getState().openDrawer()}
+              />
+            </Tooltip>
+          )}
+
           <StatusIndicator />
 
           <Tooltip title={t('header.language')}>
@@ -122,6 +138,7 @@ export function AppHeader(): JSX.Element {
       </div>
 
       <DownloadCenterDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} />
+      <CookieSettingsDrawer />
     </Layout.Header>
   );
 }

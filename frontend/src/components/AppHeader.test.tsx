@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
-import { screen } from '@testing-library/react';
+import { act, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { AppHeader } from './AppHeader';
 import { renderWithProviders } from '../test/utils';
@@ -7,12 +7,18 @@ import { healthApi } from '../services/api';
 import { useAppStore } from '../stores/appStore';
 import { useAuthStore } from '../stores/authStore';
 import { useDownloadsStore, type DownloadItem } from '../stores/downloadsStore';
+import { useCookieStore } from '../features/cookies/cookieStore';
 
 vi.mock('../services/api', () => ({
   healthApi: { getHealth: vi.fn() },
   // The download-center Drawer (Task 15) reads downloadApi only on actions;
   // the mock keeps the module importable in header tests.
   downloadApi: { getFileUrl: vi.fn(), submit: vi.fn(), getProgress: vi.fn() },
+  cookieApi: {
+    list: vi.fn().mockResolvedValue({ cookies: [] }),
+    set: vi.fn(),
+    remove: vi.fn(),
+  },
 }));
 
 function seedDownloadItem(partial: Partial<DownloadItem> & Pick<DownloadItem, 'download_id' | 'task_id' | 'status'>): DownloadItem {
@@ -64,6 +70,7 @@ describe('AppHeader', () => {
     vi.clearAllMocks();
     useAuthStore.setState({ token: null, username: null, expiresAt: null });
     useAppStore.setState({ mediaMode: 'video' });
+    useCookieStore.setState({ drawerOpen: false, entries: [], loading: false, error: null });
     (healthApi.getHealth as Mock).mockResolvedValue(healthy);
   });
 
@@ -149,5 +156,22 @@ describe('AppHeader', () => {
     expect(useAuthStore.getState().token).toBeNull();
     // The next admin starts from a clean slate (Task 16 teardown seam).
     expect(useDownloadsStore.getState().items).toHaveLength(0);
+  });
+
+  it('shows a settings button only when authenticated and opens the drawer', async () => {
+    renderWithProviders(<AppHeader />);
+    expect(screen.queryByTestId('settings-button')).not.toBeInTheDocument();
+    // The store update must be flushed inside act() for the mounted header to
+    // re-render (React defers external-store updates in the test env).
+    act(() => {
+      useAuthStore.setState({
+        token: 't',
+        username: 'admin',
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      });
+    });
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId('settings-button'));
+    expect(useCookieStore.getState().drawerOpen).toBe(true);
   });
 });
