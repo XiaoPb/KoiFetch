@@ -27,7 +27,8 @@ Design decisions (stable contract for Tasks 9-12):
   as the PRD ``data: {results, failed}`` shape. Engine failures are typed:
   ``EngineError`` subclasses surface their stable bilingual message verbatim
   with ``code: None``, except :class:`UnsupportedPlatformError` which carries
-  code ``1003`` (1004 解析超时 / 1005 请求过于频繁 remain reserved in
+  code ``1003`` and :class:`CookieError` subclasses which carry code ``1006``
+  (Cookie缺失/无效) (1004 解析超时 / 1005 请求过于频繁 remain reserved in
   responses.py). Untyped failures are sanitized (stable bilingual text +
   exception class name; raw exception text is never echoed, per the repo's
   message-safety convention). The stub derives metadata for every URL.

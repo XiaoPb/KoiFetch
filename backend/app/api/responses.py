@@ -68,7 +68,7 @@ they must never embed secrets.
 
 **Code conventions.** Framework-driven 404/405 responses mirror the HTTP status
 as the body ``code`` (they have no PRD code). Domain errors — from Tasks 8-10
-onward — must use explicit PRD codes (parse 1001-1005, download 3001-3003,
+onward — must use explicit PRD codes (parse 1001-1006, download 3001-3003,
 NAS 5001-5004) raised via :class:`ApiError`; do not reuse the HTTP-mirroring
 convention for them. The parse range is only partially live today: ``1001``
 URL为空, ``1002`` URL格式无效, ``1003`` 平台不支持 (live for real engines; the

@@ -58,8 +58,9 @@ class ParseRequest(BaseModel):
 class ParseFailureData(BaseModel):
     """One URL the parser could not process (runtime failure, not validation).
 
-    ``code`` is the PRD error code for typed engine failures (1003 平台不支持);
-    ``None`` for untagged failures. Additive — the frontend may ignore it.
+    ``code`` is the PRD error code for typed engine failures (1003 平台不支持,
+    1006 Cookie缺失/无效); ``None`` for untagged failures. Additive — the
+    frontend may ignore it.
     """
 
     url: str

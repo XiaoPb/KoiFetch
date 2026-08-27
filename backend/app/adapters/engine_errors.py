@@ -15,6 +15,9 @@ Contract (relied on by parse_service and the worker):
 * :class:`UnsupportedPlatformError` maps to PRD code 1003 平台不支持 in
   parse_service. The parser adapter raises it directly as a routing decision;
   translation never produces it.
+* :class:`CookieError` subclasses map to PRD code 1006 Cookie缺失/无效 in
+  parse_service. Like :class:`UnsupportedPlatformError`, attaching the code is
+  the parse service's responsibility; translation never produces them.
 * :func:`translate_engine_exception` maps the exception classes the engines
   actually raise (httpx for parse-video-py, requests for musicdl) onto this
   hierarchy. ``operation`` is "parse" or "download" and selects the
