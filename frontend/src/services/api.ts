@@ -1,6 +1,8 @@
 import { apiClient, resolveApiUrl } from './apiClient';
 import type {
   ByTaskData,
+  CookieEntry,
+  CookieListData,
   HealthData,
   LoginData,
   LoginRequest,
@@ -122,5 +124,24 @@ export const nasApi = {
       target_path: targetPath,
     });
     return data;
+  },
+};
+
+export const cookieApi = {
+  /** GET /api/cookies → {cookies: [{platform, configured, updated_at}]}. */
+  async list(): Promise<CookieListData> {
+    const { data } = await apiClient.get<CookieListData>('/cookies');
+    return data;
+  },
+
+  /** PUT /api/cookies/{platform} — upsert the cookie (value never echoed back). */
+  async set(platform: string, cookie: string): Promise<CookieEntry> {
+    const { data } = await apiClient.put<CookieEntry>(`/cookies/${platform}`, { cookie });
+    return data;
+  },
+
+  /** DELETE /api/cookies/{platform} — clear the stored cookie. */
+  async remove(platform: string): Promise<void> {
+    await apiClient.delete(`/cookies/${platform}`);
   },
 };

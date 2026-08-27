@@ -12,6 +12,8 @@ export const ApiCodes = {
   URL_EMPTY: 1001,
   URL_INVALID: 1002,
   PLATFORM_UNSUPPORTED: 1003,
+  /** Parse: cookie missing or rejected by the platform (f2 engines). */
+  COOKIE_ERROR: 1006,
   TASK_NOT_FOUND: 3001,
   TASK_ALREADY_DOWNLOADING: 3002,
   TASK_ALREADY_COMPLETED: 3003,
@@ -104,11 +106,28 @@ export interface ParseResult {
 export interface ParseFailure {
   url: string;
   error: string;
+  /** PRD error code for typed failures (e.g. 1003, 1006); null/absent otherwise. */
+  code?: number | null;
 }
 
 export interface ParseData {
   results: ParseResult[];
   failed: ParseFailure[];
+}
+
+// ---------------------------------------------------------------------------
+// Platform cookies (GET/PUT/DELETE /api/cookies)
+// ---------------------------------------------------------------------------
+
+export interface CookieEntry {
+  platform: string;
+  configured: boolean;
+  /** ISO-8601 with timezone; null when never set. */
+  updated_at: string | null;
+}
+
+export interface CookieListData {
+  cookies: CookieEntry[];
 }
 
 // ---------------------------------------------------------------------------
