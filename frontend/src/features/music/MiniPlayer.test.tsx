@@ -46,6 +46,15 @@ describe('MiniPlayer', () => {
     expect(useMusicStore.getState().isPlaying).toBe(false);
   });
 
+  it('restarts a finished song from the beginning on play', async () => {
+    const user = userEvent.setup();
+    act(() => useMusicStore.setState({ currentSong: SONG, isPlaying: false, currentTime: 5 }));
+    renderWithProviders(<MiniPlayer />);
+    await user.click(screen.getByTestId('mini-player-toggle'));
+    expect(useMusicStore.getState().isPlaying).toBe(true);
+    expect(useMusicStore.getState().currentTime).toBe(0);
+  });
+
   it('toggles play/pause on the button', async () => {
     const user = userEvent.setup();
     act(() => useMusicStore.setState({ currentSong: SONG, isPlaying: true, currentTime: 0 }));

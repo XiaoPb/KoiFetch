@@ -27,6 +27,15 @@ export function MiniPlayer(): JSX.Element | null {
   // stale between ticks; getState() always sees the latest simulated time.
   const durationSeconds = song ? parseDurationSeconds(song.duration) : 0;
 
+  const handleToggle = () => {
+    if (!isPlaying && durationSeconds > 0 && currentTime >= durationSeconds) {
+      // Replaying a finished song: restart from 0 (the first tick would
+      // otherwise immediately re-pause at the end).
+      updateProgress(0);
+    }
+    togglePlay();
+  };
+
   useEffect(() => {
     if (!isPlaying || !song) return;
     const timer = setInterval(() => {
@@ -81,7 +90,7 @@ export function MiniPlayer(): JSX.Element | null {
         type="text"
         aria-label={isPlaying ? t('music.pause') : t('music.play')}
         icon={isPlaying ? <PauseOutlined /> : <CaretRightOutlined />}
-        onClick={togglePlay}
+        onClick={handleToggle}
         data-testid="mini-player-toggle"
       />
       <Button
