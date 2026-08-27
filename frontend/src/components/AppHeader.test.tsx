@@ -81,28 +81,28 @@ describe('AppHeader', () => {
     expect(screen.getByTestId('download-center')).toBeInTheDocument();
   });
 
-  it('shows the video/music mode switch on desktop', async () => {
+  it('shows the video/music mode switch with both tabs', () => {
     renderWithProviders(<AppHeader />);
-    expect(screen.getByTestId('mode-switch-desktop')).toBeInTheDocument();
+    expect(screen.getByTestId('mode-switch')).toBeInTheDocument();
     expect(screen.getByText('视频')).toBeInTheDocument();
     expect(screen.getByText('音乐')).toBeInTheDocument();
   });
 
-  it('replaces the segmented mode switch with a compact control on mobile', () => {
+  it('keeps both mode tabs directly clickable on mobile (no dropdown)', () => {
     vi.stubGlobal('matchMedia', mobileMatchMedia());
     renderWithProviders(<AppHeader />);
 
-    expect(screen.queryByTestId('mode-switch-desktop')).not.toBeInTheDocument();
-    expect(screen.getByTestId('mode-switch-mobile')).toBeInTheDocument();
+    expect(screen.getByTestId('mode-switch')).toBeInTheDocument();
+    expect(screen.getByText('视频')).toBeInTheDocument();
+    expect(screen.getByText('音乐')).toBeInTheDocument();
   });
 
-  it('lets mobile users switch the media mode', async () => {
+  it('lets mobile users switch the media mode by clicking the tab', async () => {
     vi.stubGlobal('matchMedia', mobileMatchMedia());
     const user = userEvent.setup();
     renderWithProviders(<AppHeader />);
 
-    await user.click(screen.getByTestId('mode-switch-mobile'));
-    await user.click(await screen.findByRole('menuitem', { name: '音乐' }));
+    await user.click(screen.getByText('音乐'));
 
     expect(useAppStore.getState().mediaMode).toBe('music');
   });
