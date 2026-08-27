@@ -70,13 +70,18 @@ class Settings(BaseModel):
     # downloader finishes in milliseconds, see app/workers/cleanup.py).
     stale_download_minutes: int = Field(default=60, ge=1)
 
-    # --- Real engine integration (parse-video-py / musicdl, Tasks 1-10) ---
+    # --- Real engine integration (f2 / parse-video-py / musicdl) ---
     # Adapter mode: "stub" (default) keeps the deterministic offline adapters;
     # "engine" selects the real parse-video-py/musicdl adapters (factory.py
     # switches, lazily importing the engine modules so the app boots and the
     # non-engine tests run without the engines installed).
     parser_engine: str = "stub"
     downloader_engine: str = "stub"
+    # Legacy video-engine fallback: True keeps parse-video-py in the routing
+    # table for platforms f2 does not cover (kuaishou/bilibili/xiaohongshu/
+    # xigua/...); False makes those platforms raise 1003 平台不支持 so the
+    # parse-video-py dependency can be removed once f2 covers them.
+    parser_legacy_fallback: bool = True
     # Seconds before an engine HTTP request gives up. Streaming downloads use
     # engine_download_timeout_seconds as the per-read timeout, so a stalled
     # connection fails within that window per chunk, not per whole file.

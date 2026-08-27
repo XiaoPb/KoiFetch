@@ -54,6 +54,11 @@ RUN apt-get update \
 COPY backend/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
+# f2 is installed with --no-deps: its metadata pins (pytest==8.3.4,
+# cryptography==44.0.0) conflict with musicdl's cryptography>=46.0.5,<47 —
+# see the f2 block in backend/requirements.txt for the explicit runtime deps.
+RUN pip install --no-cache-dir --no-deps f2==0.0.1.7
+
 # Application code (ports-and-adapters layout under app/).
 COPY backend/app ./app
 

@@ -349,3 +349,15 @@ class TestEngineSettings:
     def test_engine_proxy_valid_url_passes_through(self, clean_env):
         settings = build(engine_proxy="http://proxy.local:3128")
         assert settings.engine_proxy == "http://proxy.local:3128"
+
+    def test_parser_legacy_fallback_defaults_to_true(self, clean_env):
+        settings = build()
+        assert settings.parser_legacy_fallback is True
+
+    def test_parser_legacy_fallback_accepts_false(self, clean_env):
+        settings = build(parser_legacy_fallback=False)
+        assert settings.parser_legacy_fallback is False
+
+    def test_parser_legacy_fallback_accepts_env_strings(self, clean_env):
+        settings = build(parser_legacy_fallback="false")
+        assert settings.parser_legacy_fallback is False

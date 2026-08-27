@@ -53,6 +53,29 @@ apscheduler>=3.10,<4
 # weibo/xigua/...). NOT on PyPI (verified 404) — install from GitHub; requires
 # Python >= 3.10. The commit SHA is pinned for reproducibility (Step 3).
 parse-video-py @ git+https://github.com/wujunwei928/parse-video-py.git@5fcf87256edb5ffcdebf0e4aac2a5a41745da76e
+# f2: PRIMARY video/image parsing engine (douyin/weibo/tiktok, cookie-aware).
+# Replaces parse-video-py for the platforms it covers; parse-video-py remains
+# only as a fallback for platforms f2 does not support yet (kuaishou/bilibili/
+# xiaohongshu/xigua/...) while PARSER_LEGACY_FALLBACK=true. Requires Python
+# >= 3.10.
+#
+# INSTALL NOTE: f2 itself is installed with `pip install --no-deps f2==0.0.1.7`
+# (see backend/scripts/install_f2.sh and the Dockerfile): f2 0.0.1.7's metadata
+# hard-pins pytest==8.3.4 and cryptography==44.0.0, which conflict with this
+# repo's pytest>=8.4 and musicdl's cryptography>=46.0.5,<47. f2's code only
+# uses stable cryptography APIs and runs on the repo's newer shared-library
+# versions. The shared deps (httpx/pydantic/websockets/...) come from the
+# repo's own pins; the following are f2's runtime deps the repo does not
+# otherwise pull in:
+aiofiles>=24.1.0
+aiosqlite>=0.20.0
+browser-cookie3>=0.20.1
+gmssl>=3.2.2
+importlib-resources>=6.4.5
+jsonpath-ng>=1.6.1
+pyexecjs>=1.5.1
+qrcode>=8.0
+websockets-proxy>=0.1.2
 # musicdl: music search/download (netease/qq/kugou/kuwo/migu/...). Heavy install:
 # pulls nodejs-wheel (a Node.js runtime), pywidevine, av, curl-cffi, cryptography.
 # NOTE: musicdl 2.13.x imports `Unpack` from `typing` (Python >= 3.11) but
