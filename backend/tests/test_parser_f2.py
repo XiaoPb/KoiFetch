@@ -293,8 +293,8 @@ def _fake_post_detail(**overrides):
 def _fake_weibo_detail(**overrides):
     """A faked weibo WeiboDetailFilter (duck-typed).
 
-    The real filter exposes ``pic_infos`` only inside ``_to_raw()`` (there is
-    no ``pic_infos`` attribute), so the fake mirrors that shape.
+    The real filter exposes the pic dict as the public ``weibo_pic_infos``
+    property; the fake mirrors that shape.
     """
     defaults = dict(
         error_code=0,
@@ -303,14 +303,9 @@ def _fake_weibo_detail(**overrides):
         nickname="博主",
         uid="u1",
         playback_list=["https://cdn.example/w.mp4"],
-        pic_infos={},
+        weibo_pic_infos={},
     )
     defaults.update(overrides)
-
-    def _to_raw(self):
-        return {"pic_infos": getattr(self, "pic_infos", {})}
-
-    defaults["_to_raw"] = _to_raw
     return type("FakeWeiboDetail", (), defaults)()
 
 
@@ -369,6 +364,39 @@ class TestDouyinMapping:
         result = self._adapter().parse(ParseCommand(urls=["https://v.douyin.com/abc/"]))[0]
         assert result.title == "douyin"
 
+    def test_video_wins_when_images_also_present(self, monkeypatch):
+        fake_handler = Mock(
+            fetch_one_video=_async_returns(
+                _fake_post_detail(images=["https://cdn.example/a.jpg"])
+            )
+        )
+        _stub_f2(monkeypatch, {
+            ("f2.apps.douyin.utils", "AwemeIdFetcher"): Mock(get_aweme_id=_async_returns("4")),
+            ("f2.apps.douyin.handler", "DouyinHandler"): Mock(return_value=fake_handler),
+        })
+        result = self._adapter().parse(ParseCommand(urls=["https://v.douyin.com/abc/"]))[0]
+        assert result.media_type is MediaType.VIDEO
+
+    def test_falsy_image_entries_are_filtered(self, monkeypatch):
+        fake_handler = Mock(
+            fetch_one_video=_async_returns(
+                _fake_post_detail(
+                    desc="图集",
+                    video_play_addr=[],
+                    images=["https://cdn.example/a.jpg", None, ""],
+                )
+            )
+        )
+        _stub_f2(monkeypatch, {
+            ("f2.apps.douyin.utils", "AwemeIdFetcher"): Mock(get_aweme_id=_async_returns("5")),
+            ("f2.apps.douyin.handler", "DouyinHandler"): Mock(return_value=fake_handler),
+        })
+        result = self._adapter().parse(ParseCommand(urls=["https://v.douyin.com/abc/"]))[0]
+        assert result.media_type is MediaType.IMAGE
+        assert [img["url"] for img in result.metadata["images"]] == [
+            "https://cdn.example/a.jpg"
+        ]
+
 
 class TestWeiboMapping:
     def _adapter(self, **kwargs):
@@ -388,14 +416,14 @@ class TestWeiboMapping:
         assert result.metadata["video_url"] == "https://cdn.example/w.mp4"
 
     def test_maps_image_weibo_with_cover_from_first_pic(self, monkeypatch):
-        pic_infos = {
+        weibo_pic_infos = {
             "p1": {"url": "https://cdn.example/p1.jpg"},
             "p2": {"large": {"url": "https://cdn.example/p2.jpg"}},
         }
         fake_handler = Mock(
             fetch_one_weibo=_async_returns(
                 _fake_weibo_detail(
-                    playback_list=[], pic_infos=pic_infos, weibo_desc="图集微博"
+                    playback_list=[], weibo_pic_infos=weibo_pic_infos, weibo_desc="图集微博"
                 )
             )
         )
@@ -412,3 +440,34 @@ class TestWeiboMapping:
             "https://cdn.example/p1.jpg",
             "https://cdn.example/p2.jpg",
         ]
+
+    def test_video_wins_when_images_also_present(self, monkeypatch):
+        # A weibo post with BOTH a playback URL and pics is a video.
+        fake_handler = Mock(
+            fetch_one_weibo=_async_returns(
+                _fake_weibo_detail(
+                    weibo_pic_infos={"p1": {"url": "https://cdn.example/p1.jpg"}}
+                )
+            )
+        )
+        _stub_f2(monkeypatch, {
+            ("f2.apps.weibo.utils", "WeiboIdFetcher"): Mock(get_weibo_id=_async_returns("wid3")),
+            ("f2.apps.weibo.handler", "WeiboHandler"): Mock(return_value=fake_handler),
+        })
+        result = self._adapter().parse(ParseCommand(urls=["https://weibo.com/1/AbC"]))[0]
+        assert result.media_type is MediaType.VIDEO
+        assert result.metadata["video_url"] == "https://cdn.example/w.mp4"
+
+    def test_none_first_playback_entry_is_skipped(self, monkeypatch):
+        fake_handler = Mock(
+            fetch_one_weibo=_async_returns(
+                _fake_weibo_detail(playback_list=[None, "https://cdn.example/w2.mp4"])
+            )
+        )
+        _stub_f2(monkeypatch, {
+            ("f2.apps.weibo.utils", "WeiboIdFetcher"): Mock(get_weibo_id=_async_returns("wid4")),
+            ("f2.apps.weibo.handler", "WeiboHandler"): Mock(return_value=fake_handler),
+        })
+        result = self._adapter().parse(ParseCommand(urls=["https://weibo.com/1/AbC"]))[0]
+        assert result.media_type is MediaType.VIDEO
+        assert result.metadata["video_url"] == "https://cdn.example/w2.mp4"

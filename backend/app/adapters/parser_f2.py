@@ -327,15 +327,22 @@ class F2ParserAdapter:
         A non-zero ``api_status_code`` with a configured cookie means the
         request was rejected (cookie expired / risk control) → CookieInvalidError
         (see Task 9 for the full classifier). ``nickname is None`` is f2's own
-        "接口内容异常" signal → EngineParseError.
+        "接口内容异常" signal → EngineParseError. Play URLs and images are
+        filtered to usable strings (f2's list helpers None-fill missing paths).
         """
         if data.api_status_code not in (None, 0):
             raise CookieInvalidError(_MESSAGE_INVALID_COOKIE)
         if data.nickname is None:
             raise EngineParseError(_MESSAGE_NO_MEDIA)
-        play_urls = list(data.video_play_addr or [])
+        play_urls = [
+            url_entry for url_entry in (data.video_play_addr or [])
+            if isinstance(url_entry, str) and url_entry
+        ]
         video_url = play_urls[0] if play_urls else None
-        images = [image_url for image_url in (data.images or []) if image_url]
+        images = [
+            image_url for image_url in (data.images or [])
+            if isinstance(image_url, str) and image_url
+        ]
         return self._build_result(
             url=url,
             platform="douyin",
@@ -351,11 +358,15 @@ class F2ParserAdapter:
         """Map a weibo WeiboDetailFilter onto a ParseResult (Task 7).
 
         ``error_code == 20112`` is weibo's own "无查看权限，请配置Cookie" signal →
-        CookieInvalidError. Public posts parse without a cookie.
+        CookieInvalidError. Public posts parse without a cookie. Play URLs are
+        filtered to usable strings (f2's list helpers None-fill missing paths).
         """
         if data.error_code == 20112:
             raise CookieInvalidError(_MESSAGE_INVALID_COOKIE)
-        play_urls = list(data.playback_list or [])
+        play_urls = [
+            url_entry for url_entry in (data.playback_list or [])
+            if isinstance(url_entry, str) and url_entry
+        ]
         video_url = play_urls[0] if play_urls else None
         images = self._weibo_images(data)
         title = (data.weibo_desc or data.desc or "").strip() or "weibo"
@@ -374,20 +385,28 @@ class F2ParserAdapter:
     def _weibo_images(data) -> list[str]:
         """Extract the ordered image URLs from weibo's ``pic_infos`` dict.
 
-        Each entry is ``{pic_id: {...}}``; the large image is either the
-        top-level ``url`` key or the ``large.url`` sub-object. Entries without
-        a usable URL are skipped.
+        The filter exposes the dict as the public ``weibo_pic_infos`` property
+        (the ``_to_raw()`` fallback covers duck-typed fakes). Each entry is
+        ``{pic_id: {...}}``; the large image is either the top-level ``url``
+        key or the ``large.url`` sub-object. Entries without a usable URL, and
+        malformed entries (non-dict, non-str values), are skipped.
         """
-        raw = data._to_raw() if hasattr(data, "_to_raw") else {}
-        pics = raw.get("pic_infos") or {}
+        if hasattr(data, "weibo_pic_infos"):
+            pics = data.weibo_pic_infos
+        else:
+            raw = data._to_raw() if hasattr(data, "_to_raw") else {}
+            pics = raw.get("pic_infos") or {}
         if not isinstance(pics, dict):
             return []
         urls: list[str] = []
         for entry in pics.values():
             if not isinstance(entry, dict):
                 continue
-            image_url = entry.get("url") or (entry.get("large") or {}).get("url")
-            if image_url:
+            image_url = entry.get("url")
+            if not isinstance(image_url, str):
+                large = entry.get("large")
+                image_url = large.get("url") if isinstance(large, dict) else None
+            if isinstance(image_url, str) and image_url:
                 urls.append(image_url)
         return urls
 
