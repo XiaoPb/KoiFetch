@@ -1,64 +1,41 @@
-"""Real parser adapter: platform routing + parse-video-py (Task 5).
+"""Engine parser adapter: per-URL routing across f2 and the legacy engine.
 
-Implements :class:`app.adapters.protocols.ParserAdapter` against the
-`parse-video-py` engine (Git install — see backend/requirements.txt). The
-engine resolves video share URLs (douyin/kuaishou/bilibili/xiaohongshu/weibo/
-xigua/...) into a :class:`parse_video_py.VideoInfo` with real title, cover,
-video URL, author and (for albums) images.
+This module is the engine-mode :class:`ParserAdapter` entry point. It routes
+each URL to one of two protocol-compliant adapters:
 
-Honesty contract (verified against the engine source, 2026-08-25):
+* :class:`app.adapters.parser_f2.F2ParserAdapter` — douyin/weibo/tiktok via
+  the f2 library (primary engine; cookie-aware).
+* :class:`app.adapters.parser_legacy.LegacyParserAdapter` — parse-video-py
+  fallback for the platforms f2 does not cover (kuaishou/bilibili/
+  xiaohongshu/xigua/...), gated by ``enable_legacy_fallback`` so the legacy
+  engine can be removed once f2 covers them (set
+  ``PARSER_LEGACY_FALLBACK=false`` and delete parser_legacy.py + the
+  parse-video-py dependency).
 
-* **No duration, no quality ladder.** ``VideoInfo`` exposes
-  ``video_url``/``cover_url``/``title``/``music_url``/``author``/``images``
-  only, so the result reports ``duration=None`` and empty quality/bitrate
-  lists (both optional in :class:`app.domain.models.ParseResult`), and
-  ``file_size_mb`` comes from a best-effort Content-Length probe of the
-  media URL (never fatal — ``None`` on failure).
-* **图集 / 动图 (image albums) are classified as IMAGE.** When the engine
-  returns ``images`` with no ``video_url``, the result is ``media_type
-  == IMAGE`` with the format derived from the first image's extension
-  (``jpg``/``gif``/``webp``/...; an animated GIF stays an image). The full
-  album URL list lives in ``metadata["images"]``; the v1 downloader fetches
-  the first image (single-file task model). Known engine gap: parse-video-py
-  currently fails on douyin ``/note/`` (图集) pages with ``KeyError:
-  'videoInfoRes'`` — an upstream parser issue, surfaced here as a typed
-  parse failure whose message carries the exception class name.
-* **musicdl is search-based, not URL-based** (verified: its only URL entry is
-  ``parseplaylist`` for playlist URLs, and ``#/song?id=`` URLs return empty).
-  Music-platform URLs are therefore rejected with
-  :class:`UnsupportedPlatformError` (parse-service maps it to code 1003);
-  the playlist→tasks product decision is a documented v1.1 follow-up.
-* **Sync facade over an async engine.** ``parse_video_share_url`` is async;
-  the protocol is sync and runs in FastAPI's threadpool, so each URL is
-  awaited with ``asyncio.run`` (no shared loop across URLs). The engine call
-  is bounded by ``self._timeout`` via ``asyncio.wait_for`` (cancellation on
-  timeout → :class:`EngineTimeoutError`).
-* **Errors are typed.** httpx/timeout/engine failures are translated to the
-  :mod:`app.adapters.engine_errors` hierarchy with stable bilingual messages;
-  the original exception is preserved as ``__cause__``.
-* **``transport`` is a test seam.** Production passes ``None`` (real
-  network); tests inject ``httpx.MockTransport`` to exercise the size probe
-  offline.
+Routing precedence: f2 → legacy → music. Music-platform URLs (musicdl is a
+search-based engine, not URL-based) are rejected with
+:class:`UnsupportedPlatformError` (parse-service maps it to code 1003); the
+playlist→tasks product decision remains a documented v1.1 follow-up. The
+precedence keeps kg.qq.com (全民K歌 video vs QQ music) on the video path.
+
+Both adapters are constructed lazily on first use so the facade imports
+nothing heavy at module load beyond what engine mode already requires.
 """
 
 from __future__ import annotations
 
-import asyncio
-import re
-import uuid
 from urllib.parse import urlsplit
 
 import httpx
 
-from app.adapters.engine_errors import (
-    EngineError,
-    UnsupportedPlatformError,
-    translate_engine_exception,
+from app.adapters.engine_errors import UnsupportedPlatformError
+from app.adapters.parser_f2 import F2ParserAdapter, _route as f2_route
+from app.adapters.parser_legacy import (
+    LegacyParserAdapter,
+    _route as _legacy_route,
 )
-from app.adapters.protocols import ParserAdapter
-from app.domain import MediaType, ParseCommand, ParseResult
-from parse_video_py import parse_video_share_url
-from parse_video_py.parser import video_source_info_mapping
+from app.adapters.protocols import CookieProvider, ParserAdapter
+from app.domain import ParseCommand, ParseResult
 
 __all__ = ["EngineParserAdapter"]
 
@@ -67,32 +44,13 @@ _MESSAGE_MUSIC_UNSUPPORTED = (
     "该平台暂不支持链接解析（音乐引擎为搜索型，歌单解析为v1.1） / "
     "Music URL parsing unsupported in v1 (musicdl is a search-based engine)"
 )
+_MESSAGE_LEGACY_DISABLED = (
+    "该平台的解析引擎已停用 / The parsing engine for this platform is disabled"
+)
 
-# parse-video-py's VideoSource.value -> KoiFetch canonical platform name.
-# Most values already match (DouYin.value == "douyin"); only divergences are
-# mapped (RedBook -> xiaohongshu to keep the stub-era vocabulary stable).
-_CANONICAL_BY_ENGINE_SOURCE = {
-    "douyin": "douyin", "kuaishou": "kuaishou", "bilibili": "bilibili",
-    "weibo": "weibo", "xigua": "xigua", "redbook": "xiaohongshu",
-    "twitter": "twitter", "qqvideo": "qqvideo", "sohu": "sohu",
-    "cctv": "cctv", "acfun": "acfun", "huya": "huya", "weishi": "weishi",
-    "pipixia": "pipixia", "pipigaoxiao": "pipigaoxiao", "zuiyou": "zuiyou",
-    "quanmin": "quanmin", "lishipin": "lishipin", "lvzhou": "lvzhou",
-    "meipai": "meipai", "quanminkge": "quanminkge", "sixroom": "sixroom",
-    "xinpianchang": "xinpianchang", "haokan": "haokan", "doupai": "doupai",
-}
-
-# Host fragment -> canonical platform, derived from the engine's own routing
-# table (single source of truth; see :func:`_route` for matching semantics).
-_VIDEO_ROUTES: list[tuple[str, str]] = []
-for _source, _info in video_source_info_mapping.items():
-    _canonical = _CANONICAL_BY_ENGINE_SOURCE.get(_source.value)
-    if _canonical:
-        for _domain in _info["domain_list"]:
-            _VIDEO_ROUTES.append((_domain, _canonical))
-
-# Music platforms (musicdl's supported sources). Checked AFTER video routes so
-# a host both engines know (kg.qq.com: 全民K歌 video vs QQ music) stays video.
+# Music platforms (musicdl's supported sources). Checked AFTER the legacy
+# video routes so a host both engines know (kg.qq.com: 全民K歌 video vs QQ
+# music) stays video.
 _MUSIC_ROUTES: list[tuple[str, str]] = [
     ("music.163.com", "netease_music"), ("163cn.tv", "netease_music"),
     ("y.qq.com", "qq_music"), ("i.y.qq.com", "qq_music"),
@@ -101,49 +59,47 @@ _MUSIC_ROUTES: list[tuple[str, str]] = [
     ("music.taihe.com", "qianqian"), ("qianqian.com", "qianqian"),
 ]
 
-_UA = {"User-Agent": "Mozilla/5.0 (KoiFetch/0.1)"}
-_EXT_UNSAFE = re.compile(r"[^a-z0-9]+")
 
-
-def _route(url: str) -> tuple[str, str] | None:
-    """Return ``(engine, canonical_platform)`` for a URL, or ``None``.
+def _route(url: str) -> str | None:
+    """Return the engine for ``url``: ``"f2"`` | ``"legacy"`` | ``"musicdl"``.
 
     Matches the hostname exactly or as a ``.``-suffixed subdomain, so
-    unrelated hosts can never false-positive into a platform route.
+    unrelated hosts can never false-positive into a platform route. ``"f2"``
+    wins over ``"legacy"`` over ``"musicdl"``. The f2 check consumes
+    :func:`app.adapters.parser_f2._route` directly (single source of truth for
+    the f2 host table — the legacy table also contains douyin/weibo hosts, so
+    the tables must not be re-derived independently and drift).
     """
     host = (urlsplit(url).hostname or "").lower()
-    for domain, canonical in _VIDEO_ROUTES:
+    if f2_route(url) is not None:
+        return "f2"
+    if _legacy_route(url) is not None:
+        return "legacy"
+    for domain, _platform in _MUSIC_ROUTES:
         if host == domain or host.endswith("." + domain):
-            return "parse-video-py", canonical
-    for domain, canonical in _MUSIC_ROUTES:
-        if host == domain or host.endswith("." + domain):
-            return "musicdl", canonical
+            return "musicdl"
     return None
 
 
-def _extension_of(url: str) -> str | None:
-    """Lowercase alnum extension from the last path segment ('' when none)."""
-    last = urlsplit(url).path.rsplit("/", 1)[-1]
-    dot = last.rfind(".")
-    if dot == -1 or not last[dot + 1 :]:
-        return None
-    cleaned = _EXT_UNSAFE.sub("", last[dot + 1 :].lower())
-    return cleaned or None
-
-
 class EngineParserAdapter:
-    """Real :class:`ParserAdapter`: routes by platform and parses via parse-video-py."""
+    """Real :class:`ParserAdapter`: routes each URL to f2 or the legacy engine."""
 
     def __init__(
         self,
         *,
         timeout_seconds: float = 15.0,
         proxy: str | None = None,
+        cookie_provider: CookieProvider | None = None,
+        enable_legacy_fallback: bool = True,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
         self._timeout = timeout_seconds
         self._proxy = proxy
+        self._cookie_provider = cookie_provider
+        self._enable_legacy_fallback = enable_legacy_fallback
         self._transport = transport  # test seam; None = real network
+        self._f2_adapter: F2ParserAdapter | None = None
+        self._legacy_adapter: LegacyParserAdapter | None = None
 
     def parse(self, command: ParseCommand) -> list[ParseResult]:
         return [self._parse_one(url) for url in command.urls]
@@ -152,80 +108,31 @@ class EngineParserAdapter:
         routed = _route(url)
         if routed is None:
             raise UnsupportedPlatformError(_MESSAGE_UNSUPPORTED_PLATFORM)
-        engine, platform = routed
-        if engine == "musicdl":
+        if routed == "musicdl":
             raise UnsupportedPlatformError(_MESSAGE_MUSIC_UNSUPPORTED)
-        return self._parse_video(url, platform)
+        if routed == "f2":
+            return self._f2().parse(ParseCommand(urls=[url]))[0]
+        if not self._enable_legacy_fallback:
+            raise UnsupportedPlatformError(_MESSAGE_LEGACY_DISABLED)
+        return self._legacy().parse(ParseCommand(urls=[url]))[0]
 
-    def _parse_video(self, url: str, platform: str) -> ParseResult:
-        try:
-            info = asyncio.run(
-                asyncio.wait_for(parse_video_share_url(url), timeout=self._timeout)
+    # -- lazy inner adapters -----------------------------------------------
+
+    def _f2(self) -> F2ParserAdapter:
+        if self._f2_adapter is None:
+            self._f2_adapter = F2ParserAdapter(
+                timeout_seconds=self._timeout,
+                proxy=self._proxy,
+                cookie_provider=self._cookie_provider,
+                transport=self._transport,
             )
-            # 图集 / 动图: the engine returns the album (or animated image) in
-            # `images` with no video_url — classify honestly as IMAGE and
-            # format from the first image's extension (jpg/gif/webp/...).
-            is_album = not info.video_url and bool(info.images)
-            if is_album:
-                media_type = MediaType.IMAGE
-                size_url = info.images[0].url
-                media_format = _extension_of(size_url) or "jpg"
-            else:
-                media_type = MediaType.VIDEO
-                size_url = info.video_url
-                media_format = _extension_of(size_url) or "mp4"
-            return ParseResult(
-                task_id=str(uuid.uuid4()),
-                url=url,
-                media_type=media_type,
-                platform=platform,
-                title=(info.title or "").strip() or platform,
-                cover=info.cover_url or None,
-                duration=None,  # engine exposes no duration (documented)
-                file_size_mb=self._probe_file_size_mb(size_url),
-                format=media_format,
-                available_qualities=[],  # engine exposes no quality ladder
-                available_bitrates=[],
-                metadata={
-                    "engine": "parse-video-py",
-                    "video_url": info.video_url,
-                    "music_url": info.music_url or None,
-                    "author": {
-                        "uid": info.author.uid,
-                        "name": info.author.name,
-                        "avatar": info.author.avatar,
-                    },
-                    "images": [
-                        {"url": img.url, "live_photo_url": img.live_photo_url}
-                        for img in info.images
-                    ],
-                },
-                error=None,
+        return self._f2_adapter
+
+    def _legacy(self) -> LegacyParserAdapter:
+        if self._legacy_adapter is None:
+            self._legacy_adapter = LegacyParserAdapter(
+                timeout_seconds=self._timeout,
+                proxy=self._proxy,
+                transport=self._transport,
             )
-        except EngineError:
-            raise
-        except Exception as exc:
-            raise translate_engine_exception(exc, url=url, operation="parse") from exc
-
-    def _probe_file_size_mb(self, video_url: str) -> float | None:
-        """Best-effort Content-Length of the media URL (GET, headers only).
-
-        CDNs often reject HEAD or omit length; any failure yields ``None`` —
-        the size is optional metadata, never a parse failure.
-        """
-        if not video_url:
-            return None
-        kwargs: dict = {"timeout": self._timeout, "follow_redirects": True}
-        if self._proxy:
-            kwargs["proxy"] = self._proxy
-        if self._transport is not None:
-            kwargs["transport"] = self._transport
-        try:
-            with httpx.Client(**kwargs) as client:
-                with client.stream("GET", video_url, headers=_UA) as response:
-                    length = response.headers.get("content-length")
-            if length and length.isdigit():
-                return round(int(length) / 1_000_000, 1)
-        except Exception:  # probe is best-effort by contract
-            pass
-        return None
+        return self._legacy_adapter

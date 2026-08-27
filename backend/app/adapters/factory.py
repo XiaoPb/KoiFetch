@@ -21,6 +21,7 @@ from app.adapters.downloader_stub import StubDownloaderAdapter
 from app.adapters.parser_stub import StubParserAdapter
 from app.adapters.protocols import (
     AccessTokenProvider,
+    CookieProvider,
     DownloaderAdapter,
     OneTimeTokenProvider,
     ParserAdapter,
@@ -42,14 +43,18 @@ __all__ = [
 ]
 
 
-def get_parser(settings: Settings | None = None) -> ParserAdapter:
+def get_parser(
+    settings: Settings | None = None,
+    cookie_provider: CookieProvider | None = None,
+) -> ParserAdapter:
     """Return the parser for ``settings.parser_engine``.
 
     ``"stub"`` (default) → the deterministic offline :class:`StubParserAdapter`;
-    ``"engine"`` → the parse-video-py-backed :class:`EngineParserAdapter`
-    (lazily imported so the app boots and the non-engine tests run without the
-    engine packages installed — engine mode fails loudly at factory time if
-    they are missing).
+    ``"engine"`` → the routing facade :class:`EngineParserAdapter` (f2 for
+    douyin/weibo/tiktok plus the parse-video-py fallback, lazily imported so
+    the app boots and the non-engine tests run without the engines installed —
+    engine mode fails loudly at factory time if they are missing).
+    ``cookie_provider`` (optional) is forwarded to the f2 adapter only.
     """
     settings = settings or get_settings()
     if settings.parser_engine == "engine":
@@ -58,6 +63,8 @@ def get_parser(settings: Settings | None = None) -> ParserAdapter:
         return EngineParserAdapter(
             timeout_seconds=settings.engine_timeout_seconds,
             proxy=settings.engine_proxy,
+            cookie_provider=cookie_provider,
+            enable_legacy_fallback=settings.parser_legacy_fallback,
         )
     return StubParserAdapter()
 

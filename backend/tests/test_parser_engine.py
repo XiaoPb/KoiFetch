@@ -1,102 +1,83 @@
-"""Tests for the engine parser adapter (Task 5): platform routing and the
-parse-video-py integration. All engine calls are faked (monkeypatched
-parse_video_share_url, httpx.MockTransport for the size probe) — the suite
-never touches the network."""
+"""Tests for the engine parser routing facade (Task 11).
 
-import asyncio
-import re
+The facade dispatches each URL to the f2 adapter (douyin/weibo/tiktok) or the
+legacy parse-video-py adapter (everything else f2 does not cover), rejects
+music URLs, and honours ``enable_legacy_fallback``. The inner adapters are
+faked so the routing contract is tested in isolation — their own behavior is
+covered by test_parser_f2.py / test_parser_legacy.py."""
 
-import httpx
 import pytest
 
 import app.adapters.parser_engine as parser_engine
-from app.adapters.engine_errors import (
-    EngineNetworkError,
-    EngineParseError,
-    EngineTimeoutError,
-    PlatformBlockedError,
-    UnsupportedPlatformError,
-)
+from app.adapters.engine_errors import UnsupportedPlatformError
 from app.adapters.parser_engine import EngineParserAdapter
-from app.domain import MediaType, ParseCommand
-from parse_video_py import ImgInfo, VideoAuthor, VideoInfo
-
-_URL_RE = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-)
+from app.domain import MediaType, ParseCommand, ParseResult
 
 
-def _fake_video_info(**overrides) -> VideoInfo:
-    base = dict(
-        video_url="https://cdn.example/v.mp4",
-        cover_url="https://cdn.example/c.jpg",
-        title="晴天示例",
-        music_url="https://cdn.example/m.mp3",
-        images=[],
-        author=VideoAuthor(uid="1", name="张三", avatar="https://cdn.example/a.jpg"),
-    )
-    base.update(overrides)
-    return VideoInfo(**base)
+class FakeResult:
+    def __init__(self, url):
+        self.url = url
 
 
-def _offline_adapter() -> EngineParserAdapter:
-    """An adapter whose size probe never touches the network (no length)."""
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, headers={}, content=b"")
+class FakeF2Adapter:
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        self.calls = []
 
-    return EngineParserAdapter(transport=httpx.MockTransport(handler))
+    def parse(self, command):
+        self.calls.extend(command.urls)
+        return [FakeResult(url) for url in command.urls]
+
+
+class FakeLegacyAdapter:
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        self.calls = []
+
+    def parse(self, command):
+        self.calls.extend(command.urls)
+        return [FakeResult(url) for url in command.urls]
+
+
+@pytest.fixture(autouse=True)
+def fake_adapters(monkeypatch):
+    monkeypatch.setattr(parser_engine, "F2ParserAdapter", FakeF2Adapter)
+    monkeypatch.setattr(parser_engine, "LegacyParserAdapter", FakeLegacyAdapter)
 
 
 class TestRouting:
-    def test_video_platform_routes_to_parse_video_py(self, monkeypatch):
-        calls = []
-
-        async def fake_parse(url):
-            calls.append(url)
-            return _fake_video_info()
-
-        monkeypatch.setattr(parser_engine, "parse_video_share_url", fake_parse)
-        adapter = _offline_adapter()
+    def test_f2_urls_go_to_f2_adapter(self):
+        adapter = EngineParserAdapter()
         results = adapter.parse(ParseCommand(urls=["https://v.douyin.com/abc/"]))
         assert len(results) == 1
-        assert calls == ["https://v.douyin.com/abc/"]
+        assert adapter._f2().calls == ["https://v.douyin.com/abc/"]
+        assert adapter._legacy().calls == []
 
-    def test_music_platform_raises_unsupported(self):
+    def test_legacy_urls_go_to_legacy_adapter(self):
+        adapter = EngineParserAdapter()
+        adapter.parse(ParseCommand(urls=["https://www.bilibili.com/video/BV1xx"]))
+        assert adapter._legacy().calls == ["https://www.bilibili.com/video/BV1xx"]
+        assert adapter._f2().calls == []
+
+    def test_music_url_raises_unsupported(self):
         adapter = EngineParserAdapter()
         with pytest.raises(UnsupportedPlatformError):
             adapter.parse(ParseCommand(urls=["https://music.163.com/#/song?id=1"]))
-        with pytest.raises(UnsupportedPlatformError):
-            adapter.parse(ParseCommand(urls=["https://y.qq.com/n/ryqq/songDetail/001x"]))
 
     def test_unknown_platform_raises_unsupported(self):
         adapter = EngineParserAdapter()
         with pytest.raises(UnsupportedPlatformError):
             adapter.parse(ParseCommand(urls=["https://example.com/things/xyz"]))
 
-    def test_quanminkge_stays_video_not_music(self, monkeypatch):
-        # kg.qq.com is 全民K歌 (video) in parse-video-py, not QQ music.
-        async def fake_parse(url):
-            return _fake_video_info()
-
-        monkeypatch.setattr(parser_engine, "parse_video_share_url", fake_parse)
-        result = _offline_adapter().parse(
-            ParseCommand(urls=["https://kg.qq.com/node/play?s=abc"])
-        )[0]
-        assert result.platform == "quanminkge"
-        assert result.media_type is MediaType.VIDEO
-
-    def test_route_table_covers_engine_mapping(self):
-        # Drift guard: every domain_list entry the installed parse-video-py
-        # knows must be routable by our adapter.
-        from parse_video_py.parser import video_source_info_mapping
-        video_hosts = {host for host, _ in parser_engine._VIDEO_ROUTES}
-        for info in video_source_info_mapping.values():
-            for domain in info["domain_list"]:
-                assert any(domain in video_host for video_host in video_hosts), domain
+    def test_quanminkge_stays_video_not_music(self):
+        # kg.qq.com is 全民K歌 (video) in parse-video-py, not QQ music — the
+        # legacy (video) route must win over the music route.
+        adapter = EngineParserAdapter()
+        adapter.parse(ParseCommand(urls=["https://kg.qq.com/node/play?s=abc"]))
+        assert adapter._legacy().calls == ["https://kg.qq.com/node/play?s=abc"]
+        assert adapter._f2().calls == []
 
     def test_hostname_false_positives_rejected(self):
-        # Substring matching would route these wrongly (box.com contains
-        # "x.com", 36.cn contains "6.cn", tv.sohu.com.evil contains "sohu.com").
         adapter = EngineParserAdapter()
         for url in (
             "https://box.com/video/1",
@@ -104,205 +85,41 @@ class TestRouting:
             "https://36.cn/clip/1",
             "https://tv.sohu.com.evil.example/video/1",
             "https://weibo.com.evil/video/1",
+            "https://douyin.com.evil.example/video/1",
         ):
             with pytest.raises(UnsupportedPlatformError):
                 adapter.parse(ParseCommand(urls=[url]))
 
-    def test_subdomains_still_route(self, monkeypatch):
-        async def fake_parse(url):
-            return _fake_video_info()
 
-        monkeypatch.setattr(parser_engine, "parse_video_share_url", fake_parse)
-        for url in (
-            "https://v.douyin.com/abc/",
-            "https://www.bilibili.com/video/BV1xx",
-            "https://m.bilibili.com/video/BV1xx",
-            "https://b23.tv/abc",
-            "https://www.xiaohongshu.com/explore/1",
-            "https://xhslink.com/abc",
-        ):
-            result = _offline_adapter().parse(ParseCommand(urls=[url]))[0]
-            assert result.media_type is MediaType.VIDEO
+class TestLegacyFallbackSwitch:
+    def test_legacy_disabled_makes_legacy_urls_unsupported(self):
+        adapter = EngineParserAdapter(enable_legacy_fallback=False)
+        with pytest.raises(UnsupportedPlatformError):
+            adapter.parse(ParseCommand(urls=["https://www.bilibili.com/video/BV1xx"]))
 
+    def test_legacy_disabled_keeps_f2_urls_working(self):
+        adapter = EngineParserAdapter(enable_legacy_fallback=False)
+        results = adapter.parse(ParseCommand(urls=["https://v.douyin.com/abc/"]))
+        assert len(results) == 1
 
-class TestVideoMapping:
-    def test_parse_maps_video_info_to_parse_result(self, monkeypatch):
-        async def fake_parse(url):
-            return _fake_video_info()
-
-        monkeypatch.setattr(parser_engine, "parse_video_share_url", fake_parse)
-        adapter = _offline_adapter()
-        result = adapter.parse(ParseCommand(urls=["https://v.douyin.com/abc/"]))[0]
-        assert result.title == "晴天示例"
-        assert result.cover == "https://cdn.example/c.jpg"
-        assert result.platform == "douyin"
-        assert result.media_type is MediaType.VIDEO
-        assert result.format == "mp4"
-        assert result.duration is None  # engine exposes no duration (documented)
-        assert result.available_qualities == []
-        assert result.available_bitrates == []
-        assert result.metadata["engine"] == "parse-video-py"
-        assert result.metadata["video_url"] == "https://cdn.example/v.mp4"
-        assert result.metadata["music_url"] == "https://cdn.example/m.mp3"
-        assert result.metadata["author"]["name"] == "张三"
-        assert _URL_RE.fullmatch(result.task_id) is not None
-
-    def test_empty_title_falls_back_to_platform(self, monkeypatch):
-        async def fake_parse(url):
-            return _fake_video_info(title="")
-
-        monkeypatch.setattr(parser_engine, "parse_video_share_url", fake_parse)
-        result = _offline_adapter().parse(
-            ParseCommand(urls=["https://v.douyin.com/abc/"])
-        )[0]
-        assert result.title == "douyin"
-
-    def test_task_id_is_fresh_per_parse(self, monkeypatch):
-        async def fake_parse(url):
-            return _fake_video_info()
-
-        monkeypatch.setattr(parser_engine, "parse_video_share_url", fake_parse)
-        adapter = _offline_adapter()
-        first = adapter.parse(ParseCommand(urls=["https://v.douyin.com/abc/"]))[0]
-        second = adapter.parse(ParseCommand(urls=["https://v.douyin.com/abc/"]))[0]
-        assert first.task_id != second.task_id
-
-    def test_image_album_classified_as_image(self, monkeypatch):
-        # 图集/动图: the engine returns the album in `images` with no
-        # video_url — the result must be IMAGE with a real image format.
-        async def fake_parse(url):
-            return _fake_video_info(
-                video_url="",
-                cover_url="https://cdn.example/cover.jpg",
-                images=[
-                    ImgInfo(url="https://cdn.example/a.gif", live_photo_url=""),
-                    ImgInfo(url="https://cdn.example/b.jpg", live_photo_url=""),
-                ],
-            )
-
-        monkeypatch.setattr(parser_engine, "parse_video_share_url", fake_parse)
-        result = _offline_adapter().parse(
-            ParseCommand(urls=["https://v.douyin.com/abc/"])
-        )[0]
-        assert result.media_type is MediaType.IMAGE
-        assert result.format == "gif"  # 动图: animated image stays an image
-        assert result.cover == "https://cdn.example/cover.jpg"
-        assert len(result.metadata["images"]) == 2
-        assert result.metadata["images"][0]["url"] == "https://cdn.example/a.gif"
-
-    def test_video_with_images_stays_video(self, monkeypatch):
-        # Some platforms return BOTH a video_url and thumbnails — that is a
-        # video, not an album.
-        async def fake_parse(url):
-            return _fake_video_info(images=[ImgInfo(url="https://cdn.example/t.jpg", live_photo_url="")])
-
-        monkeypatch.setattr(parser_engine, "parse_video_share_url", fake_parse)
-        result = _offline_adapter().parse(
-            ParseCommand(urls=["https://v.douyin.com/abc/"])
-        )[0]
-        assert result.media_type is MediaType.VIDEO
-        assert result.format == "mp4"
+    def test_cookie_provider_is_forwarded_to_f2_only(self):
+        provider = object()
+        adapter = EngineParserAdapter(cookie_provider=provider)
+        assert adapter._f2().kwargs["cookie_provider"] is provider
+        assert "cookie_provider" not in adapter._legacy().kwargs
 
 
-class TestFileSizeProbe:
-    def _adapter_with_probe(self, content_length: str | None):
-        def handler(request: httpx.Request) -> httpx.Response:
-            headers = {}
-            if content_length is not None:
-                headers["content-length"] = content_length
-            return httpx.Response(200, headers=headers, content=b"")
+class TestFacadeConstruction:
+    def test_adapters_are_built_lazily_and_shared(self):
+        adapter = EngineParserAdapter()
+        assert adapter._f2_adapter is None
+        first = adapter._f2()
+        assert adapter._f2() is first
+        assert isinstance(adapter._f2_adapter, FakeF2Adapter)
 
-        return EngineParserAdapter(transport=httpx.MockTransport(handler))
-
-    def test_file_size_from_content_length(self, monkeypatch):
-        async def fake_parse(url):
-            return _fake_video_info()
-
-        monkeypatch.setattr(parser_engine, "parse_video_share_url", fake_parse)
-        result = self._adapter_with_probe("1048576").parse(
-            ParseCommand(urls=["https://v.douyin.com/abc/"])
-        )[0]
-        assert result.file_size_mb == pytest.approx(1.0)
-
-    def test_probe_failure_leaves_size_none(self, monkeypatch):
-        async def fake_parse(url):
-            return _fake_video_info()
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            raise httpx.ConnectError("refused", request=request)
-
-        monkeypatch.setattr(parser_engine, "parse_video_share_url", fake_parse)
-        adapter = EngineParserAdapter(transport=httpx.MockTransport(handler))
-        result = adapter.parse(ParseCommand(urls=["https://v.douyin.com/abc/"]))[0]
-        assert result.file_size_mb is None
-        assert result.error is None  # the probe is best-effort, never fatal
-
-
-class TestEngineErrorTranslation:
-    def test_connect_error_becomes_engine_network_error(self, monkeypatch):
-        async def fake_parse(url):
-            raise httpx.ConnectError("refused", request=httpx.Request("GET", url))
-
-        monkeypatch.setattr(parser_engine, "parse_video_share_url", fake_parse)
-        with pytest.raises(EngineNetworkError):
-            EngineParserAdapter().parse(ParseCommand(urls=["https://v.douyin.com/abc/"]))
-
-    def test_timeout_becomes_engine_timeout_error(self, monkeypatch):
-        async def fake_parse(url):
-            raise httpx.ReadTimeout("slow", request=httpx.Request("GET", url))
-
-        monkeypatch.setattr(parser_engine, "parse_video_share_url", fake_parse)
-        with pytest.raises(EngineTimeoutError):
-            EngineParserAdapter().parse(ParseCommand(urls=["https://v.douyin.com/abc/"]))
-
-    def test_asyncio_timeout_becomes_engine_timeout_error(self, monkeypatch):
-        async def fake_parse(url):
-            raise asyncio.TimeoutError
-
-        monkeypatch.setattr(parser_engine, "parse_video_share_url", fake_parse)
-        with pytest.raises(EngineTimeoutError):
-            EngineParserAdapter().parse(ParseCommand(urls=["https://v.douyin.com/abc/"]))
-
-    def test_403_becomes_platform_blocked_error(self, monkeypatch):
-        async def fake_parse(url):
-            request = httpx.Request("GET", url)
-            raise httpx.HTTPStatusError(
-                "Forbidden", request=request, response=httpx.Response(403, request=request)
-            )
-
-        monkeypatch.setattr(parser_engine, "parse_video_share_url", fake_parse)
-        with pytest.raises(PlatformBlockedError):
-            EngineParserAdapter().parse(ParseCommand(urls=["https://v.douyin.com/abc/"]))
-
-    def test_value_error_becomes_engine_parse_error(self, monkeypatch):
-        async def fake_parse(url):
-            raise ValueError("parse video json info from html fail")
-
-        monkeypatch.setattr(parser_engine, "parse_video_share_url", fake_parse)
-        with pytest.raises(EngineParseError):
-            EngineParserAdapter().parse(ParseCommand(urls=["https://v.douyin.com/abc/"]))
-
-    def test_slow_engine_call_hits_configured_timeout(self, monkeypatch):
-        async def slow_parse(url):
-            await asyncio.sleep(5)
-
-        monkeypatch.setattr(parser_engine, "parse_video_share_url", slow_parse)
-        with pytest.raises(EngineTimeoutError):
-            EngineParserAdapter(timeout_seconds=0.01).parse(
-                ParseCommand(urls=["https://v.douyin.com/abc/"])
-            )
-
-    def test_construction_failure_becomes_engine_parse_error(self, monkeypatch):
-        # Odd engine data (a field access raising) must translate into a typed
-        # EngineParseError, not leak a raw AttributeError.
-        class BrokenInfo:
-            @property
-            def title(self):
-                raise AttributeError("missing title")
-
-        async def fake_parse(url):
-            return BrokenInfo()
-
-        monkeypatch.setattr(parser_engine, "parse_video_share_url", fake_parse)
-        with pytest.raises(EngineParseError):
-            _offline_adapter().parse(ParseCommand(urls=["https://v.douyin.com/abc/"]))
+    def test_constructor_passes_timeout_proxy_and_transport(self):
+        transport = object()
+        adapter = EngineParserAdapter(timeout_seconds=9.0, proxy="http://p:8080", transport=transport)
+        assert adapter._f2().kwargs["timeout_seconds"] == 9.0
+        assert adapter._f2().kwargs["proxy"] == "http://p:8080"
+        assert adapter._f2().kwargs["transport"] is transport
