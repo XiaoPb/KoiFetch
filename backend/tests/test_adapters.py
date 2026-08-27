@@ -495,6 +495,22 @@ class TestEngineModeFactory:
         assert adapter._timeout == pytest.approx(7.5)
         assert adapter._proxy == "http://proxy.local:3128"
 
+    def test_engine_parser_forwards_cookie_provider_and_legacy_fallback(self, settings):
+        pytest.importorskip("parse_video_py")
+        from app.adapters.parser_engine import EngineParserAdapter
+
+        engine_settings = settings.model_copy(
+            update={
+                "parser_engine": "engine",
+                "parser_legacy_fallback": False,
+            }
+        )
+        provider = object()
+        parser = get_parser(engine_settings, cookie_provider=provider)
+        assert isinstance(parser, EngineParserAdapter)
+        assert parser._cookie_provider is provider
+        assert parser._enable_legacy_fallback is False
+
     def test_get_downloader_engine_mode_returns_engine_adapter(self, settings):
         pytest.importorskip("musicdl")
         from app.adapters.downloader_engine import EngineDownloaderAdapter

@@ -10,13 +10,18 @@ each URL to one of two protocol-compliant adapters:
   xiaohongshu/xigua/...), gated by ``enable_legacy_fallback`` so the legacy
   engine can be removed once f2 covers them (set
   ``PARSER_LEGACY_FALLBACK=false`` and delete parser_legacy.py + the
-  parse-video-py dependency).
+  parse-video-py dependency). Coverage is the engine's own domain list
+  (e.g. ``www.bilibili.com``/``m.bilibili.com``/``b23.tv``,
+  ``v.kuaishou.com``); hosts outside it (e.g. bare ``bilibili.com``,
+  ``www.kuaishou.com``) route as 平台不支持 — pre-existing engine-derived
+  behavior.
 
 Routing precedence: f2 → legacy → music. Music-platform URLs (musicdl is a
 search-based engine, not URL-based) are rejected with
 :class:`UnsupportedPlatformError` (parse-service maps it to code 1003); the
 playlist→tasks product decision remains a documented v1.1 follow-up. The
-precedence keeps kg.qq.com (全民K歌 video vs QQ music) on the video path.
+precedence keeps a host that both the legacy and music tables might cover
+(e.g. a future 全民K歌 vs QQ-music overlap) on the video path.
 
 Both adapters are constructed lazily on first use so the facade imports
 nothing heavy at module load beyond what engine mode already requires.
@@ -34,7 +39,7 @@ from app.adapters.parser_legacy import (
     LegacyParserAdapter,
     _route as _legacy_route,
 )
-from app.adapters.protocols import CookieProvider, ParserAdapter
+from app.adapters.protocols import CookieProvider
 from app.domain import ParseCommand, ParseResult
 
 __all__ = ["EngineParserAdapter"]
@@ -49,8 +54,8 @@ _MESSAGE_LEGACY_DISABLED = (
 )
 
 # Music platforms (musicdl's supported sources). Checked AFTER the legacy
-# video routes so a host both engines know (kg.qq.com: 全民K歌 video vs QQ
-# music) stays video.
+# video routes so a host both the legacy and music tables might cover in the
+# future stays on the video path.
 _MUSIC_ROUTES: list[tuple[str, str]] = [
     ("music.163.com", "netease_music"), ("163cn.tv", "netease_music"),
     ("y.qq.com", "qq_music"), ("i.y.qq.com", "qq_music"),

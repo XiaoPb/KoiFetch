@@ -11,7 +11,7 @@ import pytest
 import app.adapters.parser_engine as parser_engine
 from app.adapters.engine_errors import UnsupportedPlatformError
 from app.adapters.parser_engine import EngineParserAdapter
-from app.domain import MediaType, ParseCommand, ParseResult
+from app.domain import ParseCommand
 
 
 class FakeResult:
@@ -90,6 +90,21 @@ class TestRouting:
             with pytest.raises(UnsupportedPlatformError):
                 adapter.parse(ParseCommand(urls=[url]))
 
+    def test_mixed_batch_routes_each_url_independently(self):
+        adapter = EngineParserAdapter()
+        with pytest.raises(UnsupportedPlatformError):
+            adapter.parse(
+                ParseCommand(
+                    urls=[
+                        "https://v.douyin.com/abc/",
+                        "https://www.bilibili.com/video/BV1xx",
+                        "https://music.163.com/#/song?id=1",
+                    ]
+                )
+            )
+        assert adapter._f2().calls == ["https://v.douyin.com/abc/"]
+        assert adapter._legacy().calls == ["https://www.bilibili.com/video/BV1xx"]
+
 
 class TestLegacyFallbackSwitch:
     def test_legacy_disabled_makes_legacy_urls_unsupported(self):
@@ -123,3 +138,6 @@ class TestFacadeConstruction:
         assert adapter._f2().kwargs["timeout_seconds"] == 9.0
         assert adapter._f2().kwargs["proxy"] == "http://p:8080"
         assert adapter._f2().kwargs["transport"] is transport
+        assert adapter._legacy().kwargs["timeout_seconds"] == 9.0
+        assert adapter._legacy().kwargs["proxy"] == "http://p:8080"
+        assert adapter._legacy().kwargs["transport"] is transport
