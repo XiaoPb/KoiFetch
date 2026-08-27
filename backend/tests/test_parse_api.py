@@ -19,6 +19,7 @@ from app.adapters.parser_stub import StubParserAdapter
 from app.api.parse import get_parse_service
 from app.api.responses import (
     CODE_BAD_REQUEST,
+    CODE_COOKIE_ERROR,
     CODE_OK,
     CODE_URL_EMPTY,
     CODE_URL_INVALID,
@@ -250,6 +251,39 @@ class TestPartialFailure:
                 "code": CODE_PLATFORM_UNSUPPORTED,
             }
         ]
+
+    def test_cookie_error_failure_serializes_code_1006(self, engine):
+        from app.adapters.engine_errors import CookieInvalidError
+
+        douyin_url = "https://v.douyin.com/abc/"
+
+        class _CookieRejectingParser:
+            def __init__(self, bad_url: str) -> None:
+                self._bad_url = bad_url
+                self._delegate = StubParserAdapter()
+
+            def parse(self, command):
+                if command.urls[0] == self._bad_url:
+                    raise CookieInvalidError(
+                        "Cookie 无效或已过期，请重新设置 / Cookie invalid or expired — please update it"
+                    )
+                return self._delegate.parse(command)
+
+        app = create_app(settings=make_settings())
+        app.dependency_overrides[get_parse_service] = lambda: ParseService(
+            parser=_CookieRejectingParser(douyin_url), engine=engine
+        )
+        client = TestClient(app)
+
+        response = client.post("/api/parse", json={"urls": [douyin_url]})
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["results"] == []
+        assert len(data["failed"]) == 1
+        failure = data["failed"][0]
+        assert failure["url"] == douyin_url
+        assert "Cookie 无效或已过期" in failure["error"]
+        assert failure["code"] == CODE_COOKIE_ERROR
 
 
 class TestParsePersistence:

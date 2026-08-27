@@ -45,7 +45,10 @@ Cookie handling (Task 9 wires the classification):
   ``status_code`` → :class:`CookieInvalidError`. A narrow status set would
   misclassify real cookie expiries as generic parse errors; the platform's
   own authoritative signals — f2's ``APIUnauthorizedError`` and weibo's
-  ``error_code == 20112`` — carry the precise cases.
+  ``error_code == 20112`` — carry the precise cases. A consequence of the
+  broad check: a deleted/blocked video that returns a non-zero status is
+  also surfaced as :class:`CookieInvalidError` (a pointless re-set prompt)
+  until a narrower classifier lands.
 
 Errors: f2 exceptions translate to the
 :mod:`app.adapters.engine_errors` hierarchy (see :func:`_translate_f2_error`);
