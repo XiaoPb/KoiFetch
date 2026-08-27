@@ -10,7 +10,8 @@ import { getErrorMessage } from '../../services/apiClient';
 import { ResultCard, type DownloadOptions } from './ResultCard';
 import { extractUrls, selectVisibleResults, useParserStore } from './parserStore';
 import { usePreviewStore } from './previewStore';
-import type { ParseResult } from '../../types/api';
+import { useCookieStore } from '../cookies/cookieStore';
+import { ApiCodes, type ParseResult } from '../../types/api';
 
 /**
  * Read a plain-text file as UTF-8 (TXT batch import). Plain-text only by
@@ -39,6 +40,8 @@ export const MAX_TXT_IMPORT_BYTES = 1024 * 1024; // 1 MB
  * so prose around the URL is ignored. A Tag reports how many links were
  * extracted whenever there is more than one. The header media-mode switch
  * re-keys the result grid so cards replay a staggered fade-up animation.
+ * When the backend stamps a failure with code 1006 (cookie missing/expired),
+ * a warning alert offers a shortcut to the cookie settings drawer.
  */
 export function ParserWorkspace(): JSX.Element {
   const { t } = useTranslation();
@@ -250,6 +253,24 @@ export function ParserWorkspace(): JSX.Element {
               {t('parser.summary', { ok: visibleResults.length, failed: failed.length })}
             </Typography.Text>
           </div>
+
+          {failed.some((item) => item.code === ApiCodes.COOKIE_ERROR) && (
+            <Alert
+              type="warning"
+              showIcon
+              message={t('parser.cookieAlert')}
+              action={
+                <Button
+                  size="small"
+                  onClick={() => useCookieStore.getState().openDrawer()}
+                  data-testid="cookie-settings-link"
+                >
+                  {t('parser.goSettings')}
+                </Button>
+              }
+              data-testid="cookie-alert"
+            />
+          )}
 
           {failed.length > 0 && (
             <div className="parser-failed" data-testid="parser-failed">

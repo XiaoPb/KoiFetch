@@ -10,6 +10,7 @@ import { useAppStore } from '../../stores/appStore';
 import { selectActiveCount, useDownloadsStore } from '../../stores/downloadsStore';
 import { useParserStore, PARSER_EMPTY_INPUT_MESSAGE, PARSER_TOO_MANY_URLS_MESSAGE } from './parserStore';
 import { usePreviewStore } from './previewStore';
+import { useCookieStore } from '../cookies/cookieStore';
 
 vi.mock('../../services/api', () => ({
   parseApi: { parse: vi.fn() },
@@ -18,6 +19,11 @@ vi.mock('../../services/api', () => ({
     streamUrl: (taskId: string) => `/api/preview/${taskId}/stream`,
     imageUrl: (taskId: string, index: number) => `/api/preview/${taskId}/images/${index}`,
     albumZipUrl: (taskId: string) => `/api/preview/${taskId}/images.zip`,
+  },
+  cookieApi: {
+    list: vi.fn().mockResolvedValue({ cookies: [] }),
+    set: vi.fn(),
+    remove: vi.fn(),
   },
 }));
 
@@ -173,6 +179,7 @@ describe('ParserWorkspace', () => {
     useDownloadsStore.setState({ items: [], submitting: {} });
     usePreviewStore.setState({ activeTask: null });
     useAppStore.setState({ mediaMode: 'video' });
+    useCookieStore.setState({ drawerOpen: false, entries: [], loading: false, error: null });
   });
 
   afterEach(() => {
@@ -354,6 +361,40 @@ describe('ParserWorkspace', () => {
     await user.click(screen.getByTestId('parse-retry'));
     expect(await screen.findByTestId('result-card-t1')).toBeInTheDocument();
     expect(parseApi.parse).toHaveBeenCalledTimes(2);
+  });
+
+  it('prompts to re-configure cookies when a failure carries code 1006', async () => {
+    (parseApi.parse as Mock).mockResolvedValue({
+      results: [],
+      failed: [
+        {
+          url: 'https://v.douyin.com/abc/',
+          error: 'Cookie 无效或已过期，请重新设置 / Cookie invalid or expired — please update it',
+          code: 1006,
+        },
+      ],
+    });
+    const user = userEvent.setup();
+    renderWithProviders(<ParserWorkspace />);
+    await parseSeeded('https://v.douyin.com/abc/');
+
+    const alert = await screen.findByTestId('cookie-alert');
+    expect(alert).toHaveTextContent(/Cookie 无效或已过期/);
+
+    await user.click(screen.getByTestId('cookie-settings-link'));
+    expect(useCookieStore.getState().drawerOpen).toBe(true);
+    useCookieStore.setState({ drawerOpen: false });
+  });
+
+  it('does not show the cookie alert when failures are unrelated', async () => {
+    (parseApi.parse as Mock).mockResolvedValue({
+      results: [],
+      failed: [{ url: 'https://example.com/bad', error: '平台不支持 / Unsupported platform' }],
+    });
+    renderWithProviders(<ParserWorkspace />);
+    await parseSeeded('https://example.com/bad');
+    expect(await screen.findByTestId('parser-failed')).toBeInTheDocument();
+    expect(screen.queryByTestId('cookie-alert')).not.toBeInTheDocument();
   });
 
   it('records the clicked result in the preview seam on [预览] (music only)', async () => {
