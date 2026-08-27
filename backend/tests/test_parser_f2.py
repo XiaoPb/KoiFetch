@@ -210,6 +210,64 @@ class TestBuilder:
                 author={"uid": "1", "name": "n", "avatar": None},
             )
 
+    def test_blank_title_and_cover_are_normalized(self):
+        adapter = _offline_adapter(cookie_provider=FakeCookieProvider({}))
+        result = adapter._build_result(
+            url="https://v.douyin.com/abc/",
+            platform="douyin",
+            title="  ",
+            cover="",
+            duration_ms=83000,
+            video_url="https://cdn.example/v.mp4",
+            images=[],
+            author={"uid": "1", "name": "张三", "avatar": None},
+        )
+        assert result.title == "douyin"  # blank title falls back to platform
+        assert result.cover is None
+
+    def test_zero_and_float_durations(self):
+        adapter = _offline_adapter(cookie_provider=FakeCookieProvider({}))
+        zero = adapter._build_result(
+            url="https://v.douyin.com/a",
+            platform="douyin",
+            title="x",
+            cover=None,
+            duration_ms=0,
+            video_url="https://cdn.example/v.mp4",
+            images=[],
+            author={"uid": "1", "name": "n", "avatar": None},
+        )
+        assert zero.duration is None  # 0 ms = unknown, not "00:00"
+
+        floored = adapter._build_result(
+            url="https://v.douyin.com/b",
+            platform="douyin",
+            title="x",
+            cover=None,
+            duration_ms=83000.5,
+            video_url="https://cdn.example/v.mp4",
+            images=[],
+            author={"uid": "1", "name": "n", "avatar": None},
+        )
+        assert floored.duration == "01:23"
+
+    def test_non_string_images_are_dropped(self):
+        adapter = _offline_adapter(cookie_provider=FakeCookieProvider({}))
+        result = adapter._build_result(
+            url="https://v.douyin.com/note/1",
+            platform="douyin",
+            title="图集",
+            cover=None,
+            duration_ms=None,
+            video_url=None,
+            images=["https://cdn.example/a.jpg", None, 123],
+            author={"uid": "1", "name": "张三", "avatar": None},
+        )
+        assert result.media_type is MediaType.IMAGE
+        assert [img["url"] for img in result.metadata["images"]] == [
+            "https://cdn.example/a.jpg"
+        ]
+
     def test_unsupported_url_raises_unsupported_platform(self):
         adapter = _offline_adapter(cookie_provider=FakeCookieProvider({}))
         with pytest.raises(UnsupportedPlatformError):

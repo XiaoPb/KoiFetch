@@ -21,7 +21,7 @@ Platform contract (verified against f2 0.0.1.7, 2026-08-26):
   images/``error_code``). Public posts parse without a cookie;
   ``error_code == 20112`` means the post needs a cookie.
 * **tiktok** — ``AwemeIdFetcher.get_aweme_id(url)`` (tiktok app) then
-  ``TiktokHandler(kwargs).fetch_one_video(item_id=...)`` → filter with
+  ``TiktokHandler(kwargs).fetch_one_video(itemId=...)`` → filter with
   ``desc``/``video_playAddr``/``video_cover``/``video_duration`` (ms)/
   ``nickname``/``api_status_code``.
 
@@ -56,12 +56,14 @@ Known limitations:
   Importing them at module load would make this adapter's import unbounded and
   untestable, so the fetch methods resolve f2 classes lazily via
   :meth:`F2ParserAdapter._import_f2` (cached in ``sys.modules`` after the
-  first parse of a platform). Consequences: the first parse of each platform
-  pays the token-API latency once; and when a token API is unreachable (e.g.
-  tiktok's ``mssdk-sg.tiktok.com`` is not reachable from mainland-China
-  networks), that platform's import raises f2's ``APITimeoutError``, which the
-  adapter translates to a typed parse-timeout failure — the other platforms
-  are unaffected.
+  first parse of a platform). Each import runs via ``await asyncio.to_thread(...)``
+  in a worker thread, so a slow import never stalls the event loop and the
+  caller's ``wait_for`` deadline applies to it. Consequences: the first parse
+  of each platform pays the token-API latency once; and when a token API is
+  unreachable (e.g. tiktok's ``mssdk-sg.tiktok.com`` is not reachable from
+  mainland-China networks), that platform's import raises f2's
+  ``APITimeoutError``, which the adapter translates to a typed parse-timeout
+  failure — the other platforms are unaffected.
 * The ID-fetchers resolve short links with f2's own default client
   configuration (f2's ``ClientConfManager``), so ``engine_proxy`` is not
   applied to that one redirect-resolution hop — only to the handler's API calls.
@@ -273,29 +275,48 @@ class F2ParserAdapter:
     # -- per-platform fetchers (async) -------------------------------------
 
     async def _fetch_douyin(self, url: str, cookie: str):
-        AwemeIdFetcher = self._import_f2("f2.apps.douyin.utils", "AwemeIdFetcher")
-        DouyinHandler = self._import_f2("f2.apps.douyin.handler", "DouyinHandler")
+        # Imports run in a worker thread: f2's module import can block on its
+        # token APIs, and a sync import would stall the event loop so the
+        # wait_for deadline could never fire.
+        AwemeIdFetcher = await asyncio.to_thread(
+            self._import_f2, "f2.apps.douyin.utils", "AwemeIdFetcher"
+        )
+        DouyinHandler = await asyncio.to_thread(
+            self._import_f2, "f2.apps.douyin.handler", "DouyinHandler"
+        )
         aweme_id = await AwemeIdFetcher.get_aweme_id(url)
         return await DouyinHandler(self._kwargs("douyin", cookie)).fetch_one_video(
             aweme_id
         )
 
     async def _fetch_weibo(self, url: str, cookie: str):
-        WeiboIdFetcher = self._import_f2("f2.apps.weibo.utils", "WeiboIdFetcher")
-        WeiboHandler = self._import_f2("f2.apps.weibo.handler", "WeiboHandler")
+        # Imports run in a worker thread: f2's module import can block on its
+        # token APIs, and a sync import would stall the event loop so the
+        # wait_for deadline could never fire.
+        WeiboIdFetcher = await asyncio.to_thread(
+            self._import_f2, "f2.apps.weibo.utils", "WeiboIdFetcher"
+        )
+        WeiboHandler = await asyncio.to_thread(
+            self._import_f2, "f2.apps.weibo.handler", "WeiboHandler"
+        )
         weibo_id = await WeiboIdFetcher.get_weibo_id(url)
         return await WeiboHandler(self._kwargs("weibo", cookie)).fetch_one_weibo(
             weibo_id
         )
 
     async def _fetch_tiktok(self, url: str, cookie: str):
-        TiktokAwemeIdFetcher = self._import_f2(
-            "f2.apps.tiktok.utils", "AwemeIdFetcher"
+        # Imports run in a worker thread: f2's module import can block on its
+        # token APIs, and a sync import would stall the event loop so the
+        # wait_for deadline could never fire.
+        TiktokAwemeIdFetcher = await asyncio.to_thread(
+            self._import_f2, "f2.apps.tiktok.utils", "AwemeIdFetcher"
         )
-        TiktokHandler = self._import_f2("f2.apps.tiktok.handler", "TiktokHandler")
+        TiktokHandler = await asyncio.to_thread(
+            self._import_f2, "f2.apps.tiktok.handler", "TiktokHandler"
+        )
         item_id = await TiktokAwemeIdFetcher.get_aweme_id(url)
         return await TiktokHandler(self._kwargs("tiktok", cookie)).fetch_one_video(
-            item_id=item_id
+            itemId=item_id
         )
 
     # -- per-platform mapping (Tasks 7-8) ----------------------------------
@@ -328,7 +349,11 @@ class F2ParserAdapter:
         A playable video URL wins → VIDEO; otherwise an image album → IMAGE
         (format from the first image's extension); neither raises a typed
         parse failure. ``duration`` is converted from f2's milliseconds to the
-        PRD ``MM:SS`` display form.
+        PRD ``MM:SS`` display form. Field normalization: a blank ``title``
+        falls back to the platform name (``ParseResult.title`` is non-blank),
+        an empty ``cover`` becomes ``None`` (``ParseResult.cover`` has
+        ``min_length=1``), and non-string image URLs are dropped so a bad
+        element cannot crash ``extension_of`` or flow into the downloader.
         """
         if video_url:
             media_type = MediaType.VIDEO
@@ -345,8 +370,8 @@ class F2ParserAdapter:
             url=url,
             media_type=media_type,
             platform=platform,
-            title=title,
-            cover=cover,
+            title=(title or "").strip() or platform,
+            cover=cover or None,
             duration=(
                 format_duration(int(duration_ms // 1000)) if duration_ms else None
             ),
@@ -365,6 +390,7 @@ class F2ParserAdapter:
                 "images": [
                     {"url": image_url, "live_photo_url": None}
                     for image_url in images
+                    if isinstance(image_url, str)
                 ],
                 "author": author,
             },
