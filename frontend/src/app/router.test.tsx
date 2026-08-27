@@ -55,6 +55,7 @@ describe('router', () => {
   it('renders the parser workspace at /', async () => {
     renderAt('/');
     expect(await screen.findByText('解析工作台')).toBeInTheDocument();
+    expect(screen.getByTestId('music-entry')).toBeInTheDocument();
   });
 
   it('renders the home hero band with the subtitle', async () => {
@@ -125,5 +126,11 @@ describe('router', () => {
     // The fresh login returns to the originally requested /nas page.
     expect(await screen.findByText('NAS 管理')).toBeInTheDocument();
     expect(useAuthStore.getState().token).toBe('fresh');
+  });
+
+  it('renders the music search page at /music', async () => {
+    renderAt('/music');
+    expect(await screen.findByTestId('music-search-input')).toBeInTheDocument();
+    expect(screen.getByTestId('music-page')).toBeInTheDocument();
   });
 });

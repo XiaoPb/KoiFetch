@@ -9,12 +9,14 @@ const HomePage = lazy(() => import('../pages/HomePage'));
 const LoginPage = lazy(() => import('../pages/LoginPage'));
 const NasPage = lazy(() => import('../pages/NasPage'));
 const NotFoundPage = lazy(() => import('../pages/NotFoundPage'));
+const MusicSearchPage = lazy(() => import('../pages/MusicSearchPage'));
 
 /**
  * Route table (PRD): `/` parser workspace, `/login` standalone admin login,
- * `/nas` admin-only NAS management behind ProtectedRoute; anything else falls
- * back to the 404 page. The shell layout wraps the workspace and NAS routes;
- * the login page renders without the header.
+ * `/nas` admin-only NAS management behind ProtectedRoute, `/music` standalone
+ * music search; anything else falls back to the 404 page. The shell layout
+ * wraps the workspace and NAS routes; the login and music search pages render
+ * without the header.
  */
 export function AppRoutes(): JSX.Element {
   return (
@@ -38,6 +40,7 @@ export function AppRoutes(): JSX.Element {
             }
           />
         </Route>
+        <Route path="/music" element={<MusicSearchPage />} />
         <Route path="*" element={<NotFoundPage />} />
       </Routes>
     </Suspense>

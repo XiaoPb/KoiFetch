@@ -154,6 +154,17 @@ body {
   font-size: 14px;
 }
 
+.home-hero-actions {
+  margin-top: 14px;
+  display: flex;
+  gap: 8px;
+}
+
+.home-hero-actions .ant-btn-ghost {
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.7);
+}
+
 .parser-workspace {
   display: flex;
   flex-direction: column;
