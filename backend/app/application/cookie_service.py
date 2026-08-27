@@ -10,25 +10,42 @@ Design decisions:
 
 * **Never echo the cookie.** The read side is for server-side parsing only;
   the API layer returns ``configured``/``updated_at``, never the value, and
-  this service logs nothing.
-* **Platform-agnostic.** Any non-empty platform string is accepted (the API
-  validates the shape); the frontend owns the current platform list, so f2
-  gaining a platform later needs no backend change.
+  the write path is leak-free: ``set``/``delete`` log only the failing error
+  class name and raise :class:`CookieStorageError` with a fixed message, so
+  the cookie never rides an exception repr or log line (the API's 500 handler
+  logs every unhandled exception, which would otherwise embed the cookie in
+  the statement parameters). ``set`` is an atomic upsert, so concurrent
+  writers cannot race into a duplicate-key error either.
+* **Platform-agnostic.** Any non-empty platform string is accepted (blank is
+  rejected here; the API validates the shape); the frontend owns the current
+  platform list, so f2 gaining a platform later needs no backend change.
 * **Plaintext at rest, documented.** v1 has a single admin and an admin-only
   API; encrypt-at-rest is a v1.1 hardening (see the ORM model docstring).
 """
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import Engine
+from sqlalchemy import Engine, select
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.infrastructure.database import session_scope
 from app.infrastructure.models import PlatformCookie
 
-__all__ = ["PlatformCookieService"]
+logger = logging.getLogger(__name__)
+
+__all__ = ["PlatformCookieService", "CookieStorageError"]
+
+
+class CookieStorageError(Exception):
+    """A cookie write failed; the message never carries the cookie value."""
+
+
+_MESSAGE_STORAGE_ERROR = "Cookie 存储失败 / Cookie storage failed"
 
 
 class PlatformCookieService:
@@ -51,47 +68,68 @@ class PlatformCookieService:
         """Upsert the cookie for ``platform``; return its public entry.
 
         ``cookie`` is stripped of surrounding whitespace and must not be
-        blank (raises :class:`ValueError` otherwise).
+        blank (raises :class:`ValueError` otherwise); the platform must not
+        be blank either. The write is a single atomic upsert and any storage
+        failure surfaces as :class:`CookieStorageError` (never a DB exception
+        whose repr embeds the cookie).
         """
+        if not platform or not platform.strip():
+            raise ValueError("platform must not be blank")
         cookie = cookie.strip()
         if not cookie:
             raise ValueError("cookie must not be blank")
         now = datetime.now(timezone.utc)
-        with session_scope(self._engine) as session:
-            row = session.get(PlatformCookie, platform)
-            if row is None:
-                session.add(
-                    PlatformCookie(platform=platform, cookie=cookie, updated_at=now)
-                )
-            else:
-                row.cookie = cookie
-                row.updated_at = now
-        return _entry(platform, True, now)
+        # SQLite dialect upsert: the repo is SQLite-only in v1 (config default
+        # and docker compose both use ``sqlite://``; the migrations already use
+        # SQLite-specific ``batch_alter_table``).
+        stmt = (
+            sqlite_insert(PlatformCookie)
+            .values(platform=platform, cookie=cookie, updated_at=now)
+            .on_conflict_do_update(
+                index_elements=[PlatformCookie.platform],
+                set_={"cookie": cookie, "updated_at": now},
+            )
+        )
+        try:
+            with session_scope(self._engine) as session:
+                session.execute(stmt)
+        except SQLAlchemyError as exc:
+            # Never let the cookie ride an exception repr into logs: log only
+            # the class name (no exception object, no parameters) and raise a
+            # fixed-message error WITHOUT __cause__ chaining.
+            logger.error("platform cookie write failed: %s", type(exc).__name__)
+            raise CookieStorageError(_MESSAGE_STORAGE_ERROR) from None
+        return _entry(platform, now)
 
     def delete(self, platform: str) -> None:
         """Remove the row for ``platform`` (no-op when absent)."""
-        with session_scope(self._engine) as session:
-            row = session.get(PlatformCookie, platform)
-            if row is not None:
-                session.delete(row)
+        if not platform or not platform.strip():
+            raise ValueError("platform must not be blank")
+        try:
+            with session_scope(self._engine) as session:
+                row = session.get(PlatformCookie, platform)
+                if row is not None:
+                    session.delete(row)
+        except SQLAlchemyError as exc:
+            # Never let the cookie ride an exception repr into logs: log only
+            # the class name (no exception object, no parameters) and raise a
+            # fixed-message error WITHOUT __cause__ chaining.
+            logger.error("platform cookie write failed: %s", type(exc).__name__)
+            raise CookieStorageError(_MESSAGE_STORAGE_ERROR) from None
 
     def list(self) -> list[dict[str, Any]]:
         """Return public entries for every configured platform."""
         with session_scope(self._engine) as session:
-            rows = (
-                session.query(PlatformCookie)
-                .order_by(PlatformCookie.platform)
-                .all()
-            )
-            return [_entry(row.platform, True, row.updated_at) for row in rows]
+            rows = session.scalars(
+                select(PlatformCookie).order_by(PlatformCookie.platform)
+            ).all()
+            return [_entry(row.platform, row.updated_at) for row in rows]
 
 
-def _entry(
-    platform: str, configured: bool, updated_at: datetime | None
-) -> dict[str, Any]:
+def _entry(platform: str, updated_at: datetime) -> dict[str, str | bool]:
     """The public cookie entry: platform + status, never the cookie value."""
     return {
         "platform": platform,
-        "configured": configured,
-        "updated_at": updated_at.isoformat() if updated_at else None,
+        "configured": True,
+        "updated_at": updated_at.isoformat(),
     }
