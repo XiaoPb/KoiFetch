@@ -59,7 +59,7 @@ def _stub_f2(monkeypatch, mapping):
     APIs (see the adapter docstring).
     """
 
-    def fake_import(module_name, attr_name):
+    def fake_import(_self, module_name, attr_name):
         return mapping[(module_name, attr_name)]
 
     monkeypatch.setattr(F2ParserAdapter, "_import_f2", fake_import)
@@ -272,3 +272,134 @@ class TestBuilder:
         adapter = _offline_adapter(cookie_provider=FakeCookieProvider({}))
         with pytest.raises(UnsupportedPlatformError):
             adapter.parse(ParseCommand(urls=["https://www.bilibili.com/video/BV1xx"]))
+
+
+def _fake_post_detail(**overrides):
+    """A faked douyin PostDetailFilter (duck-typed; tests only read attrs)."""
+    defaults = dict(
+        api_status_code=0,
+        nickname="张三",
+        uid="12345",
+        desc="示例视频",
+        cover="https://cdn.example/c.jpg",
+        duration=83000,
+        video_play_addr=["https://cdn.example/v.mp4"],
+        images=[],
+    )
+    defaults.update(overrides)
+    return type("FakePostDetail", (), defaults)()
+
+
+def _fake_weibo_detail(**overrides):
+    """A faked weibo WeiboDetailFilter (duck-typed)."""
+    defaults = dict(
+        error_code=0,
+        weibo_desc="示例微博",
+        desc="<p>示例微博</p>",
+        nickname="博主",
+        uid="u1",
+        playback_list=["https://cdn.example/w.mp4"],
+        pic_infos={},
+    )
+    defaults.update(overrides)
+    return type("FakeWeiboDetail", (), defaults)()
+
+
+class TestDouyinMapping:
+    def _adapter(self, **kwargs):
+        return _offline_adapter(cookie_provider=FakeCookieProvider({"douyin": "d=1"}), **kwargs)
+
+    def test_maps_video_detail(self, monkeypatch):
+        fake_handler = Mock(fetch_one_video=_async_returns(_fake_post_detail()))
+        handler_cls = Mock(return_value=fake_handler)
+        _stub_f2(monkeypatch, {
+            ("f2.apps.douyin.utils", "AwemeIdFetcher"): Mock(get_aweme_id=_async_returns("1")),
+            ("f2.apps.douyin.handler", "DouyinHandler"): handler_cls,
+        })
+
+        result = self._adapter().parse(ParseCommand(urls=["https://v.douyin.com/abc/"]))[0]
+        assert result.platform == "douyin"
+        assert result.media_type is MediaType.VIDEO
+        assert result.title == "示例视频"
+        assert result.cover == "https://cdn.example/c.jpg"
+        assert result.duration == "01:23"
+        assert result.metadata["video_url"] == "https://cdn.example/v.mp4"
+        assert result.metadata["author"]["name"] == "张三"
+        # The cookie must be forwarded into the handler kwargs (first positional
+        # argument of the DouyinHandler constructor).
+        assert handler_cls.call_args[0][0]["cookie"] == "d=1"
+
+    def test_note_album_classified_as_image(self, monkeypatch):
+        fake_handler = Mock(
+            fetch_one_video=_async_returns(
+                _fake_post_detail(
+                    desc="图集",
+                    cover=None,
+                    duration=None,
+                    video_play_addr=[],
+                    images=["https://cdn.example/a.jpg", "https://cdn.example/b.webp"],
+                )
+            )
+        )
+        _stub_f2(monkeypatch, {
+            ("f2.apps.douyin.utils", "AwemeIdFetcher"): Mock(get_aweme_id=_async_returns("2")),
+            ("f2.apps.douyin.handler", "DouyinHandler"): Mock(return_value=fake_handler),
+        })
+
+        result = self._adapter().parse(ParseCommand(urls=["https://www.douyin.com/note/2"]))[0]
+        assert result.media_type is MediaType.IMAGE
+        assert result.format == "jpg"
+        assert len(result.metadata["images"]) == 2
+
+    def test_empty_title_falls_back_to_platform(self, monkeypatch):
+        fake_handler = Mock(fetch_one_video=_async_returns(_fake_post_detail(desc="")))
+        _stub_f2(monkeypatch, {
+            ("f2.apps.douyin.utils", "AwemeIdFetcher"): Mock(get_aweme_id=_async_returns("3")),
+            ("f2.apps.douyin.handler", "DouyinHandler"): Mock(return_value=fake_handler),
+        })
+        result = self._adapter().parse(ParseCommand(urls=["https://v.douyin.com/abc/"]))[0]
+        assert result.title == "douyin"
+
+
+class TestWeiboMapping:
+    def _adapter(self, **kwargs):
+        return _offline_adapter(cookie_provider=FakeCookieProvider({"weibo": "SUB=x"}), **kwargs)
+
+    def test_maps_video_weibo(self, monkeypatch):
+        fake_handler = Mock(fetch_one_weibo=_async_returns(_fake_weibo_detail()))
+        _stub_f2(monkeypatch, {
+            ("f2.apps.weibo.utils", "WeiboIdFetcher"): Mock(get_weibo_id=_async_returns("wid")),
+            ("f2.apps.weibo.handler", "WeiboHandler"): Mock(return_value=fake_handler),
+        })
+
+        result = self._adapter().parse(ParseCommand(urls=["https://weibo.com/1/AbC"]))[0]
+        assert result.platform == "weibo"
+        assert result.media_type is MediaType.VIDEO
+        assert result.title == "示例微博"
+        assert result.metadata["video_url"] == "https://cdn.example/w.mp4"
+
+    def test_maps_image_weibo_with_cover_from_first_pic(self, monkeypatch):
+        pic_infos = {
+            "p1": {"url": "https://cdn.example/p1.jpg"},
+            "p2": {"large": {"url": "https://cdn.example/p2.jpg"}},
+        }
+        fake_handler = Mock(
+            fetch_one_weibo=_async_returns(
+                _fake_weibo_detail(
+                    playback_list=[], pic_infos=pic_infos, weibo_desc="图集微博"
+                )
+            )
+        )
+        _stub_f2(monkeypatch, {
+            ("f2.apps.weibo.utils", "WeiboIdFetcher"): Mock(get_weibo_id=_async_returns("wid2")),
+            ("f2.apps.weibo.handler", "WeiboHandler"): Mock(return_value=fake_handler),
+        })
+
+        result = self._adapter().parse(ParseCommand(urls=["https://weibo.com/1/AbC"]))[0]
+        assert result.media_type is MediaType.IMAGE
+        assert result.format == "jpg"
+        assert result.cover == "https://cdn.example/p1.jpg"
+        assert [img["url"] for img in result.metadata["images"]] == [
+            "https://cdn.example/p1.jpg",
+            "https://cdn.example/p2.jpg",
+        ]

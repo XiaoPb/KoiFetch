@@ -322,10 +322,74 @@ class F2ParserAdapter:
     # -- per-platform mapping (Tasks 7-8) ----------------------------------
 
     def _map_douyin(self, data, url: str) -> ParseResult:
-        raise NotImplementedError("douyin mapping lands in Task 7")
+        """Map a douyin PostDetailFilter onto a ParseResult (Task 7).
+
+        A non-zero ``api_status_code`` with a configured cookie means the
+        request was rejected (cookie expired / risk control) → CookieInvalidError
+        (see Task 9 for the full classifier). ``nickname is None`` is f2's own
+        "接口内容异常" signal → EngineParseError.
+        """
+        if data.api_status_code not in (None, 0):
+            raise CookieInvalidError(_MESSAGE_INVALID_COOKIE)
+        if data.nickname is None:
+            raise EngineParseError(_MESSAGE_NO_MEDIA)
+        play_urls = list(data.video_play_addr or [])
+        video_url = play_urls[0] if play_urls else None
+        images = [image_url for image_url in (data.images or []) if image_url]
+        return self._build_result(
+            url=url,
+            platform="douyin",
+            title=(data.desc or "").strip() or "douyin",
+            cover=data.cover or None,
+            duration_ms=data.duration,
+            video_url=video_url,
+            images=images,
+            author={"uid": data.uid, "name": data.nickname, "avatar": None},
+        )
 
     def _map_weibo(self, data, url: str) -> ParseResult:
-        raise NotImplementedError("weibo mapping lands in Task 7")
+        """Map a weibo WeiboDetailFilter onto a ParseResult (Task 7).
+
+        ``error_code == 20112`` is weibo's own "无查看权限，请配置Cookie" signal →
+        CookieInvalidError. Public posts parse without a cookie.
+        """
+        if data.error_code == 20112:
+            raise CookieInvalidError(_MESSAGE_INVALID_COOKIE)
+        play_urls = list(data.playback_list or [])
+        video_url = play_urls[0] if play_urls else None
+        images = self._weibo_images(data)
+        title = (data.weibo_desc or data.desc or "").strip() or "weibo"
+        return self._build_result(
+            url=url,
+            platform="weibo",
+            title=title,
+            cover=images[0] if images else None,
+            duration_ms=None,  # weibo exposes no duration in the detail filter
+            video_url=video_url,
+            images=images,
+            author={"uid": data.uid, "name": data.nickname, "avatar": None},
+        )
+
+    @staticmethod
+    def _weibo_images(data) -> list[str]:
+        """Extract the ordered image URLs from weibo's ``pic_infos`` dict.
+
+        Each entry is ``{pic_id: {...}}``; the large image is either the
+        top-level ``url`` key or the ``large.url`` sub-object. Entries without
+        a usable URL are skipped.
+        """
+        raw = data._to_raw() if hasattr(data, "_to_raw") else {}
+        pics = raw.get("pic_infos") or getattr(data, "pic_infos", None) or {}
+        if not isinstance(pics, dict):
+            return []
+        urls: list[str] = []
+        for entry in pics.values():
+            if not isinstance(entry, dict):
+                continue
+            image_url = entry.get("url") or (entry.get("large") or {}).get("url")
+            if image_url:
+                urls.append(image_url)
+        return urls
 
     def _map_tiktok(self, data, url: str) -> ParseResult:
         raise NotImplementedError("tiktok mapping lands in Task 8")
