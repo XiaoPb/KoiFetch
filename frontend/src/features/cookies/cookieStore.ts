@@ -31,6 +31,13 @@ export function updatedAtOf(entries: CookieEntry[], platform: string): string | 
  * never persists the cookie value itself — the backend returns only
  * `configured` + `updated_at`. `drawerOpen` lives here so both the header
  * gear and the parse-time cookie-error prompt can open the same drawer.
+ *
+ * Error contract (asymmetric by design):
+ * - `load` swallows failures into `state.error` — the drawer renders a retry
+ *   Alert, so it never rejects.
+ * - `save`/`remove` REJECT on failure so callers can toast the error.
+ * - A successful save/remove followed by a failed reload resolves normally:
+ *   the toast and the retry Alert may coexist — intended, not a bug.
  */
 export interface CookieState {
   entries: CookieEntry[];
