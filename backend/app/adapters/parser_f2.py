@@ -379,7 +379,7 @@ class F2ParserAdapter:
         a usable URL are skipped.
         """
         raw = data._to_raw() if hasattr(data, "_to_raw") else {}
-        pics = raw.get("pic_infos") or getattr(data, "pic_infos", None) or {}
+        pics = raw.get("pic_infos") or {}
         if not isinstance(pics, dict):
             return []
         urls: list[str] = []

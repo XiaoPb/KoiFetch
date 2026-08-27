@@ -291,7 +291,11 @@ def _fake_post_detail(**overrides):
 
 
 def _fake_weibo_detail(**overrides):
-    """A faked weibo WeiboDetailFilter (duck-typed)."""
+    """A faked weibo WeiboDetailFilter (duck-typed).
+
+    The real filter exposes ``pic_infos`` only inside ``_to_raw()`` (there is
+    no ``pic_infos`` attribute), so the fake mirrors that shape.
+    """
     defaults = dict(
         error_code=0,
         weibo_desc="示例微博",
@@ -302,6 +306,11 @@ def _fake_weibo_detail(**overrides):
         pic_infos={},
     )
     defaults.update(overrides)
+
+    def _to_raw(self):
+        return {"pic_infos": getattr(self, "pic_infos", {})}
+
+    defaults["_to_raw"] = _to_raw
     return type("FakeWeiboDetail", (), defaults)()
 
 
