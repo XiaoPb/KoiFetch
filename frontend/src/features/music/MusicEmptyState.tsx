@@ -22,7 +22,21 @@ export function MusicEmptyState({ description, hotKeywords, onSearch }: MusicEmp
       </Typography.Text>
       <Space wrap className="music-hot-tags">
         {hotKeywords.map((keyword) => (
-          <Tag key={keyword} color="blue" className="music-hot-tag" onClick={() => onSearch(keyword)} data-testid="music-hot-tag">
+          <Tag
+            key={keyword}
+            color="blue"
+            className="music-hot-tag"
+            onClick={() => onSearch(keyword)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                onSearch(keyword);
+              }
+            }}
+            role="button"
+            tabIndex={0}
+            data-testid="music-hot-tag"
+          >
             {keyword}
           </Tag>
         ))}

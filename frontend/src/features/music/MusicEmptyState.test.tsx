@@ -21,4 +21,14 @@ describe('MusicEmptyState', () => {
     await user.click(screen.getByText('周杰伦'));
     expect(onSearch).toHaveBeenCalledWith('周杰伦');
   });
+
+  it('searches from a hot keyword via the keyboard (Enter)', async () => {
+    const user = userEvent.setup();
+    const onSearch = vi.fn();
+    renderWithProviders(<MusicEmptyState description="x" hotKeywords={['周杰伦', '晴天']} onSearch={onSearch} />);
+    const tag = screen.getByText('周杰伦');
+    tag.focus();
+    await user.keyboard('{Enter}');
+    expect(onSearch).toHaveBeenCalledWith('周杰伦');
+  });
 });
