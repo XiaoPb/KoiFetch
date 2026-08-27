@@ -9,7 +9,6 @@ function renderBar(props: Partial<Parameters<typeof MusicSearchBar>[0]> = {}): v
     <MusicSearchBar
       value="晴天"
       loading={false}
-      onBack={vi.fn()}
       onChange={vi.fn()}
       onSearch={vi.fn()}
       {...props}
@@ -18,9 +17,8 @@ function renderBar(props: Partial<Parameters<typeof MusicSearchBar>[0]> = {}): v
 }
 
 describe('MusicSearchBar', () => {
-  it('renders the back button, the input with the value, and the search button', () => {
+  it('renders the input with the value and the search button', () => {
     renderBar();
-    expect(screen.getByTestId('music-back')).toBeInTheDocument();
     expect(screen.getByTestId('music-search-input')).toHaveValue('晴天');
     expect(screen.getByTestId('music-search-submit')).toHaveTextContent('搜索');
   });

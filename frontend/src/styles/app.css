@@ -70,6 +70,12 @@ body {
   padding: 24px;
 }
 
+/* Music mode: the music content area owns its full-height layout (search row,
+   filter bar, scroll container, mini player), so drop the padding. */
+.app-content--music {
+  padding: 0;
+}
+
 /* --- Status indicator --- */
 
 .status-indicator {
@@ -152,17 +158,6 @@ body {
   margin: 0;
   color: rgba(255, 255, 255, 0.92);
   font-size: 14px;
-}
-
-.home-hero-actions {
-  margin-top: 14px;
-  display: flex;
-  gap: 8px;
-}
-
-.home-hero-actions .ant-btn-ghost {
-  color: #fff;
-  border-color: rgba(255, 255, 255, 0.7);
 }
 
 .parser-workspace {

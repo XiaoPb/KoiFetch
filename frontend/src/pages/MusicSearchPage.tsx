@@ -1,6 +1,5 @@
 import { useEffect, useRef } from 'react';
 import { Alert, Button } from 'antd';
-import { useNavigate } from 'react-router-dom';
 import { useTranslation } from '../services/i18n';
 import { useMusicStore } from '../features/music/musicStore';
 import { HOT_KEYWORDS } from '../features/music/musicSource';
@@ -16,19 +15,19 @@ import { MusicEmptyState } from '../features/music/MusicEmptyState';
 import '../styles/music.css';
 
 /**
- * Music search page (route /music, spec). A full-height flex column, rendered
- * outside the app shell so it owns its fixed top search bar:
+ * Music content area (one main page — the Topbar's 音乐 tab shows this inside
+ * the shared shell, so there is no back arrow; the Topbar tab is the
+ * navigation). A flex column filling the viewport below the Topbar:
  *
- *   [top search bar]  [thin loading bar when searching]  [stats + filter tabs]
+ *   [search row]  [thin loading bar when searching]  [centered stats + tabs]
  *   [scrollable result area]  [mini player]  [action sheet]  [detail drawer]
  *
  * Re-searching clears the list and jumps the scroll area back to the top; the
  * list view is keyed by category so switching tabs replays the fade-in
- * animation. This page is independent from the video parser workspace.
+ * animation.
  */
 export default function MusicSearchPage(): JSX.Element {
   const { t } = useTranslation();
-  const navigate = useNavigate();
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const input = useMusicStore((state) => state.input);
@@ -71,15 +70,14 @@ export default function MusicSearchPage(): JSX.Element {
 
   return (
     <div className="music-page" data-testid="music-page">
-      <header className="music-top-bar">
+      <div className="music-search-row">
         <MusicSearchBar
           value={input}
           loading={isLoading}
-          onBack={() => navigate(-1)}
           onChange={setInput}
           onSearch={() => void search()}
         />
-      </header>
+      </div>
 
       {isLoading && <div className="music-loading-bar" data-testid="music-loading-bar" aria-hidden="true" />}
 

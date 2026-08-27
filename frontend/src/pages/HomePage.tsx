@@ -1,17 +1,22 @@
-import { Button, Typography } from 'antd';
-import { AudioOutlined } from '@ant-design/icons';
-import { Link } from 'react-router-dom';
+import { Typography } from 'antd';
 import { useTranslation } from '../services/i18n';
+import { useAppStore } from '../stores/appStore';
 import { ParserWorkspace } from '../features/parser/ParserWorkspace';
+import MusicSearchPage from './MusicSearchPage';
 
 /**
- * Home page — the parser workspace (PRD §4.2). A compact gradient hero band
- * (vibrant blue) sits above the workspace and collapses gracefully on mobile.
- * The hero also carries the entry button to the standalone music search page
- * (/music), which is deliberately independent from the video parser.
+ * The single main page (`/`): the Topbar's 视频/音乐 switch selects which
+ * content area renders here — video mode shows the parser workspace (hero +
+ * workspace), music mode shows the music search experience. Both modes share
+ * the same page, the same Topbar and the same URL.
  */
 export default function HomePage(): JSX.Element {
   const { t } = useTranslation();
+  const mediaMode = useAppStore((state) => state.mediaMode);
+
+  if (mediaMode === 'music') {
+    return <MusicSearchPage />;
+  }
 
   return (
     <div className="home-page" data-testid="home-page">
@@ -22,13 +27,6 @@ export default function HomePage(): JSX.Element {
         <Typography.Text className="home-hero-sub" data-testid="home-hero-sub">
           {t('home.subtitle')}
         </Typography.Text>
-        <div className="home-hero-actions">
-          <Link to="/music">
-            <Button ghost icon={<AudioOutlined />} data-testid="music-entry">
-              {t('music.entry')}
-            </Button>
-          </Link>
-        </div>
       </div>
       <ParserWorkspace />
     </div>

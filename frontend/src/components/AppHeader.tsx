@@ -7,7 +7,7 @@ import {
   UserOutlined,
   VideoCameraOutlined,
 } from '@ant-design/icons';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { StatusIndicator } from './StatusIndicator';
 import { DownloadCenterDrawer } from '../features/downloads/DownloadCenterDrawer';
 import { useTranslation } from '../services/i18n';
@@ -35,6 +35,7 @@ export function AppHeader(): JSX.Element {
   const isAuthenticated = useAuthStore(selectIsAuthenticated);
   const username = useAuthStore((state) => state.username);
   const activeCount = useDownloadsStore(selectActiveCount);
+  const navigate = useNavigate();
 
   const modeOptions: { label: string; value: MediaMode }[] = [
     { label: t('header.modeVideo'), value: 'video' },
@@ -42,6 +43,15 @@ export function AppHeader(): JSX.Element {
   ];
   // Dropdown menu items use `key`, the Segmented options use `value`.
   const modeMenuItems = modeOptions.map(({ label, value }) => ({ key: value, label }));
+
+  /**
+   * The video/music switch selects the CONTENT AREA of the single main page
+   * (one page, one Topbar): switching mode from anywhere returns to `/`.
+   */
+  const onModeChange = (mode: MediaMode) => {
+    setMediaMode(mode);
+    navigate('/');
+  };
 
   const onDownloadCenterClick = () => {
     setDrawerOpen(true);
@@ -67,7 +77,7 @@ export function AppHeader(): JSX.Element {
             data-testid="mode-switch-desktop"
             options={modeOptions}
             value={mediaMode}
-            onChange={setMediaMode}
+            onChange={onModeChange}
           />
         )}
 
@@ -78,7 +88,7 @@ export function AppHeader(): JSX.Element {
                 items: modeMenuItems,
                 selectable: true,
                 selectedKeys: [mediaMode],
-                onClick: ({ key }) => setMediaMode(key as MediaMode),
+                onClick: ({ key }) => onModeChange(key as MediaMode),
               }}
             >
               <Button size="small" data-testid="mode-switch-mobile">

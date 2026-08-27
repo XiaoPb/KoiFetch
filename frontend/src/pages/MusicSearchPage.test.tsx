@@ -11,7 +11,7 @@ describe('MusicSearchPage', () => {
   });
 
   it('renders the top search bar and the idle empty state', () => {
-    renderWithProviders(<MusicSearchPage />, { route: '/music' });
+    renderWithProviders(<MusicSearchPage />, { route: '/' });
     expect(screen.getByTestId('music-search-input')).toBeInTheDocument();
     expect(screen.getByTestId('music-empty')).toBeInTheDocument();
     expect(screen.getByText('热门搜索')).toBeInTheDocument();
@@ -19,7 +19,7 @@ describe('MusicSearchPage', () => {
 
   it('searches and renders the song list with the result count', async () => {
     const user = userEvent.setup();
-    renderWithProviders(<MusicSearchPage />, { route: '/music' });
+    renderWithProviders(<MusicSearchPage />, { route: '/' });
     await user.type(screen.getByTestId('music-search-input'), '周杰伦');
     await user.click(screen.getByTestId('music-search-submit'));
     expect(await screen.findByTestId('music-song-list')).toBeInTheDocument();
@@ -29,7 +29,7 @@ describe('MusicSearchPage', () => {
 
   it('switches to the artist view via the filter tab', async () => {
     const user = userEvent.setup();
-    renderWithProviders(<MusicSearchPage />, { route: '/music' });
+    renderWithProviders(<MusicSearchPage />, { route: '/' });
     await user.type(screen.getByTestId('music-search-input'), '周杰伦');
     await user.click(screen.getByTestId('music-search-submit'));
     await screen.findByTestId('music-song-list');
@@ -40,7 +40,7 @@ describe('MusicSearchPage', () => {
 
   it('shows the empty state with hot keywords when there are no results', async () => {
     const user = userEvent.setup();
-    renderWithProviders(<MusicSearchPage />, { route: '/music' });
+    renderWithProviders(<MusicSearchPage />, { route: '/' });
     await user.type(screen.getByTestId('music-search-input'), '一二三四五六七八九十X');
     await user.click(screen.getByTestId('music-search-submit'));
     expect(await screen.findByTestId('music-empty')).toBeInTheDocument();
@@ -49,7 +49,7 @@ describe('MusicSearchPage', () => {
 
   it('opens the mini player when a song row is clicked', async () => {
     const user = userEvent.setup();
-    renderWithProviders(<MusicSearchPage />, { route: '/music' });
+    renderWithProviders(<MusicSearchPage />, { route: '/' });
     await user.type(screen.getByTestId('music-search-input'), '周杰伦');
     await user.click(screen.getByTestId('music-search-submit'));
     await screen.findByTestId('music-song-list');
@@ -59,7 +59,7 @@ describe('MusicSearchPage', () => {
 
   it('opens the action sheet from the more button', async () => {
     const user = userEvent.setup();
-    renderWithProviders(<MusicSearchPage />, { route: '/music' });
+    renderWithProviders(<MusicSearchPage />, { route: '/' });
     await user.type(screen.getByTestId('music-search-input'), '周杰伦');
     await user.click(screen.getByTestId('music-search-submit'));
     await screen.findByTestId('music-song-list');

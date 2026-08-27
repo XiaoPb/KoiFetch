@@ -55,7 +55,6 @@ describe('router', () => {
   it('renders the parser workspace at /', async () => {
     renderAt('/');
     expect(await screen.findByText('解析工作台')).toBeInTheDocument();
-    expect(screen.getByTestId('music-entry')).toBeInTheDocument();
   });
 
   it('renders the home hero band with the subtitle', async () => {
@@ -128,9 +127,18 @@ describe('router', () => {
     expect(useAuthStore.getState().token).toBe('fresh');
   });
 
-  it('renders the music search page at /music', async () => {
-    renderAt('/music');
+  it('switches the main page content to music via the Topbar tab', async () => {
+    const user = userEvent.setup();
+    renderAt('/');
+
+    // One main page: video mode shows the parser workspace…
+    expect(await screen.findByText('解析工作台')).toBeInTheDocument();
+
+    // …and the Topbar's 音乐 tab swaps the content area to the music search
+    // page on the SAME page (no route change, no back arrow).
+    await user.click(screen.getByText('音乐'));
     expect(await screen.findByTestId('music-search-input')).toBeInTheDocument();
-    expect(screen.getByTestId('music-page')).toBeInTheDocument();
+    expect(screen.queryByText('解析工作台')).not.toBeInTheDocument();
+    expect(screen.getByTestId('app-header')).toBeInTheDocument();
   });
 });
