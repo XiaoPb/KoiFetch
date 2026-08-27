@@ -44,6 +44,11 @@ describe('i18n', () => {
     expect(translate('en', 'downloads.remainingMinutes', { other: 1 })).toBe('~{value} min');
   });
 
+  it('interpolates music search count keys', () => {
+    expect(translate('zh', 'music.count.song', { total: '1,235' })).toBe('约 1,235 首单曲');
+    expect(translate('en', 'music.count.artist', { total: '42' })).toBe('About 42 artists');
+  });
+
   it('toggles the active language through the hook', async () => {
     const user = userEvent.setup();
     render(<LanguageProbe />);
