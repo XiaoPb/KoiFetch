@@ -26,7 +26,7 @@ def upgrade() -> None:
         "platform_cookies",
         sa.Column("platform", sa.String(length=64), nullable=False),
         sa.Column("cookie", sa.Text(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.PrimaryKeyConstraint("platform"),
     )
 

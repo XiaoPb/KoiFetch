@@ -129,6 +129,13 @@ class TestInitialMigration:
                 row[1] for row in conn.execute("PRAGMA table_info(platform_cookies)")
             }
             assert PLATFORM_COOKIE_COLUMNS <= cookie_columns
+            # One row per platform (the upsert key): the PK must survive.
+            cookie_pk = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(platform_cookies)")
+                if row[5] == 1
+            }
+            assert cookie_pk == {"platform"}
 
             parse_indexes = {
                 row[1] for row in conn.execute("PRAGMA index_list(parse_tasks)")
@@ -192,7 +199,10 @@ class TestInitialMigration:
                     "SELECT name FROM sqlite_master WHERE type='table'"
                 )
             }
-            assert not ({"users", "parse_tasks", "download_tasks"} & tables)
+            assert not (
+                {"users", "parse_tasks", "download_tasks", "platform_cookies"}
+                & tables
+            )
         finally:
             conn.close()
 

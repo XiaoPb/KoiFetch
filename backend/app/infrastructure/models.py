@@ -1,10 +1,11 @@
 """SQLAlchemy ORM models: the stable persistence contract.
 
-Three tables are defined here — ``users``, ``parse_tasks``, ``download_tasks``
-— consumed by the application services (Tasks 7-10), the worker (Tasks 11-12),
-and Alembic migrations. Schema changes go through Alembic migrations under
-``backend/alembic/versions``; the models and the migrations must stay in sync
-(verify with ``alembic check`` after editing models).
+Four tables are defined here — ``users``, ``parse_tasks``, ``download_tasks``,
+``platform_cookies`` — consumed by the application services (Tasks 7-10), the
+worker (Tasks 11-12), and Alembic migrations. Schema changes go through
+Alembic migrations under ``backend/alembic/versions``; the models and the
+migrations must stay in sync (verify with ``alembic check`` after editing
+models).
 
 Conventions (documented once, applied everywhere):
 
@@ -235,5 +236,5 @@ class PlatformCookie(Base):
     platform: Mapped[str] = mapped_column(String(64), primary_key=True)
     cookie: Mapped[str] = mapped_column(Text, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
-        UTCDateTime(), nullable=False, default=_utcnow
+        UTCDateTime(), nullable=False, default=_utcnow, onupdate=_utcnow
     )
