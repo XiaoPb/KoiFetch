@@ -53,6 +53,7 @@ from app.domain import (
 __all__ = [
     "AccessTokenClaims",
     "AccessTokenProvider",
+    "CookieProvider",
     "DownloadRequest",
     "DownloaderAdapter",
     "InvalidTokenError",
@@ -83,6 +84,27 @@ class ParserAdapter(Protocol):
 
     def parse(self, command: ParseCommand) -> list[ParseResult]:
         """Return one :class:`ParseResult` per input URL (same order)."""
+        ...
+
+
+# ---------------------------------------------------------------------------
+# Cookie provider (f2 parser)
+# ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class CookieProvider(Protocol):
+    """Read the configured cookie string for a platform (None when unset).
+
+    Implemented by
+    :class:`app.application.cookie_service.PlatformCookieService` (DB-backed)
+    so the f2 parser can resolve per-platform cookies without knowing where
+    they are stored. Only the read side is part of the protocol — writing is a
+    service concern exposed through the cookies API.
+    """
+
+    def get(self, platform: str) -> str | None:
+        """Return the stored cookie for ``platform`` (None when unset)."""
         ...
 
 
