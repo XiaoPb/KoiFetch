@@ -18,7 +18,13 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 ALEMBIC_INI = BACKEND_DIR / "alembic.ini"
 SCRIPT_LOCATION = BACKEND_DIR / "alembic"
 
-EXPECTED_TABLES = {"users", "parse_tasks", "download_tasks", "alembic_version"}
+EXPECTED_TABLES = {
+    "users",
+    "parse_tasks",
+    "download_tasks",
+    "platform_cookies",
+    "alembic_version",
+}
 
 USER_COLUMNS = {"id", "username", "password_hash", "created_at"}
 
@@ -56,6 +62,12 @@ DOWNLOAD_TASK_COLUMNS = {
     "token_expires_at",
     "created_at",
     "completed_at",
+}
+
+PLATFORM_COOKIE_COLUMNS = {
+    "platform",
+    "cookie",
+    "updated_at",
 }
 
 
@@ -112,6 +124,11 @@ class TestInitialMigration:
                 row[1] for row in conn.execute("PRAGMA table_info(download_tasks)")
             }
             assert DOWNLOAD_TASK_COLUMNS <= download_columns
+
+            cookie_columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(platform_cookies)")
+            }
+            assert PLATFORM_COOKIE_COLUMNS <= cookie_columns
 
             parse_indexes = {
                 row[1] for row in conn.execute("PRAGMA index_list(parse_tasks)")

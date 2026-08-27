@@ -61,7 +61,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.domain.enums import DownloadStatus, MediaType
 from app.infrastructure.database import Base, UTCDateTime
 
-__all__ = ["User", "ParseTask", "DownloadTask"]
+__all__ = ["User", "ParseTask", "DownloadTask", "PlatformCookie"]
 
 
 def _new_uuid() -> str:
@@ -218,3 +218,22 @@ class DownloadTask(Base):
     completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
     parse_task: Mapped[ParseTask] = relationship(back_populates="downloads")
+
+
+class PlatformCookie(Base):
+    """A per-platform cookie string the f2 parser uses (admin-managed).
+
+    One row per f2 platform (douyin/weibo/tiktok today). The cookie is the raw
+    browser cookie string the admin pastes in Settings; it is never echoed
+    back to clients (the cookies API returns only configured/updated_at) and
+    never logged. Plaintext at rest is a documented v1 decision (single admin,
+    admin-only API); encrypt-at-rest is a v1.1 hardening.
+    """
+
+    __tablename__ = "platform_cookies"
+
+    platform: Mapped[str] = mapped_column(String(64), primary_key=True)
+    cookie: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(), nullable=False, default=_utcnow
+    )
