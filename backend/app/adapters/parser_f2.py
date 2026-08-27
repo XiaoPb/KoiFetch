@@ -22,8 +22,8 @@ Platform contract (verified against f2 0.0.1.7, 2026-08-26):
   ``error_code == 20112`` means the post needs a cookie.
 * **tiktok** — ``AwemeIdFetcher.get_aweme_id(url)`` (tiktok app) then
   ``TiktokHandler(kwargs).fetch_one_video(itemId=...)`` → filter with
-  ``desc``/``video_playAddr``/``video_cover``/``video_duration`` (ms)/
-  ``nickname``/``api_status_code``.
+  ``desc``/``video_playAddr`` (a single URL string)/``video_cover``/
+  ``video_duration`` (ms)/``nickname``/``api_status_code``.
 
 Classification (unchanged from the parse-video-py era): a playable video URL
 → ``VIDEO`` (first URL stored in ``metadata["video_url"]``); 图集 image
@@ -41,9 +41,11 @@ Cookie handling (Task 9 wires the classification):
 * Invalid/expired cookies surface as f2 ``APIUnauthorizedError``, a weibo
   ``error_code == 20112``, or a non-zero douyin/tiktok ``status_code`` —
   mapped to :class:`CookieInvalidError` ("Cookie 无效或已过期，请重新设置").
-  The status-code classification is a documented best-effort heuristic: the
-  platform's own signals are the source of truth; everything else falls
-  through to the existing typed errors.
+  The status-code classifier stays deliberately broad: ANY non-zero
+  ``status_code`` → :class:`CookieInvalidError`. A narrow status set would
+  misclassify real cookie expiries as generic parse errors; the platform's
+  own authoritative signals — f2's ``APIUnauthorizedError`` and weibo's
+  ``error_code == 20112`` — carry the precise cases.
 
 Errors: f2 exceptions translate to the
 :mod:`app.adapters.engine_errors` hierarchy (see :func:`_translate_f2_error`);
@@ -131,12 +133,6 @@ _ROUTES: list[tuple[str, str]] = [
 
 # Platforms whose crawler REQUIRES a cookie (fail fast when none configured).
 _COOKIE_REQUIRED = frozenset({"douyin", "tiktok"})
-
-# Best-effort classifier: douyin/tiktok API status codes commonly returned
-# when the request is rejected for cookie/verify reasons. The authoritative
-# signals are f2's APIUnauthorizedError and weibo error_code 20112; this set
-# covers the douyin 4010 "参数错误/verify" family and tiktok equivalents.
-_COOKIE_STATUS_CODES = frozenset({4003, 4010, 4012})
 
 _REFERERS = {
     "douyin": "https://www.douyin.com/",
@@ -330,7 +326,7 @@ class F2ParserAdapter:
         "接口内容异常" signal → EngineParseError. Play URLs and images are
         filtered to usable strings (f2's list helpers None-fill missing paths).
         """
-        if data.api_status_code not in (None, 0):
+        if int(data.api_status_code or 0) != 0:
             raise CookieInvalidError(_MESSAGE_INVALID_COOKIE)
         if data.nickname is None:
             raise EngineParseError(_MESSAGE_NO_MEDIA)
@@ -418,9 +414,9 @@ class F2ParserAdapter:
         exposes no image-album list, so a missing ``video_playAddr`` is a
         typed parse failure.
         """
-        if data.api_status_code not in (None, 0):
+        if int(data.api_status_code or 0) != 0:
             raise CookieInvalidError(_MESSAGE_INVALID_COOKIE)
-        if data.nickname is None or not data.video_playAddr:
+        if data.nickname is None or not isinstance(data.video_playAddr, str):
             raise EngineParseError(_MESSAGE_NO_MEDIA)
         return self._build_result(
             url=url,

@@ -517,3 +517,159 @@ class TestTiktokMapping:
 
         with pytest.raises(EngineParseError):
             self._adapter().parse(ParseCommand(urls=["https://vm.tiktok.com/abc/"]))
+
+
+class TestCookieHandling:
+    def test_douyin_without_cookie_fails_fast_with_missing(self):
+        adapter = _offline_adapter(cookie_provider=FakeCookieProvider({"douyin": None}))
+        with pytest.raises(CookieMissingError):
+            adapter.parse(ParseCommand(urls=["https://v.douyin.com/abc/"]))
+
+    def test_tiktok_without_cookie_fails_fast_with_missing(self):
+        adapter = _offline_adapter(cookie_provider=FakeCookieProvider({"tiktok": None}))
+        with pytest.raises(CookieMissingError):
+            adapter.parse(ParseCommand(urls=["https://vm.tiktok.com/abc/"]))
+
+    def test_weibo_without_cookie_still_parses(self, monkeypatch):
+        # Public weibo posts parse without a cookie.
+        fake_handler = Mock(fetch_one_weibo=_async_returns(_fake_weibo_detail()))
+        _stub_f2(monkeypatch, {
+            ("f2.apps.weibo.utils", "WeiboIdFetcher"): Mock(get_weibo_id=_async_returns("wid")),
+            ("f2.apps.weibo.handler", "WeiboHandler"): Mock(return_value=fake_handler),
+        })
+        adapter = _offline_adapter(cookie_provider=FakeCookieProvider({"weibo": None}))
+        result = adapter.parse(ParseCommand(urls=["https://weibo.com/1/AbC"]))[0]
+        assert result.media_type is MediaType.VIDEO
+
+    def test_no_cookie_provider_means_no_cookie(self):
+        # With no provider wired, douyin behaves as "missing cookie".
+        adapter = _offline_adapter()
+        with pytest.raises(CookieMissingError):
+            adapter.parse(ParseCommand(urls=["https://v.douyin.com/abc/"]))
+
+    def test_douyin_nonzero_status_with_cookie_is_cookie_invalid(self, monkeypatch):
+        fake_handler = Mock(
+            fetch_one_video=_async_returns(_fake_post_detail(api_status_code=4010))
+        )
+        _stub_f2(monkeypatch, {
+            ("f2.apps.douyin.utils", "AwemeIdFetcher"): Mock(get_aweme_id=_async_returns("4")),
+            ("f2.apps.douyin.handler", "DouyinHandler"): Mock(return_value=fake_handler),
+        })
+        adapter = _offline_adapter(cookie_provider=FakeCookieProvider({"douyin": "d=1"}))
+        with pytest.raises(CookieInvalidError):
+            adapter.parse(ParseCommand(urls=["https://v.douyin.com/abc/"]))
+
+    def test_tiktok_nonzero_status_is_cookie_invalid(self, monkeypatch):
+        fake_handler = Mock(
+            fetch_one_video=_async_returns(_fake_tiktok_detail(api_status_code=4010))
+        )
+        _stub_f2(monkeypatch, {
+            ("f2.apps.tiktok.utils", "AwemeIdFetcher"): Mock(get_aweme_id=_async_returns("tid3")),
+            ("f2.apps.tiktok.handler", "TiktokHandler"): Mock(return_value=fake_handler),
+        })
+        adapter = _offline_adapter(cookie_provider=FakeCookieProvider({"tiktok": "t=1"}))
+        with pytest.raises(CookieInvalidError):
+            adapter.parse(ParseCommand(urls=["https://vm.tiktok.com/abc/"]))
+
+    def test_string_status_codes_are_coerced(self, monkeypatch):
+        # f2's own handler compares str(status_code) == "0" — the API type is
+        # not guaranteed int; "0" must NOT be treated as a cookie failure.
+        fake_handler = Mock(
+            fetch_one_video=_async_returns(_fake_post_detail(api_status_code="0"))
+        )
+        _stub_f2(monkeypatch, {
+            ("f2.apps.douyin.utils", "AwemeIdFetcher"): Mock(get_aweme_id=_async_returns("7")),
+            ("f2.apps.douyin.handler", "DouyinHandler"): Mock(return_value=fake_handler),
+        })
+        adapter = _offline_adapter(cookie_provider=FakeCookieProvider({"douyin": "d=1"}))
+        result = adapter.parse(ParseCommand(urls=["https://v.douyin.com/abc/"]))[0]
+        assert result.media_type is MediaType.VIDEO
+
+        fake_handler2 = Mock(
+            fetch_one_video=_async_returns(_fake_post_detail(api_status_code="4010"))
+        )
+        _stub_f2(monkeypatch, {
+            ("f2.apps.douyin.utils", "AwemeIdFetcher"): Mock(get_aweme_id=_async_returns("8")),
+            ("f2.apps.douyin.handler", "DouyinHandler"): Mock(return_value=fake_handler2),
+        })
+        with pytest.raises(CookieInvalidError):
+            adapter.parse(ParseCommand(urls=["https://v.douyin.com/abc/"]))
+
+    def test_weibo_20112_is_cookie_invalid(self, monkeypatch):
+        fake_handler = Mock(
+            fetch_one_weibo=_async_returns(_fake_weibo_detail(error_code=20112))
+        )
+        _stub_f2(monkeypatch, {
+            ("f2.apps.weibo.utils", "WeiboIdFetcher"): Mock(get_weibo_id=_async_returns("wid")),
+            ("f2.apps.weibo.handler", "WeiboHandler"): Mock(return_value=fake_handler),
+        })
+        adapter = _offline_adapter(cookie_provider=FakeCookieProvider({"weibo": "SUB=x"}))
+        with pytest.raises(CookieInvalidError):
+            adapter.parse(ParseCommand(urls=["https://weibo.com/1/AbC"]))
+
+    def test_f2_unauthorized_error_is_cookie_invalid(self, monkeypatch):
+        from f2.exceptions import APIUnauthorizedError
+
+        async def boom(url):
+            raise APIUnauthorizedError("rejected")
+
+        _stub_f2(monkeypatch, {
+            ("f2.apps.douyin.utils", "AwemeIdFetcher"): Mock(get_aweme_id=boom),
+            # _fetch_douyin imports the handler before resolving the ID; stub it
+            # so the APIUnauthorizedError from get_aweme_id is what surfaces.
+            ("f2.apps.douyin.handler", "DouyinHandler"): Mock(return_value=Mock()),
+        })
+        adapter = _offline_adapter(cookie_provider=FakeCookieProvider({"douyin": "d=1"}))
+        with pytest.raises(CookieInvalidError):
+            adapter.parse(ParseCommand(urls=["https://v.douyin.com/abc/"]))
+
+    def test_f2_timeout_becomes_engine_timeout(self, monkeypatch):
+        async def slow(url):
+            await asyncio.sleep(5)
+
+        _stub_f2(monkeypatch, {
+            ("f2.apps.douyin.utils", "AwemeIdFetcher"): Mock(get_aweme_id=slow),
+            # See test_f2_unauthorized_error_is_cookie_invalid: the handler
+            # import precedes get_aweme_id, so it must be stubbed for the
+            # wait_for deadline to fire on the ID resolution itself.
+            ("f2.apps.douyin.handler", "DouyinHandler"): Mock(return_value=Mock()),
+        })
+        adapter = _offline_adapter(
+            timeout_seconds=0.01, cookie_provider=FakeCookieProvider({"douyin": "d=1"})
+        )
+        with pytest.raises(EngineTimeoutError):
+            adapter.parse(ParseCommand(urls=["https://v.douyin.com/abc/"]))
+
+
+class TestFileSizeProbe:
+    def test_file_size_from_content_length(self, monkeypatch):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, headers={"content-length": "1048576"}, content=b"")
+
+        fake_handler = Mock(fetch_one_video=_async_returns(_fake_post_detail()))
+        _stub_f2(monkeypatch, {
+            ("f2.apps.douyin.utils", "AwemeIdFetcher"): Mock(get_aweme_id=_async_returns("5")),
+            ("f2.apps.douyin.handler", "DouyinHandler"): Mock(return_value=fake_handler),
+        })
+        adapter = F2ParserAdapter(
+            transport=httpx.MockTransport(handler),
+            cookie_provider=FakeCookieProvider({"douyin": "d=1"}),
+        )
+        result = adapter.parse(ParseCommand(urls=["https://v.douyin.com/abc/"]))[0]
+        assert result.file_size_mb == pytest.approx(1.0)
+
+    def test_probe_failure_leaves_size_none(self, monkeypatch):
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("refused", request=request)
+
+        fake_handler = Mock(fetch_one_video=_async_returns(_fake_post_detail()))
+        _stub_f2(monkeypatch, {
+            ("f2.apps.douyin.utils", "AwemeIdFetcher"): Mock(get_aweme_id=_async_returns("6")),
+            ("f2.apps.douyin.handler", "DouyinHandler"): Mock(return_value=fake_handler),
+        })
+        adapter = F2ParserAdapter(
+            transport=httpx.MockTransport(handler),
+            cookie_provider=FakeCookieProvider({"douyin": "d=1"}),
+        )
+        result = adapter.parse(ParseCommand(urls=["https://v.douyin.com/abc/"]))[0]
+        assert result.file_size_mb is None
