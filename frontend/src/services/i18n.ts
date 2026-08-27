@@ -52,7 +52,7 @@ const zh = {
   'parser.txtTooLarge': 'TXT 文件过大(最大 1 MB)',
   'parser.txtHint': '导入 UTF-8 编码的 TXT 文件(每行一个链接，最大 1 MB)',
   'parser.txtReadFailed': 'TXT 文件读取失败',
-  'parser.cookieAlert': 'Cookie 无效或已过期，请重新设置后重试',
+  'parser.cookieAlert': 'Cookie 缺失或无效，请重新设置后重试',
   'parser.goSettings': '去设置',
 
   // Preview modal (Task 15) — v1 returns metadata + a streams ladder, not
@@ -257,7 +257,7 @@ const en: Record<TranslationKey, string> = {
   'parser.txtTooLarge': 'TXT file too large (max 1 MB)',
   'parser.txtHint': 'Import a UTF-8 TXT file (one link per line, max 1 MB)',
   'parser.txtReadFailed': 'Failed to read the TXT file',
-  'parser.cookieAlert': 'Cookie invalid or expired — update it in Settings and retry',
+  'parser.cookieAlert': 'Cookie missing or invalid — update it in Settings and retry',
   'parser.goSettings': 'Settings',
 
   // Preview modal (Task 15)

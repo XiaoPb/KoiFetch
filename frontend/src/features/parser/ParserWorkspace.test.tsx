@@ -379,7 +379,7 @@ describe('ParserWorkspace', () => {
     await parseSeeded('https://v.douyin.com/abc/');
 
     const alert = await screen.findByTestId('cookie-alert');
-    expect(alert).toHaveTextContent(/Cookie 无效或已过期/);
+    expect(alert).toHaveTextContent(/Cookie 缺失或无效/);
 
     await user.click(screen.getByTestId('cookie-settings-link'));
     expect(useCookieStore.getState().drawerOpen).toBe(true);
@@ -390,6 +390,36 @@ describe('ParserWorkspace', () => {
     (parseApi.parse as Mock).mockResolvedValue({
       results: [],
       failed: [{ url: 'https://example.com/bad', error: '平台不支持 / Unsupported platform' }],
+    });
+    renderWithProviders(<ParserWorkspace />);
+    await parseSeeded('https://example.com/bad');
+    expect(await screen.findByTestId('parser-failed')).toBeInTheDocument();
+    expect(screen.queryByTestId('cookie-alert')).not.toBeInTheDocument();
+  });
+
+  it('shows the cookie alert alongside other failures in a mixed batch', async () => {
+    (parseApi.parse as Mock).mockResolvedValue({
+      results: [],
+      failed: [
+        {
+          url: 'https://v.douyin.com/abc/',
+          error: '该平台需要 Cookie，请先在设置中配置 / This platform requires a cookie — configure it in Settings',
+          code: 1006,
+        },
+        { url: 'https://example.com/bad', error: '平台不支持 / Unsupported platform' },
+      ],
+    });
+    renderWithProviders(<ParserWorkspace />);
+    await parseSeeded('https://v.douyin.com/abc/\nhttps://example.com/bad');
+
+    expect(await screen.findByTestId('cookie-alert')).toBeInTheDocument();
+    expect(screen.getByTestId('parser-failed')).toBeInTheDocument();
+  });
+
+  it('treats a code-null failure as unrelated to cookies', async () => {
+    (parseApi.parse as Mock).mockResolvedValue({
+      results: [],
+      failed: [{ url: 'https://example.com/bad', error: '解析失败 / Parse failed', code: null }],
     });
     renderWithProviders(<ParserWorkspace />);
     await parseSeeded('https://example.com/bad');

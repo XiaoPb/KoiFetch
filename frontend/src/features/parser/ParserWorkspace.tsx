@@ -258,6 +258,7 @@ export function ParserWorkspace(): JSX.Element {
             <Alert
               type="warning"
               showIcon
+              closable
               message={t('parser.cookieAlert')}
               action={
                 <Button
