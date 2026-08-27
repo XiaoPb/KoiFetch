@@ -15,7 +15,7 @@ const SONGS: MusicSong[] = [
 
 describe('EntityDetailDrawer', () => {
   afterEach(() => {
-    useMusicStore.setState({ detailEntity: null, currentSong: null });
+    useMusicStore.setState({ detailEntity: null, currentSong: null, songs: [] });
   });
 
   it('renders nothing when closed', () => {
@@ -38,5 +38,24 @@ describe('EntityDetailDrawer', () => {
     renderWithProviders(<EntityDetailDrawer />);
     expect(screen.getByText('专辑详情')).toBeInTheDocument();
     expect(screen.getByText('叶惠美精选')).toBeInTheDocument();
+  });
+
+  it('shows playlist details without a hot-songs section', () => {
+    act(() =>
+      useMusicStore.setState({
+        detailEntity: { kind: 'playlist', id: 'p1', title: '周杰伦的热门歌单', creator: '网易云音乐', cover: null, songCount: 50 },
+      }),
+    );
+    renderWithProviders(<EntityDetailDrawer />);
+    expect(screen.getByText('歌单详情')).toBeInTheDocument();
+    expect(screen.getByText('周杰伦的热门歌单')).toBeInTheDocument();
+    expect(screen.queryByText('热门歌曲')).not.toBeInTheDocument();
+  });
+
+  it('shows the no-songs hint when no songs match the entity', () => {
+    act(() => useMusicStore.setState({ detailEntity: ARTIST, songs: [] }));
+    renderWithProviders(<EntityDetailDrawer />);
+    expect(screen.getByText('歌手详情')).toBeInTheDocument();
+    expect(screen.getByText('暂无歌曲')).toBeInTheDocument();
   });
 });
