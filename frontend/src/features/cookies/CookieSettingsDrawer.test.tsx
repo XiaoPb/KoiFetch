@@ -78,4 +78,53 @@ describe('CookieSettingsDrawer', () => {
     renderWithProviders(<CookieSettingsDrawer />);
     expect(screen.getByTestId('cookie-clear-douyin')).toBeDisabled();
   });
+
+  it('disables save while the input is blank', () => {
+    renderWithProviders(<CookieSettingsDrawer />);
+    expect(screen.getByTestId('cookie-save-douyin')).toBeDisabled();
+  });
+
+  it('clears the input after a successful save', async () => {
+    (cookieApi.set as Mock).mockResolvedValue({ platform: 'douyin', configured: true, updated_at: null });
+    (cookieApi.list as Mock).mockResolvedValue({ cookies: [] });
+    const user = userEvent.setup();
+    renderWithProviders(<CookieSettingsDrawer />);
+    await user.type(screen.getByTestId('cookie-input-douyin'), 'sessionid=abc');
+    await user.click(screen.getByTestId('cookie-save-douyin'));
+    await waitFor(() => expect(cookieApi.set).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByTestId('cookie-input-douyin')).toHaveValue(''));
+  });
+
+  it('toasts when a save fails', async () => {
+    (cookieApi.set as Mock).mockRejectedValue(new Error('boom'));
+    const user = userEvent.setup();
+    renderWithProviders(<CookieSettingsDrawer />);
+    await user.type(screen.getByTestId('cookie-input-douyin'), 'sessionid=abc');
+    await user.click(screen.getByTestId('cookie-save-douyin'));
+    expect(await screen.findByText('Cookie 保存失败')).toBeInTheDocument();
+  });
+
+  it('toasts when a clear fails', async () => {
+    (cookieApi.remove as Mock).mockRejectedValue(new Error('boom'));
+    useCookieStore.setState({
+      entries: [{ platform: 'douyin', configured: true, updated_at: 'x' }],
+    });
+    const user = userEvent.setup();
+    renderWithProviders(<CookieSettingsDrawer />);
+    await user.click(screen.getByTestId('cookie-clear-douyin'));
+    expect(await screen.findByText('Cookie 清除失败')).toBeInTheDocument();
+  });
+
+  it('renders the load-error Alert and retries', async () => {
+    useCookieStore.setState({ error: '网络错误 / Network error' });
+    (cookieApi.list as Mock).mockResolvedValue({ cookies: [] });
+    const user = userEvent.setup();
+    renderWithProviders(<CookieSettingsDrawer />);
+    expect(screen.getByTestId('cookie-load-error')).toBeInTheDocument();
+    await user.click(screen.getByTestId('cookie-retry'));
+    await waitFor(() => expect(cookieApi.list).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(screen.queryByTestId('cookie-load-error')).not.toBeInTheDocument(),
+    );
+  });
 });
