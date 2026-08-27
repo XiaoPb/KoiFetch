@@ -1,0 +1,440 @@
+/* Music search page (route /music). The page renders OUTSIDE the app shell,
+   so it owns its full-height layout and its own (fixed) top bar. All styles
+   are scoped to .music-* selectors; app.css is untouched. */
+
+.music-page {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: #f5f5f5;
+  overflow: hidden;
+}
+
+/* --- Top search bar (fixed at the top of the page) --- */
+
+.music-top-bar {
+  flex: 0 0 auto;
+  background: #fff;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.music-search-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 8px 16px;
+}
+
+.music-search-input-wrap {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.music-search-input-wrap .ant-input {
+  width: 100%;
+}
+
+/* --- Thin top loading bar (spec §2: 顶部细进度条 while switching/loading) --- */
+
+.music-loading-bar {
+  flex: 0 0 auto;
+  height: 3px;
+  background: #1677ff;
+  animation: music-loading-pulse 1s ease-in-out infinite;
+}
+
+@keyframes music-loading-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* --- Stats + filter tabs bar --- */
+
+.music-filter-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  background: #fff;
+  border-bottom: 1px solid #f0f0f0;
+  padding: 0 16px;
+}
+
+.music-count {
+  font-size: 13px;
+}
+
+.music-filter-tabs .ant-tabs-nav {
+  margin-bottom: 0;
+}
+
+/* --- Scrollable result area + custom thin light scrollbar --- */
+
+.music-scroll-area {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 12px 16px 24px;
+}
+
+.music-scroll-area::-webkit-scrollbar {
+  width: 6px;
+}
+
+.music-scroll-area::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.music-scroll-area::-webkit-scrollbar-thumb {
+  background: #d9d9d9;
+  border-radius: 3px;
+}
+
+.music-scroll-area::-webkit-scrollbar-thumb:hover {
+  background: #bfbfbf;
+}
+
+/* --- List view fade-in on category switch (spec §关键交互 淡入淡出) --- */
+
+.music-list-view {
+  animation: music-list-fade 0.25s ease-out both;
+}
+
+@keyframes music-list-fade {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* --- View A: song rows --- */
+
+.music-song-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.music-song-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.music-song-row:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.music-song-rank {
+  flex: 0 0 28px;
+  text-align: right;
+  color: #bfbfbf;
+  font-size: 12px;
+}
+
+.music-song-cover {
+  flex: 0 0 auto;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.music-song-info {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.music-song-title {
+  color: rgba(0, 0, 0, 0.88);
+  font-size: 14px;
+}
+
+.music-song-meta {
+  font-size: 12px;
+}
+
+.music-list-sentinel {
+  height: 1px;
+}
+
+.music-loading-more {
+  display: flex;
+  justify-content: center;
+  padding: 12px 0;
+}
+
+.music-end-hint {
+  display: block;
+  text-align: center;
+  padding: 16px 0;
+  font-size: 12px;
+}
+
+/* --- View B: artist cards (horizontal scroll, hidden scrollbar) --- */
+
+.artist-result-list {
+  display: flex;
+  gap: 16px;
+  overflow-x: auto;
+  padding: 8px 0 12px;
+}
+
+.artist-result-list::-webkit-scrollbar {
+  display: none;
+}
+
+.artist-card {
+  flex: 0 0 120px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  padding: 12px 8px;
+  border-radius: 12px;
+}
+
+.artist-card:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.artist-name {
+  max-width: 100%;
+  font-size: 14px;
+}
+
+.artist-meta {
+  font-size: 12px;
+  text-align: center;
+}
+
+/* --- View C: album / playlist cards --- */
+
+.album-playlist-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.album-playlist-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  background: #fff;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.album-playlist-card:hover {
+  background: #f0f5ff;
+}
+
+.album-playlist-cover {
+  flex: 0 0 auto;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.album-playlist-info {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.album-playlist-title {
+  font-size: 14px;
+}
+
+.album-playlist-meta {
+  font-size: 12px;
+}
+
+.album-playlist-chevron {
+  color: #bfbfbf;
+}
+
+/* --- Mini player (slides up on mount) --- */
+
+.music-mini-player {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  background: #fff;
+  border-top: 1px solid #f0f0f0;
+  animation: music-mini-in 0.25s ease-out both;
+}
+
+@keyframes music-mini-in {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.music-mini-cover {
+  flex: 0 0 auto;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.music-mini-info {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.music-mini-title {
+  font-size: 13px;
+}
+
+.music-mini-meta {
+  font-size: 12px;
+}
+
+.music-mini-progress {
+  flex: 1 1 auto;
+  min-width: 80px;
+  height: 4px;
+  background: #f0f0f0;
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.music-mini-progress-inner {
+  height: 100%;
+  background: #1677ff;
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+.music-mini-time {
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.45);
+  white-space: nowrap;
+}
+
+/* --- Empty state --- */
+
+.music-empty {
+  padding: 48px 0;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.music-hot-title {
+  font-size: 13px;
+}
+
+.music-hot-tag {
+  cursor: pointer;
+}
+
+/* --- Action sheet --- */
+
+.music-action-items {
+  display: flex;
+  flex-direction: column;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* --- Detail drawer --- */
+
+.music-detail-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  text-align: center;
+}
+
+.music-detail-name {
+  margin: 0 !important;
+}
+
+.music-detail-songs {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+  margin-top: 8px;
+}
+
+.music-detail-song {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.music-detail-song:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.music-detail-song-title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* --- Mobile --- */
+
+@media (max-width: 768px) {
+  .music-search-bar {
+    padding: 8px 12px;
+  }
+
+  .music-filter-bar {
+    padding: 0 12px;
+  }
+
+  .music-scroll-area {
+    padding: 8px 12px 16px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .music-mini-player,
+  .music-list-view,
+  .music-loading-bar {
+    animation: none;
+  }
+}
