@@ -5,6 +5,7 @@
 import '@testing-library/jest-dom/vitest';
 import { cleanup } from '@testing-library/react';
 import { afterEach, vi } from 'vitest';
+import { installIntersectionObserverMock, IntersectionObserverMock } from './intersectionObserverMock';
 
 // Breakpoint default: treat the viewport as desktop-wide (any `min-width`
 // media query matches), so `Grid.useBreakpoint()` reports md+ by default.
@@ -40,6 +41,9 @@ Object.defineProperty(window, 'scrollTo', {
   value: vi.fn(),
 });
 
+installIntersectionObserverMock();
+
 afterEach(() => {
   cleanup();
+  IntersectionObserverMock.instances.length = 0;
 });
