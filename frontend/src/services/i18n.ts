@@ -22,6 +22,7 @@ const zh = {
   'header.language': '切换语言 / Switch language',
   'header.downloadCenter': '下载中心 / Download center',
   'header.adminMenu.nas': 'NAS 管理',
+  'header.settings': '设置',
 
   'home.title': '解析工作台',
   'home.subtitle': '视频 · 音乐 · 图片，粘贴链接一键解析下载',
@@ -99,6 +100,22 @@ const zh = {
   'downloads.remainingSeconds': '约 {value} 秒',
   'downloads.remainingMinutes': '约 {value} 分钟',
   'downloads.remainingHours': '约 {value} 小时',
+
+  // Cookie settings (f2 parser)
+  'cookies.title': '平台 Cookie 设置',
+  'cookies.hint': '抖音/TikTok 解析需要有效 Cookie；微博仅在受限内容需要。Cookie 过期时解析会失败并提示重新设置。',
+  'cookies.platform.douyin': '抖音 (Douyin)',
+  'cookies.platform.weibo': '微博 (Weibo)',
+  'cookies.platform.tiktok': 'TikTok',
+  'cookies.configured': '已配置',
+  'cookies.notConfigured': '未配置',
+  'cookies.placeholder': '粘贴浏览器中该平台的 Cookie',
+  'cookies.save': '保存',
+  'cookies.clear': '清除',
+  'cookies.saved': 'Cookie 已保存',
+  'cookies.savedFailed': 'Cookie 保存失败',
+  'cookies.cleared': 'Cookie 已清除',
+  'cookies.clearedFailed': 'Cookie 清除失败',
 
   // Music search page (route /music)
   'music.entry': '音乐搜索',
@@ -208,6 +225,7 @@ const en: Record<TranslationKey, string> = {
   'header.language': '切换语言 / Switch language',
   'header.downloadCenter': 'Download center',
   'header.adminMenu.nas': 'NAS Admin',
+  'header.settings': 'Settings',
 
   'home.title': 'Parser Workspace',
   'home.subtitle': 'Video · Music · Images — parse and download in one click',
@@ -284,6 +302,22 @@ const en: Record<TranslationKey, string> = {
   'downloads.remainingSeconds': '~{value}s',
   'downloads.remainingMinutes': '~{value} min',
   'downloads.remainingHours': '~{value} h',
+
+  // Cookie settings (f2 parser)
+  'cookies.title': 'Platform Cookies',
+  'cookies.hint': 'Douyin/TikTok parsing requires a valid cookie; Weibo only for restricted posts. An expired cookie fails parsing and prompts a re-setup.',
+  'cookies.platform.douyin': 'Douyin',
+  'cookies.platform.weibo': 'Weibo',
+  'cookies.platform.tiktok': 'TikTok',
+  'cookies.configured': 'Configured',
+  'cookies.notConfigured': 'Not configured',
+  'cookies.placeholder': 'Paste the platform cookie from your browser',
+  'cookies.save': 'Save',
+  'cookies.clear': 'Clear',
+  'cookies.saved': 'Cookie saved',
+  'cookies.savedFailed': 'Failed to save cookie',
+  'cookies.cleared': 'Cookie cleared',
+  'cookies.clearedFailed': 'Failed to clear cookie',
 
   // Music search page (route /music)
   'music.entry': 'Music Search',

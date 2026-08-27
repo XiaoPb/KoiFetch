@@ -363,6 +363,26 @@ body {
   text-align: center;
 }
 
+/* --- Cookie settings drawer --- */
+
+.cookie-row {
+  padding: 12px 0;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.cookie-row-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.cookie-updated {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+}
+
 /* --- Mobile --- */
 
 @media (max-width: 768px) {
