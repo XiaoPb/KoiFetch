@@ -411,7 +411,27 @@ class F2ParserAdapter:
         return urls
 
     def _map_tiktok(self, data, url: str) -> ParseResult:
-        raise NotImplementedError("tiktok mapping lands in Task 8")
+        """Map a tiktok PostDetailFilter onto a ParseResult (Task 8).
+
+        Non-zero ``api_status_code`` → CookieInvalidError (best-effort, see
+        Task 9). Tiktok posts are treated as VIDEO-only in v1: the filter
+        exposes no image-album list, so a missing ``video_playAddr`` is a
+        typed parse failure.
+        """
+        if data.api_status_code not in (None, 0):
+            raise CookieInvalidError(_MESSAGE_INVALID_COOKIE)
+        if data.nickname is None or not data.video_playAddr:
+            raise EngineParseError(_MESSAGE_NO_MEDIA)
+        return self._build_result(
+            url=url,
+            platform="tiktok",
+            title=(data.desc or "").strip() or "tiktok",
+            cover=data.video_cover or None,
+            duration_ms=data.video_duration,
+            video_url=data.video_playAddr,
+            images=[],
+            author={"uid": data.uid, "name": data.nickname, "avatar": None},
+        )
 
     # -- shared result builder ----------------------------------------------
 

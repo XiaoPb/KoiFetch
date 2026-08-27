@@ -471,3 +471,49 @@ class TestWeiboMapping:
         result = self._adapter().parse(ParseCommand(urls=["https://weibo.com/1/AbC"]))[0]
         assert result.media_type is MediaType.VIDEO
         assert result.metadata["video_url"] == "https://cdn.example/w2.mp4"
+
+
+def _fake_tiktok_detail(**overrides):
+    defaults = dict(
+        api_status_code=0,
+        nickname="tiktoker",
+        uid="tu1",
+        desc="TikTok clip",
+        video_playAddr="https://cdn.example/t.mp4",
+        video_cover="https://cdn.example/tc.jpg",
+        video_duration=65000,
+    )
+    defaults.update(overrides)
+    return type("FakeTiktokDetail", (), defaults)()
+
+
+class TestTiktokMapping:
+    def _adapter(self, **kwargs):
+        return _offline_adapter(cookie_provider=FakeCookieProvider({"tiktok": "t=1"}), **kwargs)
+
+    def test_maps_video_detail(self, monkeypatch):
+        fake_handler = Mock(fetch_one_video=_async_returns(_fake_tiktok_detail()))
+        _stub_f2(monkeypatch, {
+            ("f2.apps.tiktok.utils", "AwemeIdFetcher"): Mock(get_aweme_id=_async_returns("tid")),
+            ("f2.apps.tiktok.handler", "TiktokHandler"): Mock(return_value=fake_handler),
+        })
+
+        result = self._adapter().parse(ParseCommand(urls=["https://www.tiktok.com/@u/video/1"]))[0]
+        assert result.platform == "tiktok"
+        assert result.media_type is MediaType.VIDEO
+        assert result.title == "TikTok clip"
+        assert result.cover == "https://cdn.example/tc.jpg"
+        assert result.duration == "01:05"
+        assert result.metadata["video_url"] == "https://cdn.example/t.mp4"
+
+    def test_missing_video_addr_raises_parse_error(self, monkeypatch):
+        fake_handler = Mock(
+            fetch_one_video=_async_returns(_fake_tiktok_detail(video_playAddr=None))
+        )
+        _stub_f2(monkeypatch, {
+            ("f2.apps.tiktok.utils", "AwemeIdFetcher"): Mock(get_aweme_id=_async_returns("tid2")),
+            ("f2.apps.tiktok.handler", "TiktokHandler"): Mock(return_value=fake_handler),
+        })
+
+        with pytest.raises(EngineParseError):
+            self._adapter().parse(ParseCommand(urls=["https://vm.tiktok.com/abc/"]))
