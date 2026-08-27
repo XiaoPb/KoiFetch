@@ -41,3 +41,6 @@ frontend/.npm-cache/
 
 # Local deployment runtime artifacts (logs + PID files)
 .deploy-logs/
+
+# f2 engine runtime logs (f2 writes logs/f2-*.log in the process CWD)
+/logs/
