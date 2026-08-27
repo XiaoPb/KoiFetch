@@ -72,9 +72,9 @@ class Settings(BaseModel):
 
     # --- Real engine integration (f2 / parse-video-py / musicdl) ---
     # Adapter mode: "stub" (default) keeps the deterministic offline adapters;
-    # "engine" selects the real parse-video-py/musicdl adapters (factory.py
-    # switches, lazily importing the engine modules so the app boots and the
-    # non-engine tests run without the engines installed).
+    # "engine" selects the real f2 / parse-video-py / musicdl adapters
+    # (factory.py switches, lazily importing the engine modules so the app
+    # boots and the non-engine tests run without the engines installed).
     parser_engine: str = "stub"
     downloader_engine: str = "stub"
     # Legacy video-engine fallback: True keeps parse-video-py in the routing

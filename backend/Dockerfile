@@ -59,6 +59,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # see the f2 block in backend/requirements.txt for the explicit runtime deps.
 RUN pip install --no-cache-dir --no-deps f2==0.0.1.7
 
+# Network-free f2 import sanity check (handler modules fetch token APIs at
+# import time; utils/exceptions cover the cryptography compatibility risk).
+RUN python -c "import f2.exceptions, f2.utils.utils"
+
 # Application code (ports-and-adapters layout under app/).
 COPY backend/app ./app
 

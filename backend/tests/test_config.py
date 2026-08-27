@@ -361,3 +361,12 @@ class TestEngineSettings:
     def test_parser_legacy_fallback_accepts_env_strings(self, clean_env):
         settings = build(parser_legacy_fallback="false")
         assert settings.parser_legacy_fallback is False
+
+    def test_parser_legacy_fallback_reads_from_env(self, monkeypatch):
+        monkeypatch.setenv("PARSER_LEGACY_FALLBACK", "false")
+        settings = Settings.from_env()
+        assert settings.parser_legacy_fallback is False
+
+    def test_parser_legacy_fallback_rejects_invalid_value(self):
+        with pytest.raises(ValidationError):
+            build(parser_legacy_fallback="maybe")

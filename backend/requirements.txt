@@ -61,12 +61,14 @@ parse-video-py @ git+https://github.com/wujunwei928/parse-video-py.git@5fcf87256
 #
 # INSTALL NOTE: f2 itself is installed with `pip install --no-deps f2==0.0.1.7`
 # (see backend/scripts/install_f2.sh and the Dockerfile): f2 0.0.1.7's metadata
-# hard-pins pytest==8.3.4 and cryptography==44.0.0, which conflict with this
-# repo's pytest>=8.4 and musicdl's cryptography>=46.0.5,<47. f2's code only
-# uses stable cryptography APIs and runs on the repo's newer shared-library
-# versions. The shared deps (httpx/pydantic/websockets/...) come from the
-# repo's own pins; the following are f2's runtime deps the repo does not
-# otherwise pull in:
+# hard-pins pytest==8.3.4, cryptography==44.0.0, m3u8==3.6.0, protobuf==5.28.3,
+# websockets<13.0, and websockets-proxy==0.1.2, which conflict with this repo's
+# pytest>=8.4, musicdl's cryptography>=46.0.5,<47, and the repo's newer
+# websockets/websockets-proxy versions. All are silently resolved to
+# newer/compatible versions in this repo — f2's code only uses stable APIs and
+# runs on the repo's newer shared-library versions. The shared deps
+# (httpx/pydantic/websockets/...) come from the repo's own pins; the following
+# nine are f2's runtime deps the repo does not otherwise pull in:
 aiofiles>=24.1.0
 aiosqlite>=0.20.0
 browser-cookie3>=0.20.1
@@ -76,6 +78,16 @@ jsonpath-ng>=1.6.1
 pyexecjs>=1.5.1
 qrcode>=8.0
 websockets-proxy>=0.1.2
+# m3u8/rich/click/protobuf are ALSO required to import f2, but this repo gets
+# them transitively via musicdl/pywidevine; declared explicitly here so a fresh
+# install never silently skips them (same convention as the test deps above).
+m3u8>=6.0.0,<7
+rich>=13.9.3,<15
+click>=8.1.7,<9
+protobuf>=6.33.0
+# To bump f2: update the three f2 pins (requirements.txt comment,
+# backend/scripts/install_f2.sh, Dockerfile), re-verify the module-import list,
+# and re-check the pin conflicts above.
 # musicdl: music search/download (netease/qq/kugou/kuwo/migu/...). Heavy install:
 # pulls nodejs-wheel (a Node.js runtime), pywidevine, av, curl-cffi, cryptography.
 # NOTE: musicdl 2.13.x imports `Unpack` from `typing` (Python >= 3.11) but

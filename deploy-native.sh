@@ -2,14 +2,15 @@
 # Koi Fetch — native (non-Docker) one-command deploy in REAL-ENGINE mode.
 #
 # Builds and runs the full stack on the host, in engine mode
-# (PARSER_ENGINE/DOWNLOADER_ENGINE=engine → parse-video-py + musicdl):
+# (PARSER_ENGINE/DOWNLOADER_ENGINE=engine → f2 / parse-video-py + musicdl):
 #
 #   1. venv + backend deps        (pip; writable cache inside .venv)
 #   2. musicdl Python-3.10 shim   (backend/scripts/patch_musicdl_py310.py)
-#   3. frontend build             (npm ci/install + vite build → frontend/dist)
-#   4. migrations + admin seed    (alembic upgrade head, app.infrastructure.seed)
-#   5. API + worker daemons       (background, PID files, logs)
-#   6. health wait + URL
+#   3. f2 parser (no-deps)        (backend/scripts/install_f2.sh)
+#   4. frontend build             (npm ci/install + vite build → frontend/dist)
+#   5. migrations + admin seed    (alembic upgrade head, app.infrastructure.seed)
+#   6. API + worker daemons       (background, PID files, logs)
+#   7. health wait + URL
 #
 # The repo-root data/ directory may be root-owned (a legacy deployment created
 # it), so runtime data defaults to backend/data/ (writable). Override with
@@ -65,7 +66,7 @@ log() { echo "==> $*"; }
 die() { echo "ERROR: $*" >&2; exit 1; }
 
 start() {
-  # --- 1/2. backend deps + musicdl Python-3.10 shim ---------------------
+  # --- 1-3. backend deps + musicdl shim + f2 parser ---------------------
   if [ "${SKIP_DEPS:-0}" != "1" ]; then
     if [ ! -x "$PY" ]; then
       log "creating venv"
@@ -77,9 +78,11 @@ start() {
       --cache-dir "$PIP_CACHE" ${PIP_INDEX:+-i "$PIP_INDEX"}
     log "patching musicdl for Python 3.10 (typing.Unpack shim)"
     "$PY" "$ROOT/backend/scripts/patch_musicdl_py310.py"
+    log "installing f2 parser (no-deps + import check)"
+    VIRTUAL_ENV="$ROOT/.venv" "$ROOT/backend/scripts/install_f2.sh"
   fi
 
-  # --- 3. frontend build -------------------------------------------------
+  # --- 4. frontend build -------------------------------------------------
   if [ "${SKIP_DEPS:-0}" != "1" ] && [ "${SKIP_FRONTEND:-0}" != "1" ]; then
     if [ ! -d "$ROOT/frontend/node_modules" ]; then
       log "installing frontend dependencies"
@@ -89,12 +92,12 @@ start() {
     npm run build --prefix frontend
   fi
 
-  # --- 4. migrations + admin seed ---------------------------------------
+  # --- 5. migrations + admin seed ---------------------------------------
   log "migrations + admin seed"
   ( cd "$ROOT/backend" && "$ROOT/.venv/bin/python" -m alembic upgrade head )
   ( cd "$ROOT/backend" && "$ROOT/.venv/bin/python" -m app.infrastructure.seed )
 
-  # --- 5. daemons --------------------------------------------------------
+  # --- 6. daemons --------------------------------------------------------
   stop || true
   mkdir -p "$LOG_DIR" "$DATA_ABS/db" "$DATA_ABS/pond" "$DATA_ABS/bubble"
   log "starting API on http://$KOI_HOST:$KOI_PORT  (logs: $LOG_DIR/api.log)"
@@ -105,7 +108,7 @@ start() {
   PYTHONPATH="$ROOT/backend" nohup "$PY" -m app.workers.main >"$LOG_DIR/worker.log" 2>&1 &
   echo $! > "$WORKER_PID"
 
-  # --- 6. health wait ----------------------------------------------------
+  # --- 7. health wait ----------------------------------------------------
   log "waiting for /api/health ..."
   for i in $(seq 1 60); do
     if curl -fsS "http://$KOI_HOST:$KOI_PORT/api/health" >/dev/null 2>&1; then
