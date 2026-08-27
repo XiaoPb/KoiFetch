@@ -6,7 +6,8 @@ data}`` response envelope (``app.api.responses``), the admin auth router
 (``POST /api/parse``), the preview router (``GET /api/preview/{task_id}``),
 the download routers (submit/progress/file under ``/api/download`` and the
 progress WebSocket at ``/ws/download/{id}``), the NAS router
-(``POST /api/nas/save``), the readiness endpoint ``GET /api/health``, and the
+(``POST /api/nas/save``), the cookies router (``GET/PUT/DELETE
+/api/cookies[/{platform}]``), the readiness endpoint ``GET /api/health``, and the
 built frontend served at "/" with a client-side-routing fallback (the v1
 no-Nginx arrangement: ``/api`` and ``/ws`` are same-origin, so no reverse
 proxy is needed).
@@ -34,7 +35,9 @@ and stores it alongside an :class:`app.application.auth_service.AuthService` on
 (``app.api.auth.get_auth_service``/``get_token_provider``). The parse and
 preview services are likewise built once from ``settings`` and exposed via
 ``app.state`` (hooks ``app.api.parse.get_parse_service`` /
-``app.api.preview.get_preview_service``). All services are bound to the engine
+``app.api.preview.get_preview_service``). The cookie service (admin-managed
+per-platform cookies for the f2 parser, ``app.api.cookies.get_cookie_service``)
+is built the same way. All services are bound to the engine
 for ``settings.database_url`` (cached per URL), so each service always queries
 the database the app was configured with. Tests override the hooks to pin a
 temp database and secret.
@@ -60,6 +63,7 @@ from app.adapters.factory import (
     get_storage,
 )
 from app.api.auth import router as auth_router
+from app.api.cookies import router as cookies_router
 from app.api.download import router as download_router
 from app.api.download import ws_router as download_ws_router
 from app.api.nas import router as nas_router
@@ -67,6 +71,7 @@ from app.api.parse import router as parse_router
 from app.api.preview import router as preview_router
 from app.api.responses import error, ok, register_exception_handlers
 from app.application.auth_service import AuthService
+from app.application.cookie_service import PlatformCookieService
 from app.application.download_events import event_hub
 from app.application.download_service import DownloadService
 from app.application.nas_service import NasService
@@ -287,6 +292,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         token_provider=token_provider,
         engine=get_engine(settings.database_url),
     )
+    app.state.cookie_service = PlatformCookieService(
+        engine=get_engine(settings.database_url),
+    )
     app.state.parse_service = ParseService(
         parser=get_parser(settings),
         engine=get_engine(settings.database_url),
@@ -322,6 +330,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(preview_router, prefix="/api")
     app.include_router(download_router, prefix="/api")
     app.include_router(nas_router, prefix="/api")
+    app.include_router(cookies_router, prefix="/api")
     app.include_router(download_ws_router)
 
     @app.get("/api/health")
