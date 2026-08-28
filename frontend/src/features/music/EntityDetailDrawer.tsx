@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
-import { Avatar, Drawer, Image, Typography } from 'antd';
-import { UserOutlined } from '@ant-design/icons';
+import { Avatar, Button, Drawer, Image, Typography } from 'antd';
+import { MoreOutlined, UserOutlined } from '@ant-design/icons';
 import type { TranslationKey } from '../../services/i18n';
 import { useTranslation } from '../../services/i18n';
 import { COVER_FALLBACK } from './cover';
@@ -18,6 +18,7 @@ export function EntityDetailDrawer(): JSX.Element {
   const songs = useMusicStore((state) => state.songs);
   const closeDetail = useMusicStore((state) => state.closeDetail);
   const playSong = useMusicStore((state) => state.playSong);
+  const openActionSheet = useMusicStore((state) => state.openActionSheet);
 
   const artistSongs = useMemo(() => {
     if (!entity || entity.kind === 'playlist') return [];
@@ -95,6 +96,17 @@ export function EntityDetailDrawer(): JSX.Element {
                       {song.title}
                     </Typography.Text>
                     <Typography.Text type="secondary">{song.duration}</Typography.Text>
+                    <Button
+                      type="text"
+                      size="small"
+                      icon={<MoreOutlined />}
+                      aria-label={t('music.more')}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        openActionSheet(song);
+                      }}
+                      data-testid={`detail-more-${song.id}`}
+                    />
                   </div>
                 ))
               )}

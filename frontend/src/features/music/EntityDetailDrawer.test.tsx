@@ -58,4 +58,12 @@ describe('EntityDetailDrawer', () => {
     expect(screen.getByText('歌手详情')).toBeInTheDocument();
     expect(screen.getByText('暂无歌曲')).toBeInTheDocument();
   });
+
+  it('opens the action sheet from a hot-song more button', async () => {
+    const user = userEvent.setup();
+    act(() => useMusicStore.setState({ detailEntity: ARTIST, songs: SONGS }));
+    renderWithProviders(<EntityDetailDrawer />);
+    await user.click(screen.getByTestId('detail-more-s1'));
+    expect(useMusicStore.getState().actionSheetSong?.id).toBe('s1');
+  });
 });
