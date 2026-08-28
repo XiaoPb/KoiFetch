@@ -42,6 +42,9 @@ describe('SongActionSheet', () => {
       currentSong: null,
       detailEntity: null,
       artists: [],
+      queue: [],
+      queueIndex: -1,
+      loopMode: 'sequence',
     });
   });
 
@@ -67,6 +70,19 @@ describe('SongActionSheet', () => {
     await user.click(screen.getByText('下一首播放'));
     expect(useMusicStore.getState().currentSong?.id).toBe('s1');
     expect(useMusicStore.getState().actionSheetSong).toBeNull();
+  });
+
+  it('enqueues the song as next without switching to it', async () => {
+    const user = userEvent.setup();
+    act(() => {
+      useMusicStore.getState().playSong(SONG);
+      useMusicStore.setState({ actionSheetSong: { ...SONG, id: 's2', title: '夜曲' } });
+    });
+    renderWithProviders(<SongActionSheet />);
+    await user.click(screen.getByText('下一首播放'));
+    expect(useMusicStore.getState().currentSong?.id).toBe('s1'); // not switched
+    expect(useMusicStore.getState().queue.map((s) => s.id)).toEqual(['s1', 's2']);
+    expect(screen.getByText('已加入播放队列，将在当前歌曲后播放')).toBeInTheDocument();
   });
 
   it('downloads the song through the existing pipeline', async () => {

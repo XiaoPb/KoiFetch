@@ -21,7 +21,14 @@ describe('MiniPlayer', () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
-    useMusicStore.setState({ currentSong: null, isPlaying: false, currentTime: 0 });
+    useMusicStore.setState({
+      currentSong: null,
+      isPlaying: false,
+      currentTime: 0,
+      queue: [],
+      queueIndex: -1,
+      loopMode: 'sequence',
+    });
   });
 
   it('renders nothing without a current song', () => {
@@ -157,5 +164,36 @@ describe('MiniPlayer', () => {
     fireEvent.error(screen.getByTestId('mini-audio'));
     expect(screen.getByText('播放失败，可下载后播放')).toBeInTheDocument();
     expect(useMusicStore.getState().isPlaying).toBe(false);
+  });
+
+  it('advances to the next queue entry on ended', () => {
+    act(() => {
+      useMusicStore.getState().playSong({ ...SONG, play_url: 'data:audio/wav;base64,AAAA' });
+      useMusicStore.getState().enqueueNext({ ...SONG, id: 's2', title: '夜曲' });
+    });
+    renderWithProviders(<MiniPlayer />);
+    fireEvent.ended(screen.getByTestId('mini-audio'));
+    expect(useMusicStore.getState().currentSong?.id).toBe('s2');
+    expect(useMusicStore.getState().isPlaying).toBe(true);
+  });
+
+  it('repeats the current song on ended in loopOne mode', () => {
+    act(() => {
+      useMusicStore.setState({ loopMode: 'loopOne' });
+      useMusicStore.getState().playSong({ ...SONG, play_url: 'data:audio/wav;base64,AAAA' });
+    });
+    renderWithProviders(<MiniPlayer />);
+    fireEvent.ended(screen.getByTestId('mini-audio'));
+    expect(useMusicStore.getState().currentSong?.id).toBe('s1');
+    expect(useMusicStore.getState().isPlaying).toBe(true);
+  });
+
+  it('cycles the loop mode from the loop button', async () => {
+    const user = userEvent.setup();
+    act(() => useMusicStore.setState({ currentSong: SONG, isPlaying: false }));
+    renderWithProviders(<MiniPlayer />);
+    expect(useMusicStore.getState().loopMode).toBe('sequence');
+    await user.click(screen.getByTestId('mini-player-loop'));
+    expect(useMusicStore.getState().loopMode).toBe('loopOne');
   });
 });

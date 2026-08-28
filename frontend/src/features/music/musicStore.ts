@@ -13,6 +13,8 @@ import { httpMusicSource } from './httpMusicSource';
 
 export type MusicSearchStatus = 'idle' | 'loading' | 'success' | 'error';
 
+export type LoopMode = 'sequence' | 'loopOne' | 'loopAll';
+
 // Client-side validation message (Chinese-primary bilingual, same pattern as
 // the parser store's validation messages).
 export const MUSIC_EMPTY_INPUT_MESSAGE = '请输入搜索关键词 / Enter a search keyword';
@@ -66,6 +68,12 @@ export interface MusicState {
   /** seconds, simulated in v1. */
   currentTime: number;
 
+  // Play queue (P2): upcoming songs after the current one.
+  queue: MusicSong[];
+  /** Index of `currentSong` in `queue` (-1 when not from the queue). */
+  queueIndex: number;
+  loopMode: LoopMode;
+
   // Bottom Action Sheet state.
   actionSheetSong: MusicSong | null;
 
@@ -85,6 +93,11 @@ export interface MusicState {
   updateProgress: (time: number) => void;
   closePlayer: () => void;
 
+  enqueueNext: (song: MusicSong) => void;
+  /** Advance to the next queue entry; returns false at the sequence end. */
+  playNext: () => boolean;
+  cycleLoopMode: () => void;
+
   openActionSheet: (song: MusicSong) => void;
   closeActionSheet: () => void;
   openDetail: (entity: MusicEntity | null) => void;
@@ -94,6 +107,11 @@ export interface MusicState {
 /**
  * The search-page store. The source is injected so tests can stub it and a
  * follow-up backend plan can swap the default without touching components.
+ *
+ * Playback (P2): `playSong` starts a fresh one-song queue; 下一首播放
+ * (`enqueueNext`) inserts after the current song WITHOUT switching to it;
+ * `ended` auto-advances through the queue (sequence mode stops at the end,
+ * loopAll wraps); `cycleLoopMode` cycles 顺序 → 单曲循环 → 列表循环.
  */
 export function createMusicStore(source: MusicSearchSource) {
   // Monotonic request id: every search/category/loadMore capture the current
@@ -157,6 +175,9 @@ export function createMusicStore(source: MusicSearchSource) {
       currentSong: null,
       isPlaying: false,
       currentTime: 0,
+      queue: [],
+      queueIndex: -1,
+      loopMode: 'sequence',
       actionSheetSong: null,
       detailEntity: null,
 
@@ -228,17 +249,52 @@ export function createMusicStore(source: MusicSearchSource) {
           currentSong: null,
           isPlaying: false,
           currentTime: 0,
+          queue: [],
+          queueIndex: -1,
+          loopMode: 'sequence',
           actionSheetSong: null,
           detailEntity: null,
         }),
 
       clearLoadMoreError: () => set({ loadMoreError: null }),
 
-      playSong: (song) => set({ currentSong: song, isPlaying: true, currentTime: 0 }),
+      playSong: (song) =>
+        set({ currentSong: song, isPlaying: true, currentTime: 0, queue: [song], queueIndex: 0 }),
       togglePlay: () => set((state) => ({ isPlaying: !state.isPlaying })),
       pause: () => set({ isPlaying: false }),
       updateProgress: (time) => set({ currentTime: time }),
-      closePlayer: () => set({ currentSong: null, isPlaying: false, currentTime: 0 }),
+      closePlayer: () => set({ currentSong: null, isPlaying: false, currentTime: 0, queue: [], queueIndex: -1 }),
+
+      enqueueNext: (song) =>
+        set((state) => {
+          if (!state.currentSong) {
+            // Nothing playing: enqueue-next degrades to immediate play.
+            return { currentSong: song, isPlaying: true, currentTime: 0, queue: [song], queueIndex: 0 };
+          }
+          const queue = [...state.queue];
+          queue.splice(state.queueIndex + 1, 0, song);
+          return { queue };
+        }),
+
+      playNext: () => {
+        const { queue, queueIndex, loopMode } = get();
+        if (queue.length === 0) return false;
+        let index = queueIndex + 1;
+        if (index >= queue.length) {
+          if (loopMode !== 'loopAll') return false; // sequence stops at the end
+          index = 0;
+        }
+        set({ currentSong: queue[index], queueIndex: index, isPlaying: true, currentTime: 0 });
+        return true;
+      },
+
+      cycleLoopMode: () =>
+        set((state) => ({
+          loopMode:
+            state.loopMode === 'sequence' ? 'loopOne'
+            : state.loopMode === 'loopOne' ? 'loopAll'
+            : 'sequence',
+        })),
 
       openActionSheet: (song) => set({ actionSheetSong: song }),
       closeActionSheet: () => set({ actionSheetSong: null }),

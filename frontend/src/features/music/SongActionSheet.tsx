@@ -11,11 +11,12 @@ import { useDownloadsStore } from '../../stores/downloadsStore';
 /**
  * Bottom Action Sheet (spec §3 View A interaction): antd `Drawer` anchored to
  * the bottom, sliding up with the song's action menu. v1 behaviors:
- * 下一首播放 plays the song immediately (no queue yet); 下载 imports the song
- * (musicApi.importSong → task_id) and submits it through the existing download
- * pipeline (downloadsStore.submit → DownloadCenterDrawer/NAS); 添加到歌单
- * acknowledges (playlists are not persisted); 查看歌手 opens the artist detail
- * drawer, resolving the artist by name with a minimal fallback entity.
+ * 下一首播放 enqueues the song right after the current one (does NOT switch —
+ * queue support landed in P2); 下载 imports the song (musicApi.importSong →
+ * task_id) and submits it through the existing download pipeline
+ * (downloadsStore.submit → DownloadCenterDrawer/NAS); 添加到歌单 acknowledges
+ * (playlists are not persisted); 查看歌手 opens the artist detail drawer,
+ * resolving the artist by name with a minimal fallback entity.
  */
 export function SongActionSheet(): JSX.Element {
   const { t } = useTranslation();
@@ -23,14 +24,15 @@ export function SongActionSheet(): JSX.Element {
   const song = useMusicStore((state) => state.actionSheetSong);
   const artists = useMusicStore((state) => state.artists);
   const closeActionSheet = useMusicStore((state) => state.closeActionSheet);
-  const playSong = useMusicStore((state) => state.playSong);
   const openDetail = useMusicStore((state) => state.openDetail);
+  const enqueueNext = useMusicStore((state) => state.enqueueNext);
   const [importing, setImporting] = useState(false);
 
   const handleNext = () => {
     if (!song) return;
-    playSong(song);
+    enqueueNext(song);
     closeActionSheet();
+    void message.success(t('music.queueNext'));
   };
 
   const handleDownload = async () => {

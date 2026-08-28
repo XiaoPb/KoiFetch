@@ -215,4 +215,52 @@ describe('musicStore', () => {
     await store.getState().loadMore(); // retries the same page, succeeds
     expect(store.getState().loadMoreError).toBeNull();
   });
+
+  it('enqueueNext inserts after the current song without playing it', () => {
+    const store = createMusicStore({ search: vi.fn() });
+    store.getState().playSong(makeSong(1));
+    store.getState().enqueueNext(makeSong(2));
+    const state = store.getState();
+    expect(state.queue.map((s) => s.id)).toEqual(['s1', 's2']);
+    expect(state.currentSong?.id).toBe('s1'); // not switched
+    expect(state.isPlaying).toBe(true);
+  });
+
+  it('playNext advances and stops at the end in sequence mode', () => {
+    const store = createMusicStore({ search: vi.fn() });
+    store.getState().playSong(makeSong(1));
+    store.getState().enqueueNext(makeSong(2));
+    store.getState().enqueueNext(makeSong(3));
+    // 下一首播放 inserts at queueIndex+1 each time, so successive enqueues
+    // STACK right after the current song: ['s1', 's3', 's2'] — the newest
+    // plays next.
+    expect(store.getState().queue.map((s) => s.id)).toEqual(['s1', 's3', 's2']);
+    expect(store.getState().playNext()).toBe(true);
+    expect(store.getState().currentSong?.id).toBe('s3');
+    expect(store.getState().playNext()).toBe(true);
+    expect(store.getState().currentSong?.id).toBe('s2');
+    expect(store.getState().playNext()).toBe(false); // sequence: stop at end
+    expect(store.getState().currentSong?.id).toBe('s2');
+  });
+
+  it('loopAll wraps to the first song at the end', () => {
+    const store = createMusicStore({ search: vi.fn() });
+    store.getState().playSong(makeSong(1));
+    store.getState().enqueueNext(makeSong(2));
+    store.setState({ loopMode: 'loopAll' });
+    store.getState().playNext(); // s2
+    expect(store.getState().playNext()).toBe(true);
+    expect(store.getState().currentSong?.id).toBe('s1');
+  });
+
+  it('cycleLoopMode cycles sequence -> loopOne -> loopAll', () => {
+    const store = createMusicStore({ search: vi.fn() });
+    expect(store.getState().loopMode).toBe('sequence');
+    store.getState().cycleLoopMode();
+    expect(store.getState().loopMode).toBe('loopOne');
+    store.getState().cycleLoopMode();
+    expect(store.getState().loopMode).toBe('loopAll');
+    store.getState().cycleLoopMode();
+    expect(store.getState().loopMode).toBe('sequence');
+  });
 });

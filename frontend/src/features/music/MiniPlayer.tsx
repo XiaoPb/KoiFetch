@@ -1,6 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { App, Button, Image, Typography } from 'antd';
-import { CaretRightOutlined, CloseOutlined, PauseOutlined } from '@ant-design/icons';
+import {
+  CaretRightOutlined,
+  CloseOutlined,
+  PauseOutlined,
+  RetweetOutlined,
+  StepForwardOutlined,
+  SyncOutlined,
+} from '@ant-design/icons';
+import type { TranslationKey } from '../../services/i18n';
 import { useTranslation } from '../../services/i18n';
 import { COVER_FALLBACK } from './cover';
 import { formatSeconds, parseDurationSeconds } from './format';
@@ -33,6 +41,9 @@ export function MiniPlayer(): JSX.Element | null {
   const updateProgress = useMusicStore((state) => state.updateProgress);
   const pause = useMusicStore((state) => state.pause);
   const closePlayer = useMusicStore((state) => state.closePlayer);
+  const loopMode = useMusicStore((state) => state.loopMode);
+  const playNext = useMusicStore((state) => state.playNext);
+  const cycleLoopMode = useMusicStore((state) => state.cycleLoopMode);
 
   const audioRef = useRef<HTMLAudioElement>(null);
   const barRef = useRef<HTMLDivElement>(null);
@@ -122,8 +133,17 @@ export function MiniPlayer(): JSX.Element | null {
         }}
         onTimeUpdate={(event) => updateProgress(event.currentTarget.currentTime)}
         onEnded={() => {
-          updateProgress(durationForProgress);
-          pause();
+          const audio = audioRef.current;
+          if (useMusicStore.getState().loopMode === 'loopOne' && audio) {
+            audio.currentTime = 0;
+            void audio.play().catch(() => pause());
+            return;
+          }
+          const advanced = useMusicStore.getState().playNext();
+          if (!advanced) {
+            updateProgress(durationForProgress);
+            pause();
+          }
         }}
         onError={() => {
           pause();
@@ -173,6 +193,34 @@ export function MiniPlayer(): JSX.Element | null {
       <Typography.Text type="secondary" className="music-mini-time" data-testid="music-mini-time">
         {formatSeconds(currentTime)} / {formatSeconds(durationForProgress)}
       </Typography.Text>
+      <Button
+        type="text"
+        aria-label={t(`music.loop.${loopMode}` as TranslationKey)}
+        className={loopMode === 'sequence' ? 'music-loop-off' : 'music-loop-on'}
+        onClick={cycleLoopMode}
+        data-testid="mini-player-loop"
+      >
+        {loopMode === 'loopOne' ? (
+          <>
+            <SyncOutlined />1
+          </>
+        ) : loopMode === 'loopAll' ? (
+          <SyncOutlined />
+        ) : (
+          <RetweetOutlined />
+        )}
+      </Button>
+      <Button
+        type="text"
+        aria-label={t('music.nextTrack')}
+        icon={<StepForwardOutlined />}
+        onClick={() => {
+          if (!playNext()) {
+            void message.info(t('music.noMore'));
+          }
+        }}
+        data-testid="mini-player-next"
+      />
       <Button
         type="text"
         aria-label={isPlaying ? t('music.pause') : t('music.play')}
