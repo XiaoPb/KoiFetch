@@ -72,8 +72,15 @@ export interface MusicState {
  * follow-up backend plan can swap the default without touching components.
  */
 export function createMusicStore(source: MusicSearchSource) {
+  // Monotonic request id: every search/category/loadMore capture the current
+  // id and drop their response when a newer request has started, so a slow
+  // stale response can never overwrite fresher state (and a search started
+  // while loading supersedes the in-flight one instead of being ignored).
+  let requestSeq = 0;
+
   return create<MusicState>()((set, get) => {
     const runSearch = async (term: string, category: MusicCategory): Promise<void> => {
+      const seq = ++requestSeq;
       // Clear the previous output immediately: re-search must look like a
       // fresh list from the top (spec), not a diff over stale results.
       set({
@@ -90,6 +97,7 @@ export function createMusicStore(source: MusicSearchSource) {
       });
       try {
         const data = await source.search({ keyword: term, category, page: 1 });
+        if (seq !== requestSeq) return; // superseded by a newer request
         set({
           status: 'success',
           totals: data.totals,
@@ -101,6 +109,7 @@ export function createMusicStore(source: MusicSearchSource) {
           page: 2,
         });
       } catch (err) {
+        if (seq !== requestSeq) return;
         set({ status: 'error', error: getErrorMessage(err) });
       }
     };
@@ -128,8 +137,8 @@ export function createMusicStore(source: MusicSearchSource) {
       setInput: (input) => set({ input }),
 
       search: async () => {
-        // Double-submit guard: Enter + the submit button can race.
-        if (get().status === 'loading') return;
+        // A search started while loading supersedes the in-flight one
+        // (requestSeq drops the stale response) — Enter is never ignored.
         const term = get().input.trim();
         if (term === '') {
           set({
@@ -158,9 +167,11 @@ export function createMusicStore(source: MusicSearchSource) {
         const state = get();
         const paginated = state.category === 'all' || state.category === 'song';
         if (!paginated || state.status !== 'success' || state.loadingMore || !state.hasMore) return;
+        const seq = ++requestSeq;
         set({ loadingMore: true });
         try {
           const data = await source.search({ keyword: state.keyword, category: state.category, page: state.page });
+          if (seq !== requestSeq) return; // a newer search/category reset the list
           set((current) => ({
             songs: [...current.songs, ...data.songs],
             hasMore: data.hasMore,
@@ -168,6 +179,7 @@ export function createMusicStore(source: MusicSearchSource) {
             loadingMore: false,
           }));
         } catch (err) {
+          if (seq !== requestSeq) return;
           // Keep the current list; surface the error so the page can alert.
           set({ loadingMore: false, error: getErrorMessage(err) });
         }

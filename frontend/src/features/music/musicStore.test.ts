@@ -127,4 +127,57 @@ describe('musicStore', () => {
     expect(state.input).toBe('');
     expect(state.keyword).toBe('');
   });
+
+  it('supersedes a search started while loading (Enter no longer ignored)', async () => {
+    let resolveFirst!: (r: MusicSearchResult) => void;
+    let resolveSecond!: (r: MusicSearchResult) => void;
+    const searchMock = vi.fn()
+      .mockImplementationOnce(() => new Promise<MusicSearchResult>((r) => { resolveFirst = r; }))
+      .mockImplementationOnce(() => new Promise<MusicSearchResult>((r) => { resolveSecond = r; }));
+    const store = createMusicStore({ search: searchMock });
+
+    store.setState({ input: '旧词' });
+    const first = store.getState().search();   // in flight
+    expect(store.getState().status).toBe('loading');
+
+    store.setState({ input: '新词' });
+    const second = store.getState().search();  // NOT ignored while loading
+    expect(searchMock).toHaveBeenCalledTimes(2);
+
+    resolveSecond({
+      totals: { all: 1, song: 1, artist: 0, album: 0, playlist: 0 },
+      songs: [makeSong(2)], artists: [], albums: [], playlists: [], hasMore: false,
+    });
+    await second;
+    expect(store.getState().songs[0].id).toBe('s2');
+
+    resolveFirst({
+      totals: { all: 1, song: 1, artist: 0, album: 0, playlist: 0 },
+      songs: [makeSong(1)], artists: [], albums: [], playlists: [], hasMore: false,
+    });
+    await first;
+    // The stale response must NOT overwrite the newer one.
+    expect(store.getState().songs[0].id).toBe('s2');
+  });
+
+  it('drops a stale loadMore result when a new search starts', async () => {
+    let resolveMore!: (r: MusicSearchResult) => void;
+    const searchMock = vi.fn(async ({ keyword, category, page }: { keyword: string; category: MusicCategory; page: number }) => {
+      if (page > 1) return new Promise<MusicSearchResult>((r) => { resolveMore = r; });
+      return defaultSearchImpl(keyword, category, page);
+    });
+    const store = createMusicStore({ search: searchMock });
+    store.setState({ input: '晴天' });
+    await store.getState().search();
+
+    const more = store.getState().loadMore();   // in flight
+    store.setState({ input: '新词' });
+    await store.getState().search();            // supersedes
+    resolveMore({
+      totals: { all: 1, song: 1, artist: 0, album: 0, playlist: 0 },
+      songs: [makeSong(9)], artists: [], albums: [], playlists: [], hasMore: false,
+    });
+    await more;
+    expect(store.getState().songs.every((s) => s.id !== 's9')).toBe(true);
+  });
 });
