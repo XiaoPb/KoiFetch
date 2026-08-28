@@ -109,3 +109,11 @@ def test_stream_proxies_an_upstream_url(client):
     response = client.get("/api/music/stream", params={"src": "not-a-url"})
     assert response.status_code == 400
     assert response.json()["code"] == 400
+
+
+def test_hot_keywords_endpoint(client):
+    response = client.get("/api/music/hot")
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert isinstance(data["keywords"], list) and len(data["keywords"]) > 0
+    assert "周杰伦" in data["keywords"]

@@ -121,6 +121,18 @@ class ImportResponse(BaseModel):
     data: ImportData | None = None
 
 
+class HotKeywordsData(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    keywords: list[str]
+
+
+class HotKeywordsResponse(BaseModel):
+    code: int
+    message: str
+    data: HotKeywordsData | None = None
+
+
 def get_music_service(request: Request) -> MusicService:
     """DI hook: the app-wired music service (override in tests)."""
     return request.app.state.music_service
@@ -173,3 +185,10 @@ def music_import(
     """Create a MUSIC ParseTask for a persisted song (download closure)."""
     task_id = service.import_song(body.song_id)
     return ok(data={"task_id": task_id}, message=_MESSAGE_IMPORT_OK)
+
+
+@router.get("/hot", response_model=HotKeywordsResponse)
+def music_hot(request: Request) -> dict:
+    """Return the configured hot-search keywords (Settings.hot_keywords)."""
+    keywords = list(request.app.state.settings.hot_keywords)
+    return ok(data={"keywords": keywords}, message="ok")

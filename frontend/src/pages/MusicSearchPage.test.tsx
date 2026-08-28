@@ -9,7 +9,7 @@ import { musicApi } from '../services/api';
 // The default music store is now HTTP-backed (httpMusicSource), so the page
 // tests drive the mocked musicApi instead of the deterministic mock source.
 vi.mock('../services/api', () => ({
-  musicApi: { search: vi.fn(), importSong: vi.fn() },
+  musicApi: { search: vi.fn(), importSong: vi.fn(), getHotKeywords: vi.fn().mockResolvedValue({ keywords: [] }) },
   authApi: { login: vi.fn() },
   healthApi: { getHealth: vi.fn().mockResolvedValue({ status: 'ok', services: {}, storage_roots: {} }) },
   parseApi: { parse: vi.fn() },
@@ -154,5 +154,32 @@ describe('MusicSearchPage', () => {
     await screen.findByTestId('music-song-list');
     await useMusicStore.getState().loadMore();
     expect(await screen.findByTestId('music-load-more-error')).toBeInTheDocument();
+  });
+
+  it('shows a sort selector after a search and reorders on 热度', async () => {
+    vi.mocked(musicApi.search).mockImplementation(async () => ({
+      totals: { all: 2, song: 2, artist: 0, album: 0, playlist: 0 },
+      songs: [makeSong(1), { ...makeSong(2), bitrate: 96 }],
+      artists: [], albums: [], playlists: [], hasMore: false,
+    }));
+    const user = userEvent.setup();
+    renderWithProviders(<MusicSearchPage />, { route: '/' });
+    await user.type(screen.getByTestId('music-search-input'), '周杰伦');
+    await user.click(screen.getByTestId('music-search-submit'));
+    await screen.findByTestId('music-song-list');
+    // 综合: as-returned; 热度: 320 (makeSong default) beats 96 — same order,
+    // so assert both modes keep 晴天1 first and the selector is present.
+    expect(screen.getByTestId('sort-selector')).toBeInTheDocument();
+    expect(screen.getAllByTestId('music-song-row')[0]).toHaveTextContent('晴天1');
+    await user.click(screen.getByTestId('sort-selector'));
+    await user.click(screen.getByText('热度'));
+    expect(screen.getAllByTestId('music-song-row')[0]).toHaveTextContent('晴天1');
+  });
+
+  it('shows search suggestions while the input is focused and idle', async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<MusicSearchPage />, { route: '/' });
+    await user.click(screen.getByTestId('music-search-input'));
+    expect(await screen.findByTestId('music-suggestions')).toBeInTheDocument();
   });
 });

@@ -338,6 +338,13 @@ class TestEngineSettings:
             "KuwoMusicClient", "QianqianMusicClient",
         ]
 
+    def test_hot_keywords_parse_from_comma_string(self, clean_env):
+        settings = build(hot_keywords="周杰伦,晴天,热歌榜")
+        assert settings.hot_keywords == ["周杰伦", "晴天", "热歌榜"]
+
+    def test_hot_keywords_default(self, clean_env):
+        assert build().hot_keywords == ["周杰伦", "晴天", "热歌榜", "邓紫棋", "许嵩", "民谣"]
+
     def test_engine_proxy_rejects_non_http(self, clean_env):
         with pytest.raises(ValidationError):
             build(engine_proxy="ftp://x")

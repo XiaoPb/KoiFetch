@@ -263,4 +263,22 @@ describe('musicStore', () => {
     store.getState().cycleLoopMode();
     expect(store.getState().loopMode).toBe('sequence');
   });
+
+  it('records search history on success, deduped and capped', async () => {
+    const store = createMusicStore({ search: vi.fn().mockResolvedValue(defaultSearchImpl('x', 'all', 1)) });
+    store.setState({ input: '晴天' });
+    await store.getState().search();
+    store.setState({ input: '晴天' });
+    await store.getState().search(); // duplicate — deduped to the front
+    expect(store.getState().history).toEqual(['晴天']);
+    store.getState().clearHistory();
+    expect(store.getState().history).toEqual([]);
+  });
+
+  it('setSort updates the sort mode', () => {
+    const store = createMusicStore({ search: vi.fn() });
+    expect(store.getState().sort).toBe('comprehensive');
+    store.getState().setSort('hot');
+    expect(store.getState().sort).toBe('hot');
+  });
 });

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Button, Typography } from 'antd';
 import { FolderOpenOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
@@ -6,8 +6,11 @@ import { useTranslation } from '../services/i18n';
 import { isCategoryEmpty, useMusicStore } from '../features/music/musicStore';
 import { HOT_KEYWORDS } from '../features/music/musicSource';
 import { formatNumber } from '../features/music/format';
+import { sortSongs } from '../features/music/sort';
 import { MusicSearchBar } from '../features/music/MusicSearchBar';
 import { MusicFilterBar } from '../features/music/MusicFilterBar';
+import { SortSelector } from '../features/music/SortSelector';
+import { SearchSuggestions } from '../features/music/SearchSuggestions';
 import { SongResultList } from '../features/music/SongResultList';
 import { ArtistResultList } from '../features/music/ArtistResultList';
 import { AlbumPlaylistList } from '../features/music/AlbumPlaylistList';
@@ -35,6 +38,7 @@ export default function MusicSearchPage(): JSX.Element {
   const navigate = useNavigate();
   const scrollRef = useRef<HTMLDivElement>(null);
   const [playlistsOpen, setPlaylistsOpen] = useState(false);
+  const [inputFocused, setInputFocused] = useState(false);
 
   const input = useMusicStore((state) => state.input);
   const keyword = useMusicStore((state) => state.keyword);
@@ -49,11 +53,13 @@ export default function MusicSearchPage(): JSX.Element {
   const hasMore = useMusicStore((state) => state.hasMore);
   const loadingMore = useMusicStore((state) => state.loadingMore);
   const loadMoreError = useMusicStore((state) => state.loadMoreError);
+  const sort = useMusicStore((state) => state.sort);
   const setInput = useMusicStore((state) => state.setInput);
   const search = useMusicStore((state) => state.search);
   const setCategory = useMusicStore((state) => state.setCategory);
   const loadMore = useMusicStore((state) => state.loadMore);
   const clearLoadMoreError = useMusicStore((state) => state.clearLoadMoreError);
+  const setSort = useMusicStore((state) => state.setSort);
   const playSong = useMusicStore((state) => state.playSong);
   const openActionSheet = useMusicStore((state) => state.openActionSheet);
 
@@ -103,6 +109,9 @@ export default function MusicSearchPage(): JSX.Element {
     void search();
   };
 
+  // Client-side sorting (热度 = bitrate-desc proxy, documented in sort.ts).
+  const visibleSongs = useMemo(() => sortSongs(songs, sort), [songs, sort]);
+
   return (
     <div className="music-page" data-testid="music-page">
       <div className="music-search-row">
@@ -111,6 +120,7 @@ export default function MusicSearchPage(): JSX.Element {
           loading={isLoading}
           onChange={setInput}
           onSearch={() => void search()}
+          onFocusChange={setInputFocused}
         />
         <Button
           icon={<FolderOpenOutlined />}
@@ -121,12 +131,19 @@ export default function MusicSearchPage(): JSX.Element {
         </Button>
       </div>
 
+      {keyword === '' && (
+        <SearchSuggestions visible={inputFocused} onPick={handleEmptySearch} />
+      )}
+
       {isLoading && <div className="music-loading-bar" data-testid="music-loading-bar" aria-hidden="true" />}
 
       {/* The filter bar stays mounted once a search has happened, so the
           active tab's underline never flickers while a category reloads. */}
       {keyword !== '' && (
-        <MusicFilterBar category={category} total={totals[category]} onChange={(value) => void setCategory(value)} />
+        <div className="music-filter-row">
+          <MusicFilterBar category={category} total={totals[category]} onChange={(value) => void setCategory(value)} />
+          <SortSelector sort={sort} onChange={setSort} />
+        </div>
       )}
 
       <div className="music-scroll-area" data-testid="music-scroll-area" ref={scrollRef}>
@@ -162,7 +179,7 @@ export default function MusicSearchPage(): JSX.Element {
           <div key={category} className="music-list-view" data-testid="music-list-view">
             {(category === 'all' || category === 'song') && (
               <SongResultList
-                songs={songs}
+                songs={visibleSongs}
                 hasMore={hasMore}
                 loadingMore={loadingMore}
                 onLoadMore={() => void loadMore()}

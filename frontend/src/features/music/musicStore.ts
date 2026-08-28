@@ -14,6 +14,10 @@ export type MusicSearchStatus = 'idle' | 'loading' | 'success' | 'error';
 
 export type LoopMode = 'sequence' | 'loopOne' | 'loopAll';
 
+export type MusicSort = 'comprehensive' | 'latest' | 'hot';
+
+const HISTORY_LIMIT = 10;
+
 // Client-side validation message (Chinese-primary bilingual, same pattern as
 // the parser store's validation messages).
 export const MUSIC_EMPTY_INPUT_MESSAGE = '请输入搜索关键词 / Enter a search keyword';
@@ -61,6 +65,11 @@ export interface MusicState {
   hasMore: boolean;
   loadingMore: boolean;
 
+  /** Recent search keywords (deduped, capped; drives the suggestions UI). */
+  history: string[];
+  /** Active sort mode (client-side; 热度 = bitrate-desc proxy, documented). */
+  sort: MusicSort;
+
   // Mini player state.
   currentSong: MusicSong | null;
   isPlaying: boolean;
@@ -82,6 +91,9 @@ export interface MusicState {
   loadMore: () => Promise<void>;
   clearLoadMoreError: () => void;
   reset: () => void;
+  addHistory: (term: string) => void;
+  clearHistory: () => void;
+  setSort: (sort: MusicSort) => void;
 
   playSong: (song: MusicSong) => void;
   togglePlay: () => void;
@@ -135,7 +147,7 @@ export function createMusicStore(source: MusicSearchSource) {
       try {
         const data = await source.search({ keyword: term, category, page: 1 });
         if (seq !== requestSeq) return; // superseded by a newer request
-        set({
+        set((state) => ({
           status: 'success',
           totals: data.totals,
           songs: data.songs,
@@ -144,7 +156,8 @@ export function createMusicStore(source: MusicSearchSource) {
           playlists: data.playlists,
           hasMore: data.hasMore,
           page: 2,
-        });
+          history: [term, ...state.history.filter((h) => h !== term)].slice(0, HISTORY_LIMIT),
+        }));
       } catch (err) {
         if (seq !== requestSeq) return;
         set({ status: 'error', error: getErrorMessage(err) });
@@ -166,6 +179,8 @@ export function createMusicStore(source: MusicSearchSource) {
       page: 1,
       hasMore: false,
       loadingMore: false,
+      history: [],
+      sort: 'comprehensive',
       currentSong: null,
       isPlaying: false,
       currentTime: 0,
@@ -239,6 +254,8 @@ export function createMusicStore(source: MusicSearchSource) {
           page: 1,
           hasMore: false,
           loadingMore: false,
+          history: [],
+          sort: 'comprehensive',
           currentSong: null,
           isPlaying: false,
           currentTime: 0,
@@ -249,6 +266,11 @@ export function createMusicStore(source: MusicSearchSource) {
         }),
 
       clearLoadMoreError: () => set({ loadMoreError: null }),
+
+      addHistory: (term) =>
+        set((state) => ({ history: [term, ...state.history.filter((h) => h !== term)].slice(0, HISTORY_LIMIT) })),
+      clearHistory: () => set({ history: [] }),
+      setSort: (sort) => set({ sort }),
 
       playSong: (song) =>
         set({ currentSong: song, isPlaying: true, currentTime: 0, queue: [song], queueIndex: 0 }),

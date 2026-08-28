@@ -327,6 +327,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         adapter=get_music_search(settings),
         engine=get_engine(settings.database_url),
     )
+    # The music /hot endpoint reads the configured hot keywords.
+    app.state.settings = settings
     # The in-process event hub: the download WebSocket subscribes here and the
     # worker (Task 11) publishes progress through the same singleton.
     app.state.download_event_hub = event_hub

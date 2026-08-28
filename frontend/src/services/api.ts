@@ -158,4 +158,9 @@ export const musicApi = {
     const { data } = await apiClient.post<{ task_id: string }>('/music/import', { song_id: songId });
     return data;
   },
+  /** GET /api/music/hot → {keywords}. */
+  async getHotKeywords(): Promise<{ keywords: string[] }> {
+    const { data } = await apiClient.get<{ keywords: string[] }>('/music/hot');
+    return data;
+  },
 };

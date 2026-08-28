@@ -102,6 +102,11 @@ class Settings(BaseModel):
             "KuwoMusicClient", "QianqianMusicClient",
         ]
     )
+    # Hot-search keywords for the music page (comma-separated env
+    # HOT_KEYWORDS); served by GET /api/music/hot.
+    hot_keywords: list[str] = Field(
+        default_factory=lambda: ["周杰伦", "晴天", "热歌榜", "邓紫棋", "许嵩", "民谣"]
+    )
 
     # --- Web/app behavior ---
     cors_origins: list[str] = Field(default_factory=list)
@@ -176,7 +181,7 @@ class Settings(BaseModel):
                 raise ValueError("engine_proxy must be an http(s) URL or None")
         return value
 
-    @field_validator("musicdl_sources", mode="before")
+    @field_validator("musicdl_sources", "hot_keywords", mode="before")
     @classmethod
     def _parse_musicdl_sources(cls, value: object) -> object:
         if isinstance(value, str):
