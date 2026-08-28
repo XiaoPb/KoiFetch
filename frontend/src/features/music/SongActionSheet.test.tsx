@@ -40,7 +40,6 @@ describe('SongActionSheet', () => {
     useMusicStore.setState({
       actionSheetSong: null,
       currentSong: null,
-      detailEntity: null,
       artists: [],
       queue: [],
       queueIndex: -1,
@@ -120,15 +119,13 @@ describe('SongActionSheet', () => {
     expect(useMusicStore.getState().actionSheetSong).toBeNull();
   });
 
-  it('opens the artist detail from 查看歌手', async () => {
+  it('navigates to the artist detail route from 查看歌手', async () => {
     const user = userEvent.setup();
     act(() => useMusicStore.setState({ actionSheetSong: SONG, artists: [ARTIST] }));
     renderWithProviders(<SongActionSheet />);
     await user.click(screen.getByText('查看歌手'));
-    expect(useMusicStore.getState().detailEntity?.kind).toBe('artist');
-    // detailEntity is MusicEntity | null; the kind assertion above narrows to
-    // MusicArtist, so cast for the `.name` access (only artists carry `name`).
-    expect((useMusicStore.getState().detailEntity as MusicArtist | null)?.name).toBe('周杰伦');
+    // Navigation is a side effect (route swap handled by the router); the
+    // sheet must close and the fallback artist resolution must not crash.
     expect(useMusicStore.getState().actionSheetSong).toBeNull();
   });
 

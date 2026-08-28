@@ -16,6 +16,8 @@ vi.mock('../services/api', () => ({
   downloadApi: { submit: vi.fn() },
   // The /nas page imports the save endpoint (used on admin action only).
   nasApi: { save: vi.fn() },
+  // The music detail routes re-search by name on direct visits.
+  musicApi: { search: vi.fn().mockResolvedValue({ totals: { all: 0, song: 0, artist: 0, album: 0, playlist: 0 }, songs: [], artists: [], albums: [], playlists: [], hasMore: false }), importSong: vi.fn(), getHotKeywords: vi.fn() },
 }));
 
 function renderAt(route: string): void {
@@ -139,6 +141,14 @@ describe('router', () => {
     await user.click(screen.getByText('音乐'));
     expect(await screen.findByTestId('music-search-input')).toBeInTheDocument();
     expect(screen.queryByText('解析工作台')).not.toBeInTheDocument();
+    expect(screen.getByTestId('app-header')).toBeInTheDocument();
+  });
+
+  it('renders a music artist detail route', async () => {
+    renderAt('/music/artist/a1?name=%E5%91%A8%E6%9D%B0%E4%BC%A6');
+    // The music detail page stays inside the shell (topbar present) and
+    // shows the honest no-results body for an unknown/empty re-search.
+    expect(await screen.findByTestId('music-entity-page')).toBeInTheDocument();
     expect(screen.getByTestId('app-header')).toBeInTheDocument();
   });
 });

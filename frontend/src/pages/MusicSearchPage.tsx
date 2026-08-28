@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Typography } from 'antd';
 import { FolderOpenOutlined } from '@ant-design/icons';
+import { useNavigate } from 'react-router-dom';
 import { useTranslation } from '../services/i18n';
 import { isCategoryEmpty, useMusicStore } from '../features/music/musicStore';
 import { HOT_KEYWORDS } from '../features/music/musicSource';
@@ -12,10 +13,9 @@ import { ArtistResultList } from '../features/music/ArtistResultList';
 import { AlbumPlaylistList } from '../features/music/AlbumPlaylistList';
 import { MiniPlayer } from '../features/music/MiniPlayer';
 import { SongActionSheet } from '../features/music/SongActionSheet';
-import { EntityDetailDrawer } from '../features/music/EntityDetailDrawer';
 import { MusicEmptyState } from '../features/music/MusicEmptyState';
 import { MyPlaylistsDrawer } from '../features/music/MyPlaylistsDrawer';
-import type { MusicCategory } from '../types/music';
+import type { MusicCategory, MusicEntity } from '../types/music';
 import '../styles/music.css';
 
 /**
@@ -32,6 +32,7 @@ import '../styles/music.css';
  */
 export default function MusicSearchPage(): JSX.Element {
   const { t, language } = useTranslation();
+  const navigate = useNavigate();
   const scrollRef = useRef<HTMLDivElement>(null);
   const [playlistsOpen, setPlaylistsOpen] = useState(false);
 
@@ -55,7 +56,20 @@ export default function MusicSearchPage(): JSX.Element {
   const clearLoadMoreError = useMusicStore((state) => state.clearLoadMoreError);
   const playSong = useMusicStore((state) => state.playSong);
   const openActionSheet = useMusicStore((state) => state.openActionSheet);
-  const openDetail = useMusicStore((state) => state.openDetail);
+
+  // Detail navigation (P2): entity cards and 查看歌手 navigate to the routed
+  // detail pages, carrying the entity via location state (name in `?name=`
+  // covers direct visits).
+  const openDetail = (entity: MusicEntity): void => {
+    const name = entity.kind === 'artist' ? entity.name : entity.title;
+    const route =
+      entity.kind === 'artist'
+        ? `/music/artist/${entity.id}`
+        : entity.kind === 'album'
+          ? `/music/album/${entity.id}`
+          : `/music/playlist/${entity.id}`;
+    navigate(`${route}?name=${encodeURIComponent(name)}`, { state: { entity } });
+  };
 
   // New search or category switch → refresh from the top of the scroll area.
   useEffect(() => {
@@ -188,7 +202,6 @@ export default function MusicSearchPage(): JSX.Element {
 
       <MiniPlayer />
       <SongActionSheet />
-      <EntityDetailDrawer />
       <MyPlaylistsDrawer open={playlistsOpen} onClose={() => setPlaylistsOpen(false)} />
     </div>
   );

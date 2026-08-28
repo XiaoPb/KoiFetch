@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { App, Button, Drawer } from 'antd';
 import { CaretRightOutlined, CloseOutlined, DownloadOutlined, PlusOutlined, UserOutlined } from '@ant-design/icons';
+import { useNavigate } from 'react-router-dom';
 import { useTranslation } from '../../services/i18n';
 import { getErrorMessage } from '../../services/apiClient';
 import { musicApi } from '../../services/api';
@@ -23,10 +24,10 @@ import type { MusicSong } from '../../types/music';
 export function SongActionSheet(): JSX.Element {
   const { t } = useTranslation();
   const { message } = App.useApp();
+  const navigate = useNavigate();
   const song = useMusicStore((state) => state.actionSheetSong);
   const artists = useMusicStore((state) => state.artists);
   const closeActionSheet = useMusicStore((state) => state.closeActionSheet);
-  const openDetail = useMusicStore((state) => state.openDetail);
   const enqueueNext = useMusicStore((state) => state.enqueueNext);
   const [importing, setImporting] = useState(false);
   const [playlistModalOpen, setPlaylistModalOpen] = useState(false);
@@ -64,7 +65,8 @@ export function SongActionSheet(): JSX.Element {
   const handleViewArtist = () => {
     if (!song) return;
     const found = artists.find((artist) => artist.name === song.artist);
-    openDetail(found ?? artistFromName(song.artist));
+    const artist = found ?? artistFromName(song.artist);
+    navigate(`/music/artist/${artist.id}?name=${encodeURIComponent(artist.name)}`, { state: { entity: artist } });
     closeActionSheet();
   };
 

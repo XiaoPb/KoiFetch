@@ -4,7 +4,6 @@ import type {
   MusicAlbum,
   MusicArtist,
   MusicCategory,
-  MusicEntity,
   MusicPlaylist,
   MusicSong,
 } from '../../types/music';
@@ -77,9 +76,6 @@ export interface MusicState {
   // Bottom Action Sheet state.
   actionSheetSong: MusicSong | null;
 
-  // Entity detail drawer state.
-  detailEntity: MusicEntity | null;
-
   setInput: (input: string) => void;
   search: () => Promise<void>;
   setCategory: (category: MusicCategory) => Promise<void>;
@@ -100,8 +96,6 @@ export interface MusicState {
 
   openActionSheet: (song: MusicSong) => void;
   closeActionSheet: () => void;
-  openDetail: (entity: MusicEntity | null) => void;
-  closeDetail: () => void;
 }
 
 /**
@@ -179,7 +173,6 @@ export function createMusicStore(source: MusicSearchSource) {
       queueIndex: -1,
       loopMode: 'sequence',
       actionSheetSong: null,
-      detailEntity: null,
 
       setInput: (input) => set({ input }),
 
@@ -253,7 +246,6 @@ export function createMusicStore(source: MusicSearchSource) {
           queueIndex: -1,
           loopMode: 'sequence',
           actionSheetSong: null,
-          detailEntity: null,
         }),
 
       clearLoadMoreError: () => set({ loadMoreError: null }),
@@ -298,8 +290,6 @@ export function createMusicStore(source: MusicSearchSource) {
 
       openActionSheet: (song) => set({ actionSheetSong: song }),
       closeActionSheet: () => set({ actionSheetSong: null }),
-      openDetail: (entity) => set({ detailEntity: entity }),
-      closeDetail: () => set({ detailEntity: null }),
     };
   });
 }
