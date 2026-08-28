@@ -58,6 +58,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from app.adapters.factory import (
     get_access_token_provider,
     get_downloader,
+    get_music_search,
     get_one_time_token_provider,
     get_parser,
     get_storage,
@@ -66,6 +67,7 @@ from app.api.auth import router as auth_router
 from app.api.cookies import router as cookies_router
 from app.api.download import router as download_router
 from app.api.download import ws_router as download_ws_router
+from app.api.music import router as music_router
 from app.api.nas import router as nas_router
 from app.api.parse import router as parse_router
 from app.api.preview import router as preview_router
@@ -74,6 +76,7 @@ from app.application.auth_service import AuthService
 from app.application.cookie_service import PlatformCookieService
 from app.application.download_events import event_hub
 from app.application.download_service import DownloadService
+from app.application.music_service import MusicService
 from app.application.nas_service import NasService
 from app.application.parse_service import ParseService
 from app.application.preview_service import PreviewService
@@ -320,6 +323,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         storage=storage,
         engine=get_engine(settings.database_url),
     )
+    app.state.music_service = MusicService(
+        adapter=get_music_search(settings),
+        engine=get_engine(settings.database_url),
+    )
     # The in-process event hub: the download WebSocket subscribes here and the
     # worker (Task 11) publishes progress through the same singleton.
     app.state.download_event_hub = event_hub
@@ -331,6 +338,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(download_router, prefix="/api")
     app.include_router(nas_router, prefix="/api")
     app.include_router(cookies_router, prefix="/api")
+    app.include_router(music_router, prefix="/api")
     app.include_router(download_ws_router)
 
     @app.get("/api/health")
