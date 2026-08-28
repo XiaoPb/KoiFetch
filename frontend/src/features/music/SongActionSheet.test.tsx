@@ -111,6 +111,15 @@ describe('SongActionSheet', () => {
     expect(await screen.findByText('歌曲不存在')).toBeInTheDocument();
   });
 
+  it('opens the add-to-playlist modal from 添加到歌单', async () => {
+    const user = userEvent.setup();
+    act(() => useMusicStore.setState({ actionSheetSong: SONG }));
+    renderWithProviders(<SongActionSheet />);
+    await user.click(screen.getByText('添加到歌单'));
+    expect(await screen.findByTestId('add-to-playlist-modal')).toBeInTheDocument();
+    expect(useMusicStore.getState().actionSheetSong).toBeNull();
+  });
+
   it('opens the artist detail from 查看歌手', async () => {
     const user = userEvent.setup();
     act(() => useMusicStore.setState({ actionSheetSong: SONG, artists: [ARTIST] }));

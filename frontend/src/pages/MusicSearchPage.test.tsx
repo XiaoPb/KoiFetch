@@ -135,6 +135,13 @@ describe('MusicSearchPage', () => {
     expect(screen.getByText('下一首播放')).toBeInTheDocument();
   });
 
+  it('opens the my-playlists drawer from the entry button', async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<MusicSearchPage />, { route: '/' });
+    await user.click(screen.getByTestId('open-my-playlists'));
+    expect(await screen.findByTestId('my-playlists-drawer')).toBeInTheDocument();
+  });
+
   it('shows a loadMore failure hint with a retry action', async () => {
     vi.mocked(musicApi.search).mockImplementation(async ({ page }) => {
       if (page > 1) throw new Error('网络错误');

@@ -1,5 +1,6 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Typography } from 'antd';
+import { FolderOpenOutlined } from '@ant-design/icons';
 import { useTranslation } from '../services/i18n';
 import { isCategoryEmpty, useMusicStore } from '../features/music/musicStore';
 import { HOT_KEYWORDS } from '../features/music/musicSource';
@@ -13,6 +14,7 @@ import { MiniPlayer } from '../features/music/MiniPlayer';
 import { SongActionSheet } from '../features/music/SongActionSheet';
 import { EntityDetailDrawer } from '../features/music/EntityDetailDrawer';
 import { MusicEmptyState } from '../features/music/MusicEmptyState';
+import { MyPlaylistsDrawer } from '../features/music/MyPlaylistsDrawer';
 import type { MusicCategory } from '../types/music';
 import '../styles/music.css';
 
@@ -31,6 +33,7 @@ import '../styles/music.css';
 export default function MusicSearchPage(): JSX.Element {
   const { t, language } = useTranslation();
   const scrollRef = useRef<HTMLDivElement>(null);
+  const [playlistsOpen, setPlaylistsOpen] = useState(false);
 
   const input = useMusicStore((state) => state.input);
   const keyword = useMusicStore((state) => state.keyword);
@@ -95,6 +98,13 @@ export default function MusicSearchPage(): JSX.Element {
           onChange={setInput}
           onSearch={() => void search()}
         />
+        <Button
+          icon={<FolderOpenOutlined />}
+          onClick={() => setPlaylistsOpen(true)}
+          data-testid="open-my-playlists"
+        >
+          {t('music.myPlaylists')}
+        </Button>
       </div>
 
       {isLoading && <div className="music-loading-bar" data-testid="music-loading-bar" aria-hidden="true" />}
@@ -179,6 +189,7 @@ export default function MusicSearchPage(): JSX.Element {
       <MiniPlayer />
       <SongActionSheet />
       <EntityDetailDrawer />
+      <MyPlaylistsDrawer open={playlistsOpen} onClose={() => setPlaylistsOpen(false)} />
     </div>
   );
 }

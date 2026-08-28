@@ -7,6 +7,8 @@ import { musicApi } from '../../services/api';
 import { artistFromName } from './musicSource';
 import { useMusicStore } from './musicStore';
 import { useDownloadsStore } from '../../stores/downloadsStore';
+import { AddToPlaylistModal } from './AddToPlaylistModal';
+import type { MusicSong } from '../../types/music';
 
 /**
  * Bottom Action Sheet (spec §3 View A interaction): antd `Drawer` anchored to
@@ -14,9 +16,9 @@ import { useDownloadsStore } from '../../stores/downloadsStore';
  * 下一首播放 enqueues the song right after the current one (does NOT switch —
  * queue support landed in P2); 下载 imports the song (musicApi.importSong →
  * task_id) and submits it through the existing download pipeline
- * (downloadsStore.submit → DownloadCenterDrawer/NAS); 添加到歌单 acknowledges
- * (playlists are not persisted); 查看歌手 opens the artist detail drawer,
- * resolving the artist by name with a minimal fallback entity.
+ * (downloadsStore.submit → DownloadCenterDrawer/NAS); 添加到歌单 opens the
+ * create-or-select playlist modal (local playlists, P2); 查看歌手 opens the
+ * artist detail drawer, resolving the artist by name with a minimal fallback.
  */
 export function SongActionSheet(): JSX.Element {
   const { t } = useTranslation();
@@ -27,6 +29,8 @@ export function SongActionSheet(): JSX.Element {
   const openDetail = useMusicStore((state) => state.openDetail);
   const enqueueNext = useMusicStore((state) => state.enqueueNext);
   const [importing, setImporting] = useState(false);
+  const [playlistModalOpen, setPlaylistModalOpen] = useState(false);
+  const [playlistSong, setPlaylistSong] = useState<MusicSong | null>(null);
 
   const handleNext = () => {
     if (!song) return;
@@ -51,8 +55,10 @@ export function SongActionSheet(): JSX.Element {
   };
 
   const handleAdd = () => {
+    // Capture the song before closing the sheet (the sheet clears it).
+    setPlaylistSong(song);
+    setPlaylistModalOpen(true);
     closeActionSheet();
-    void message.success(t('music.addedToPlaylist'));
   };
 
   const handleViewArtist = () => {
@@ -96,6 +102,11 @@ export function SongActionSheet(): JSX.Element {
           {t('music.cancel')}
         </Button>
       </div>
+      <AddToPlaylistModal
+        open={playlistModalOpen}
+        song={playlistSong}
+        onClose={() => setPlaylistModalOpen(false)}
+      />
     </Drawer>
   );
 }

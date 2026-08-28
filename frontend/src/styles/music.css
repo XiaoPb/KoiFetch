@@ -357,6 +357,25 @@
   color: #1677ff;
 }
 
+/* --- My playlists (P2) --- */
+.music-new-playlist {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.music-new-playlist .ant-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.music-playlist-songs {
+  width: 100%;
+  margin-top: 4px;
+  border-top: 1px dashed rgba(0, 0, 0, 0.08);
+  padding-top: 4px;
+}
+
 /* --- Empty state --- */
 
 .music-empty {
