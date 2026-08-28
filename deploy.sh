@@ -10,12 +10,12 @@
 # Needs:  docker compose, curl (health wait)
 set -euo pipefail
 
-# Docker CLI needs a writable config dir (~/.docker). If the home directory is
-# not writable (e.g. a root-owned home), point DOCKER_CONFIG at a temp dir
-# instead of failing on `mkdir /home/.../.docker: permission denied`.
-if [ ! -w "${HOME}" ]; then
+# Docker CLI needs a writable config dir (~/.docker). If it cannot be created
+# or written (e.g. a root-owned or sandboxed home), point DOCKER_CONFIG at a
+# temp dir instead of failing on `mkdir /home/.../.docker: permission denied`.
+if ! mkdir -p "${HOME}/.docker" 2>/dev/null || [ ! -w "${HOME}/.docker" ]; then
   export DOCKER_CONFIG="$(mktemp -d /tmp/koi-docker-config.XXXXXX)"
-  echo "==> HOME not writable — using DOCKER_CONFIG=${DOCKER_CONFIG}"
+  echo "==> ~/.docker not usable — using DOCKER_CONFIG=${DOCKER_CONFIG}"
 fi
 
 # Always run from the repo root (the compose file and .env live there).
