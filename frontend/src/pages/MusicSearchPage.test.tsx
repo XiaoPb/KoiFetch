@@ -134,4 +134,18 @@ describe('MusicSearchPage', () => {
     expect(await screen.findByTestId('music-action-sheet')).toBeInTheDocument();
     expect(screen.getByText('下一首播放')).toBeInTheDocument();
   });
+
+  it('shows a loadMore failure hint with a retry action', async () => {
+    vi.mocked(musicApi.search).mockImplementation(async ({ page }) => {
+      if (page > 1) throw new Error('网络错误');
+      return { totals: { all: 2, song: 2, artist: 0, album: 0, playlist: 0 }, songs: [makeSong(1)], artists: [], albums: [], playlists: [], hasMore: true };
+    });
+    const user = userEvent.setup();
+    renderWithProviders(<MusicSearchPage />, { route: '/' });
+    await user.type(screen.getByTestId('music-search-input'), '周杰伦');
+    await user.click(screen.getByTestId('music-search-submit'));
+    await screen.findByTestId('music-song-list');
+    await useMusicStore.getState().loadMore();
+    expect(await screen.findByTestId('music-load-more-error')).toBeInTheDocument();
+  });
 });

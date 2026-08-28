@@ -48,6 +48,8 @@ export interface MusicState {
   category: MusicCategory;
   status: MusicSearchStatus;
   error: string | null;
+  /** Load-more failure hint (distinct from the initial-search `error`). */
+  loadMoreError: string | null;
   totals: Record<MusicCategory, number>;
   songs: MusicSong[];
   artists: MusicArtist[];
@@ -74,6 +76,7 @@ export interface MusicState {
   search: () => Promise<void>;
   setCategory: (category: MusicCategory) => Promise<void>;
   loadMore: () => Promise<void>;
+  clearLoadMoreError: () => void;
   reset: () => void;
 
   playSong: (song: MusicSong) => void;
@@ -107,6 +110,7 @@ export function createMusicStore(source: MusicSearchSource) {
       set({
         status: 'loading',
         error: null,
+        loadMoreError: null,
         totals: ZERO_TOTALS,
         songs: [],
         artists: [],
@@ -141,6 +145,7 @@ export function createMusicStore(source: MusicSearchSource) {
       category: 'all',
       status: 'idle',
       error: null,
+      loadMoreError: null,
       totals: ZERO_TOTALS,
       songs: [],
       artists: [],
@@ -189,7 +194,7 @@ export function createMusicStore(source: MusicSearchSource) {
         const paginated = state.category === 'all' || state.category === 'song';
         if (!paginated || state.status !== 'success' || state.loadingMore || !state.hasMore) return;
         const seq = ++requestSeq;
-        set({ loadingMore: true });
+        set({ loadingMore: true, loadMoreError: null });
         try {
           const data = await source.search({ keyword: state.keyword, category: state.category, page: state.page });
           if (seq !== requestSeq) return; // a newer search/category reset the list
@@ -201,8 +206,9 @@ export function createMusicStore(source: MusicSearchSource) {
           }));
         } catch (err) {
           if (seq !== requestSeq) return;
-          // Keep the current list; surface the error so the page can alert.
-          set({ loadingMore: false, error: getErrorMessage(err) });
+          // Keep the current list; surface the failure so the page can offer
+          // a retry (distinct from the initial-search `error`).
+          set({ loadingMore: false, loadMoreError: getErrorMessage(err) });
         }
       },
 
@@ -213,6 +219,7 @@ export function createMusicStore(source: MusicSearchSource) {
           category: 'all',
           status: 'idle',
           error: null,
+          loadMoreError: null,
           totals: ZERO_TOTALS,
           songs: [], artists: [], albums: [], playlists: [],
           page: 1,
@@ -224,6 +231,8 @@ export function createMusicStore(source: MusicSearchSource) {
           actionSheetSong: null,
           detailEntity: null,
         }),
+
+      clearLoadMoreError: () => set({ loadMoreError: null }),
 
       playSong: (song) => set({ currentSong: song, isPlaying: true, currentTime: 0 }),
       togglePlay: () => set((state) => ({ isPlaying: !state.isPlaying })),

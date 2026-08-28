@@ -180,4 +180,39 @@ describe('musicStore', () => {
     await more;
     expect(store.getState().songs.every((s) => s.id !== 's9')).toBe(true);
   });
+
+  it('surfaces a loadMore failure in loadMoreError and keeps the list', async () => {
+    const searchMock = vi.fn(async ({ keyword, category, page }: { keyword: string; category: MusicCategory; page: number }) => {
+      if (page > 1) throw new Error('网络错误');
+      return defaultSearchImpl(keyword, category, page);
+    });
+    const store = createMusicStore({ search: searchMock });
+    store.setState({ input: '晴天' });
+    await store.getState().search();
+    await store.getState().loadMore();
+    const state = store.getState();
+    expect(state.loadMoreError).toBe('网络错误');
+    expect(state.songs).toHaveLength(2); // first page kept
+    expect(state.status).toBe('success'); // NOT an error state
+  });
+
+  it('clears loadMoreError on the next successful loadMore', async () => {
+    let failedOnce = false;
+    const searchMock = vi.fn(async ({ keyword, category, page }: { keyword: string; category: MusicCategory; page: number }) => {
+      // A failed loadMore does NOT advance `page`, so the retry re-requests
+      // the same page — fail exactly once, then succeed.
+      if (page > 1 && !failedOnce) {
+        failedOnce = true;
+        throw new Error('网络错误');
+      }
+      return defaultSearchImpl(keyword, category, page);
+    });
+    const store = createMusicStore({ search: searchMock });
+    store.setState({ input: '晴天' });
+    await store.getState().search();
+    await store.getState().loadMore();
+    expect(store.getState().loadMoreError).toBe('网络错误');
+    await store.getState().loadMore(); // retries the same page, succeeds
+    expect(store.getState().loadMoreError).toBeNull();
+  });
 });

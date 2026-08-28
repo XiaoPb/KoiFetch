@@ -44,10 +44,12 @@ export default function MusicSearchPage(): JSX.Element {
   const playlists = useMusicStore((state) => state.playlists);
   const hasMore = useMusicStore((state) => state.hasMore);
   const loadingMore = useMusicStore((state) => state.loadingMore);
+  const loadMoreError = useMusicStore((state) => state.loadMoreError);
   const setInput = useMusicStore((state) => state.setInput);
   const search = useMusicStore((state) => state.search);
   const setCategory = useMusicStore((state) => state.setCategory);
   const loadMore = useMusicStore((state) => state.loadMore);
+  const clearLoadMoreError = useMusicStore((state) => state.clearLoadMoreError);
   const playSong = useMusicStore((state) => state.playSong);
   const openActionSheet = useMusicStore((state) => state.openActionSheet);
   const openDetail = useMusicStore((state) => state.openDetail);
@@ -149,6 +151,28 @@ export default function MusicSearchPage(): JSX.Element {
               <AlbumPlaylistList category={category} albums={albums} playlists={playlists} onOpenDetail={openDetail} />
             )}
           </div>
+        )}
+
+        {status === 'success' && loadMoreError && (
+          <Alert
+            type="warning"
+            showIcon
+            message={loadMoreError}
+            className="music-load-more-error"
+            action={
+              <Button
+                size="small"
+                onClick={() => {
+                  clearLoadMoreError();
+                  void loadMore();
+                }}
+                data-testid="music-load-more-retry"
+              >
+                {t('music.retry')}
+              </Button>
+            }
+            data-testid="music-load-more-error"
+          />
         )}
       </div>
 
