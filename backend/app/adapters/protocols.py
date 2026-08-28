@@ -46,6 +46,8 @@ from app.domain import (
     DownloadProgress,
     DownloadResult,
     MediaType,
+    MusicSearchParams,
+    MusicSearchResult,
     ParseCommand,
     ParseResult,
 )
@@ -57,6 +59,7 @@ __all__ = [
     "DownloadRequest",
     "DownloaderAdapter",
     "InvalidTokenError",
+    "MusicSearchAdapter",
     "OneTimeTokenClaims",
     "OneTimeTokenProvider",
     "ParserAdapter",
@@ -257,6 +260,28 @@ class StorageAdapter(Protocol):
     # --- listing (preview / NAS APIs, Tasks 8/10) -------------------------
     def list_files(self, media_type: MediaType, *, pond: bool = False) -> list[Path]:
         """Return sorted absolute paths of stored files in one bucket."""
+        ...
+
+
+# ---------------------------------------------------------------------------
+# Music search
+# ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class MusicSearchAdapter(Protocol):
+    """Keyword search over music platforms (musicdl-backed in engine mode).
+
+    Implementations return at most one page's worth of songs — musicdl
+    returns everything in a single call and v1 does not paginate (the
+    service documents ``hasMore: False``). Per-source failures must never
+    raise: musicdl swallows them into empty lists, and a deterministic stub
+    never fails.
+    """
+
+    def search(self, command: MusicSearchParams) -> MusicSearchResult:
+        """Return songs for ``command.keyword`` (artists/albums/playlists
+        empty — the service derives them from the songs)."""
         ...
 
 

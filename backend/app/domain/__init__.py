@@ -23,6 +23,15 @@ from app.domain.models import (
     ParseCommand,
     ParseResult,
 )
+from app.domain.music import (
+    MusicAlbum,
+    MusicArtist,
+    MusicCategory,
+    MusicPlaylist,
+    MusicSearchParams,
+    MusicSearchResult,
+    MusicSong,
+)
 from app.domain.paths import (
     PathOutsideRootError,
     build_path,
@@ -44,6 +53,13 @@ __all__ = [
     "DownloadStatus",
     "IllegalTransitionError",
     "MediaType",
+    "MusicAlbum",
+    "MusicArtist",
+    "MusicCategory",
+    "MusicPlaylist",
+    "MusicSearchParams",
+    "MusicSearchResult",
+    "MusicSong",
     "ParseCommand",
     "ParseResult",
     "PathOutsideRootError",
