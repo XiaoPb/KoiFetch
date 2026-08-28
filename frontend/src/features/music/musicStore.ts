@@ -8,7 +8,8 @@ import type {
   MusicPlaylist,
   MusicSong,
 } from '../../types/music';
-import { mockMusicSource, type MusicSearchSource } from './musicSource';
+import { type MusicSearchSource } from './musicSource';
+import { httpMusicSource } from './httpMusicSource';
 
 export type MusicSearchStatus = 'idle' | 'loading' | 'success' | 'error';
 
@@ -205,4 +206,4 @@ export function createMusicStore(source: MusicSearchSource) {
   });
 }
 
-export const useMusicStore = createMusicStore(mockMusicSource);
+export const useMusicStore = createMusicStore(httpMusicSource);

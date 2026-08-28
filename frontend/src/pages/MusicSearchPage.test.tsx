@@ -1,12 +1,59 @@
 import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderWithProviders } from '../test/utils';
 import MusicSearchPage from './MusicSearchPage';
 import { useMusicStore } from '../features/music/musicStore';
+import { musicApi } from '../services/api';
+
+// The default music store is now HTTP-backed (httpMusicSource), so the page
+// tests drive the mocked musicApi instead of the deterministic mock source.
+vi.mock('../services/api', () => ({
+  musicApi: { search: vi.fn(), importSong: vi.fn() },
+  authApi: { login: vi.fn() },
+  healthApi: { getHealth: vi.fn().mockResolvedValue({ status: 'ok', services: {}, storage_roots: {} }) },
+  parseApi: { parse: vi.fn() },
+  downloadApi: { submit: vi.fn() },
+  nasApi: { save: vi.fn() },
+}));
+
+function makeSong(id: number) {
+  return {
+    kind: 'song' as const,
+    id: `song-${id}`,
+    title: `晴天${id}`,
+    artist: '周杰伦',
+    album: '叶惠美',
+    cover: null,
+    duration: '04:30',
+    play_url: null,
+    bitrate: 320,
+  };
+}
+
+function stubSearch(): void {
+  vi.mocked(musicApi.search).mockImplementation(async ({ keyword, category }) => {
+    if (keyword.length > 10) {
+      return {
+        totals: { all: 0, song: 0, artist: 0, album: 0, playlist: 0 },
+        songs: [], artists: [], albums: [], playlists: [], hasMore: false,
+      };
+    }
+    const songs = [makeSong(1), makeSong(2)];
+    return {
+      totals: { all: 2, song: 2, artist: 1, album: 1, playlist: 0 },
+      songs: category === 'artist' || category === 'album' || category === 'playlist' ? [] : songs,
+      artists: category === 'artist' ? [{ kind: 'artist', id: 'a1', name: '周杰伦', avatar: null, fans: 100, songCount: 2 }] : [],
+      albums: category === 'album' ? [{ kind: 'album', id: 'al1', title: '叶惠美', artist: '周杰伦', cover: null, songCount: 2 }] : [],
+      playlists: [],
+      hasMore: false,
+    };
+  });
+}
 
 describe('MusicSearchPage', () => {
   beforeEach(() => {
+    stubSearch();
     useMusicStore.getState().reset();
   });
 

@@ -16,6 +16,8 @@ export interface MusicSong {
   duration: string;
   /** Real playable source; null in mock mode (the mini player simulates). */
   play_url: string | null;
+  /** kbps (real backend); used as the 热度 sort proxy. Mock songs omit it. */
+  bitrate?: number | null;
 }
 
 export interface MusicArtist {

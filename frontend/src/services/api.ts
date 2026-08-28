@@ -12,6 +12,7 @@ import type {
   SubmitData,
   DownloadProgress,
 } from '../types/api';
+import type { MusicSearchParams, MusicSearchResult } from '../types/music';
 
 // Typed endpoint functions over the shared axios client (which unwraps the
 // {code, message, data} envelope, so every function below resolves with the
@@ -143,5 +144,18 @@ export const cookieApi = {
   /** DELETE /api/cookies/{platform} — clear the stored cookie. */
   async remove(platform: string): Promise<void> {
     await apiClient.delete(`/cookies/${platform}`);
+  },
+};
+
+export const musicApi = {
+  /** GET /api/music/search → MusicSearchResult (wire shape is the contract). */
+  async search(params: MusicSearchParams): Promise<MusicSearchResult> {
+    const { data } = await apiClient.get<MusicSearchResult>('/music/search', { params });
+    return data;
+  },
+  /** POST /api/music/import {song_id} → {task_id} (download closure). */
+  async importSong(songId: string): Promise<{ task_id: string }> {
+    const { data } = await apiClient.post<{ task_id: string }>('/music/import', { song_id: songId });
+    return data;
   },
 };
