@@ -65,9 +65,6 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max,ignore-error=true
 
-      - name: Inspect published image
-        run: docker buildx imagetools inspect ${{ steps.meta.outputs.tags }}
-
   release:
     name: Create GitHub Release
     needs: publish-image
