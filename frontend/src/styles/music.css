@@ -5,6 +5,7 @@
 
 .music-page {
   height: calc(100vh - 64px);
+  height: calc(100dvh - 64px);
   display: flex;
   flex-direction: column;
   background: #f5f5f5;
@@ -489,6 +490,7 @@
   /* The Topbar shrinks to 56px on mobile. */
   .music-page {
     height: calc(100vh - 56px);
+    height: calc(100dvh - 56px);
   }
 
   .music-search-bar {
@@ -510,4 +512,27 @@
   .music-loading-bar {
     animation: none;
   }
+}
+
+/* P2 mobile: narrow screens — compact paddings, tighter rows, scrollable
+   filter tabs, condensed mini player. */
+@media (max-width: 480px) {
+  .music-page { padding: 8px 8px 0; }
+  .music-search-row { gap: 6px; }
+  .music-search-input { height: 34px; }
+  .music-song-row { padding: 8px 4px; }
+  .music-song-meta { display: none; } /* hide the album line on very narrow screens */
+  .music-filter-tabs { max-width: 100%; overflow-x: auto; }
+  .music-mini-player { padding: 6px 8px; gap: 6px; }
+  .music-mini-info { min-width: 0; }
+  .music-detail-body { padding: 12px; }
+}
+
+/* P2 mobile: landscape phones / short viewports — the scroll area owns the
+   height; top and bottom bars stay fixed. */
+@media (orientation: landscape) and (max-height: 480px) {
+  .music-page { height: calc(100vh - 56px); height: calc(100dvh - 56px); }
+  .music-scroll-area { padding-bottom: 8px; }
+  .music-mini-player { padding: 4px 8px; }
+  .music-mini-cover { display: none; }
 }

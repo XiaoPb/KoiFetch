@@ -22,6 +22,7 @@ body {
 
 .app-layout {
   min-height: 100vh;
+  min-height: 100dvh;
   background: transparent;
 }
 
@@ -345,6 +346,7 @@ body {
   align-items: center;
   justify-content: center;
   min-height: 100vh;
+  min-height: 100dvh;
   padding: 16px;
 }
 
