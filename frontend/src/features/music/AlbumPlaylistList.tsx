@@ -3,6 +3,7 @@ import { RightOutlined } from '@ant-design/icons';
 import { useTranslation } from '../../services/i18n';
 import type { MusicAlbum, MusicEntity, MusicPlaylist } from '../../types/music';
 import { COVER_FALLBACK } from './cover';
+import { formatNumber } from './format';
 
 export interface AlbumPlaylistListProps {
   category: 'album' | 'playlist';
@@ -17,7 +18,7 @@ export interface AlbumPlaylistListProps {
  * song count on the right. Clicking a card opens the detail drawer.
  */
 export function AlbumPlaylistList({ category, albums, playlists, onOpenDetail }: AlbumPlaylistListProps): JSX.Element {
-  const { t } = useTranslation();
+  const { t, language } = useTranslation();
   // View C never renders artists, so narrow to albums | playlists — MusicEntity
   // also includes MusicArtist, which has no cover/title (strict TS build gate).
   const items: Array<MusicAlbum | MusicPlaylist> = category === 'album' ? albums : playlists;
@@ -54,7 +55,7 @@ export function AlbumPlaylistList({ category, albums, playlists, onOpenDetail }:
                 ? t('music.albumBy', { artist: (item as MusicAlbum).artist })
                 : t('music.playlistBy', { creator: (item as MusicPlaylist).creator })}
               {' · '}
-              {t('music.songCount', { count: item.songCount })}
+              {t('music.songCount', { count: formatNumber(item.songCount, language) })}
             </Typography.Text>
           </div>
           <RightOutlined className="album-playlist-chevron" />

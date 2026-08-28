@@ -2,6 +2,7 @@ import { Tabs, Typography } from 'antd';
 import type { TranslationKey } from '../../services/i18n';
 import { useTranslation } from '../../services/i18n';
 import type { MusicCategory } from '../../types/music';
+import { formatNumber } from './format';
 
 export const MUSIC_CATEGORIES: readonly MusicCategory[] = ['all', 'song', 'artist', 'album', 'playlist'];
 
@@ -19,7 +20,7 @@ export interface MusicFilterBarProps {
  * for that category (the page wires it to the store's `setCategory`).
  */
 export function MusicFilterBar({ category, total, onChange }: MusicFilterBarProps): JSX.Element {
-  const { t } = useTranslation();
+  const { t, language } = useTranslation();
   const items = MUSIC_CATEGORIES.map((value) => ({
     key: value,
     label: t(`music.tab.${value}` as TranslationKey),
@@ -28,7 +29,7 @@ export function MusicFilterBar({ category, total, onChange }: MusicFilterBarProp
   return (
     <div className="music-filter-bar" data-testid="music-filter-bar">
       <Typography.Text type="secondary" className="music-count" data-testid="music-count">
-        {t(`music.count.${category}` as TranslationKey, { total: total.toLocaleString() })}
+        {t(`music.count.${category}` as TranslationKey, { total: formatNumber(total, language) })}
       </Typography.Text>
       <Tabs
         size="small"

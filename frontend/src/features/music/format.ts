@@ -1,3 +1,5 @@
+import type { Language } from '../../services/i18n';
+
 /**
  * "MM:SS" → total seconds. Returns 0 for anything that is not exactly two
  * colon-separated integers (guards the mini-player timer against bad data).
@@ -17,4 +19,12 @@ export function formatSeconds(total: number): string {
   const minutes = Math.floor(clamped / 60);
   const seconds = clamped % 60;
   return `${minutes}:${String(seconds).padStart(2, '0')}`;
+}
+
+/**
+ * Locale-aware integer formatting following the UI language (zh-CN / en-US).
+ * Only digits/grouping change in v1 — no 万-unit conversion (documented).
+ */
+export function formatNumber(value: number, language: Language): string {
+  return value.toLocaleString(language === 'zh' ? 'zh-CN' : 'en-US');
 }

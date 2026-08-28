@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatSeconds, parseDurationSeconds } from './format';
+import { formatNumber, formatSeconds, parseDurationSeconds } from './format';
 
 describe('parseDurationSeconds', () => {
   it('parses "MM:SS"', () => {
@@ -23,5 +23,15 @@ describe('formatSeconds', () => {
 
   it('clamps negative input to 0', () => {
     expect(formatSeconds(-5)).toBe('0:00');
+  });
+});
+
+describe('formatNumber', () => {
+  it('groups digits per UI language', () => {
+    expect(formatNumber(1234567, 'zh')).toBe('1,234,567');
+    expect(formatNumber(1234567, 'en')).toBe('1,234,567');
+  });
+  it('returns 0 for zero', () => {
+    expect(formatNumber(0, 'en')).toBe('0');
   });
 });

@@ -4,6 +4,7 @@ import { MoreOutlined, UserOutlined } from '@ant-design/icons';
 import type { TranslationKey } from '../../services/i18n';
 import { useTranslation } from '../../services/i18n';
 import { COVER_FALLBACK } from './cover';
+import { formatNumber } from './format';
 import { useMusicStore } from './musicStore';
 
 /**
@@ -13,7 +14,7 @@ import { useMusicStore } from './musicStore';
  * five matching songs from the current result set, each playable.
  */
 export function EntityDetailDrawer(): JSX.Element {
-  const { t } = useTranslation();
+  const { t, language } = useTranslation();
   const entity = useMusicStore((state) => state.detailEntity);
   const songs = useMusicStore((state) => state.songs);
   const closeDetail = useMusicStore((state) => state.closeDetail);
@@ -47,8 +48,8 @@ export function EntityDetailDrawer(): JSX.Element {
               </Typography.Title>
               {(entity.fans > 0 || entity.songCount > 0) && (
                 <Typography.Text type="secondary">
-                  {t('music.fans', { count: entity.fans.toLocaleString() })} ·{' '}
-                  {t('music.hotSongsCount', { count: entity.songCount })}
+                  {t('music.fans', { count: formatNumber(entity.fans, language) })} ·{' '}
+                  {t('music.hotSongsCount', { count: formatNumber(entity.songCount, language) })}
                 </Typography.Text>
               )}
             </>
@@ -60,7 +61,7 @@ export function EntityDetailDrawer(): JSX.Element {
                 {entity.title}
               </Typography.Title>
               <Typography.Text type="secondary">
-                {t('music.albumBy', { artist: entity.artist })} · {t('music.songCount', { count: entity.songCount })}
+                {t('music.albumBy', { artist: entity.artist })} · {t('music.songCount', { count: formatNumber(entity.songCount, language) })}
               </Typography.Text>
             </>
           )}
@@ -71,7 +72,7 @@ export function EntityDetailDrawer(): JSX.Element {
                 {entity.title}
               </Typography.Title>
               <Typography.Text type="secondary">
-                {t('music.playlistBy', { creator: entity.creator })} · {t('music.songCount', { count: entity.songCount })}
+                {t('music.playlistBy', { creator: entity.creator })} · {t('music.songCount', { count: formatNumber(entity.songCount, language) })}
               </Typography.Text>
             </>
           )}
