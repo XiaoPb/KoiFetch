@@ -1,5 +1,5 @@
-import { useEffect, useRef } from 'react';
-import { Button, Image, Typography } from 'antd';
+import { useEffect, useRef, useState } from 'react';
+import { App, Button, Image, Typography } from 'antd';
 import { CaretRightOutlined, CloseOutlined, PauseOutlined } from '@ant-design/icons';
 import { useTranslation } from '../../services/i18n';
 import { COVER_FALLBACK } from './cover';
@@ -14,7 +14,9 @@ import { useMusicStore } from './musicStore';
  * 1. REAL audio — when `song.play_url` exists (mock songs now carry a tone
  *    WAV; the future backend supplies real URLs), a hidden <audio> element
  *    plays it: `timeupdate` drives the progress bar, `ended` stops at the end,
- *    and replay restarts from 0.
+ *    and replay restarts from 0. The progress bar is seekable (pointer
+ *    events); the REAL audio duration (loadedmetadata) overrides the
+ *    metadata `duration` for progress; a source `error` toasts and pauses.
  * 2. SIMULATED fallback — when `play_url` is null (e.g. stub mode), a 1-second
  *    timer advances the progress. Reads the live store position on every tick
  *    instead of a render-time ref: store updates are batched inside test `act`
@@ -23,6 +25,7 @@ import { useMusicStore } from './musicStore';
  */
 export function MiniPlayer(): JSX.Element | null {
   const { t } = useTranslation();
+  const { message } = App.useApp();
   const song = useMusicStore((state) => state.currentSong);
   const isPlaying = useMusicStore((state) => state.isPlaying);
   const currentTime = useMusicStore((state) => state.currentTime);
@@ -32,8 +35,33 @@ export function MiniPlayer(): JSX.Element | null {
   const closePlayer = useMusicStore((state) => state.closePlayer);
 
   const audioRef = useRef<HTMLAudioElement>(null);
+  const barRef = useRef<HTMLDivElement>(null);
+  const seekingRef = useRef(false);
+  const [realDuration, setRealDuration] = useState<number | null>(null);
   const durationSeconds = song ? parseDurationSeconds(song.duration) : 0;
   const hasAudio = Boolean(song?.play_url);
+
+  // Reset the real (audio-reported) duration when the song changes.
+  const songId = song?.id;
+  useEffect(() => {
+    setRealDuration(null);
+  }, [songId]);
+
+  const durationForProgress = realDuration ?? durationSeconds;
+
+  const seekToClientX = (clientX: number) => {
+    const bar = barRef.current;
+    if (!bar || durationForProgress <= 0) return;
+    const rect = bar.getBoundingClientRect();
+    if (rect.width <= 0) return;
+    const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+    const target = ratio * durationForProgress;
+    const audio = audioRef.current;
+    if (hasAudio && audio) {
+      audio.currentTime = target;
+    }
+    updateProgress(target);
+  };
 
   const handleToggle = () => {
     if (!isPlaying) {
@@ -80,7 +108,7 @@ export function MiniPlayer(): JSX.Element | null {
 
   if (!song) return null;
 
-  const percent = durationSeconds > 0 ? Math.min(100, (currentTime / durationSeconds) * 100) : 0;
+  const percent = durationForProgress > 0 ? Math.min(100, (currentTime / durationForProgress) * 100) : 0;
 
   return (
     <div className="music-mini-player" data-testid="music-mini-player">
@@ -88,10 +116,18 @@ export function MiniPlayer(): JSX.Element | null {
         ref={audioRef}
         src={song.play_url ?? undefined}
         preload="none"
+        onLoadedMetadata={(event) => {
+          const d = event.currentTarget.duration;
+          if (Number.isFinite(d) && d > 0) setRealDuration(d);
+        }}
         onTimeUpdate={(event) => updateProgress(event.currentTarget.currentTime)}
         onEnded={() => {
-          updateProgress(durationSeconds);
+          updateProgress(durationForProgress);
           pause();
+        }}
+        onError={() => {
+          pause();
+          void message.error(t('music.playbackFailed'));
         }}
         data-testid="mini-audio"
       />
@@ -113,17 +149,29 @@ export function MiniPlayer(): JSX.Element | null {
         </Typography.Text>
       </div>
       <div
+        ref={barRef}
         className="music-mini-progress"
-        role="progressbar"
+        role="slider"
+        aria-label={t('music.seek')}
         aria-valuemin={0}
-        aria-valuemax={100}
-        aria-valuenow={Math.round(percent)}
+        aria-valuemax={Math.round(durationForProgress)}
+        aria-valuenow={Math.round(currentTime)}
         data-testid="music-mini-progress"
+        onPointerDown={(event) => {
+          seekingRef.current = true;
+          event.currentTarget.setPointerCapture?.(event.pointerId);
+          seekToClientX(event.clientX);
+        }}
+        onPointerMove={(event) => {
+          if (seekingRef.current) seekToClientX(event.clientX);
+        }}
+        onPointerUp={() => { seekingRef.current = false; }}
+        onPointerCancel={() => { seekingRef.current = false; }}
       >
         <div className="music-mini-progress-inner" style={{ width: `${percent}%` }} />
       </div>
-      <Typography.Text type="secondary" className="music-mini-time">
-        {formatSeconds(currentTime)} / {song.duration}
+      <Typography.Text type="secondary" className="music-mini-time" data-testid="music-mini-time">
+        {formatSeconds(currentTime)} / {formatSeconds(durationForProgress)}
       </Typography.Text>
       <Button
         type="text"
