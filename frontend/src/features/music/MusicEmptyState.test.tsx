@@ -31,4 +31,14 @@ describe('MusicEmptyState', () => {
     await user.keyboard('{Enter}');
     expect(onSearch).toHaveBeenCalledWith('周杰伦');
   });
+
+  it('renders extra children below the description', () => {
+    renderWithProviders(
+      <MusicEmptyState description="没有找到相关歌手" hotKeywords={[]} onSearch={vi.fn()}>
+        <span data-testid="empty-others-hint">其他分类找到 2 条结果</span>
+      </MusicEmptyState>,
+    );
+    expect(screen.getByText('没有找到相关歌手')).toBeInTheDocument();
+    expect(screen.getByTestId('empty-others-hint')).toHaveTextContent('其他分类找到 2 条结果');
+  });
 });

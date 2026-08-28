@@ -19,6 +19,27 @@ export const MUSIC_EMPTY_INPUT_MESSAGE = '请输入搜索关键词 / Enter a sea
 
 const ZERO_TOTALS: Record<MusicCategory, number> = { all: 0, song: 0, artist: 0, album: 0, playlist: 0 };
 
+/** Per-category empty semantics: the ACTIVE category's list decides. */
+export function isCategoryEmpty(
+  category: MusicCategory,
+  songs: MusicSong[],
+  artists: MusicArtist[],
+  albums: MusicAlbum[],
+  playlists: MusicPlaylist[],
+): boolean {
+  switch (category) {
+    case 'artist':
+      return artists.length === 0;
+    case 'album':
+      return albums.length === 0;
+    case 'playlist':
+      return playlists.length === 0;
+    default: // 'all' shows songs; an empty song list is empty even if other
+      // categories have results (the page shows the others-hint below).
+      return songs.length === 0;
+  }
+}
+
 export interface MusicState {
   /** Current top-bar text. */
   input: string;

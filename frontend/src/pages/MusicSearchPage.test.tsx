@@ -94,6 +94,25 @@ describe('MusicSearchPage', () => {
     expect(screen.getByText('没找到相关歌曲，试试其他关键词')).toBeInTheDocument();
   });
 
+  it('shows the per-category empty state when only that category is empty', async () => {
+    // 综合 returns songs but no artists; switching to 歌手 shows the artist
+    // empty state even though songs exist (the old isEmpty required ALL empty).
+    // Override the shared stub locally — the default stub returns artists.
+    vi.mocked(musicApi.search).mockImplementation(async ({ category }) => ({
+      totals: { all: 2, song: 2, artist: 0, album: 0, playlist: 0 },
+      songs: category === 'artist' || category === 'album' || category === 'playlist' ? [] : [makeSong(1)],
+      artists: [], albums: [], playlists: [], hasMore: false,
+    }));
+    const user = userEvent.setup();
+    renderWithProviders(<MusicSearchPage />, { route: '/' });
+    await user.type(screen.getByTestId('music-search-input'), '周杰伦');
+    await user.click(screen.getByTestId('music-search-submit'));
+    await screen.findByTestId('music-song-list');
+    await user.click(screen.getByText('歌手'));
+    expect(await screen.findByTestId('music-empty')).toBeInTheDocument();
+    expect(screen.getByText('没有找到相关歌手')).toBeInTheDocument();
+  });
+
   it('opens the mini player when a song row is clicked', async () => {
     const user = userEvent.setup();
     renderWithProviders(<MusicSearchPage />, { route: '/' });

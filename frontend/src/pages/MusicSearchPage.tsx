@@ -1,8 +1,9 @@
 import { useEffect, useRef } from 'react';
-import { Alert, Button } from 'antd';
+import { Alert, Button, Typography } from 'antd';
 import { useTranslation } from '../services/i18n';
-import { useMusicStore } from '../features/music/musicStore';
+import { isCategoryEmpty, useMusicStore } from '../features/music/musicStore';
 import { HOT_KEYWORDS } from '../features/music/musicSource';
+import { formatNumber } from '../features/music/format';
 import { MusicSearchBar } from '../features/music/MusicSearchBar';
 import { MusicFilterBar } from '../features/music/MusicFilterBar';
 import { SongResultList } from '../features/music/SongResultList';
@@ -12,6 +13,7 @@ import { MiniPlayer } from '../features/music/MiniPlayer';
 import { SongActionSheet } from '../features/music/SongActionSheet';
 import { EntityDetailDrawer } from '../features/music/EntityDetailDrawer';
 import { MusicEmptyState } from '../features/music/MusicEmptyState';
+import type { MusicCategory } from '../types/music';
 import '../styles/music.css';
 
 /**
@@ -27,7 +29,7 @@ import '../styles/music.css';
  * animation.
  */
 export default function MusicSearchPage(): JSX.Element {
-  const { t } = useTranslation();
+  const { t, language } = useTranslation();
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const input = useMusicStore((state) => state.input);
@@ -56,12 +58,26 @@ export default function MusicSearchPage(): JSX.Element {
   }, [keyword, category]);
 
   const isLoading = status === 'loading';
-  const isEmpty =
-    status === 'success' &&
-    songs.length === 0 &&
-    artists.length === 0 &&
-    albums.length === 0 &&
-    playlists.length === 0;
+  const isEmpty = status === 'success' && isCategoryEmpty(category, songs, artists, albums, playlists);
+
+  const emptyDescription = (): string => {
+    switch (category) {
+      case 'artist': return t('music.emptyArtist');
+      case 'album': return t('music.emptyAlbum');
+      case 'playlist': return t('music.emptyPlaylist');
+      default: return t('music.empty');
+    }
+  };
+
+  // Totals of the categories NOT shown by the active view, for the hint.
+  const otherCategories: Record<MusicCategory, MusicCategory[]> = {
+    all: ['artist', 'album', 'playlist'],
+    song: ['artist', 'album', 'playlist'],
+    artist: ['song', 'album', 'playlist'],
+    album: ['song', 'artist', 'playlist'],
+    playlist: ['song', 'artist', 'album'],
+  };
+  const otherTotal = otherCategories[category].reduce((sum, key) => sum + (totals[key] ?? 0), 0);
 
   const handleEmptySearch = (hotKeyword: string) => {
     setInput(hotKeyword);
@@ -104,10 +120,16 @@ export default function MusicSearchPage(): JSX.Element {
 
         {(status === 'idle' || isEmpty) && (
           <MusicEmptyState
-            description={status === 'idle' ? t('music.initialHint') : t('music.empty')}
+            description={status === 'idle' ? t('music.initialHint') : emptyDescription()}
             hotKeywords={HOT_KEYWORDS}
             onSearch={handleEmptySearch}
-          />
+          >
+            {status === 'success' && isEmpty && otherTotal > 0 && (
+              <Typography.Text type="secondary" data-testid="music-empty-others">
+                {t('music.emptyOthers', { count: formatNumber(otherTotal, language) })}
+              </Typography.Text>
+            )}
+          </MusicEmptyState>
         )}
 
         {status === 'success' && !isEmpty && (
