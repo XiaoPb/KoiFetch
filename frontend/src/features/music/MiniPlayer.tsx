@@ -136,7 +136,10 @@ export function MiniPlayer(): JSX.Element | null {
           const audio = audioRef.current;
           if (useMusicStore.getState().loopMode === 'loopOne' && audio) {
             audio.currentTime = 0;
-            void audio.play().catch(() => pause());
+            // Browsers return a promise (rejecting on autoplay blocks); jsdom
+            // returns undefined — guard both, as in the isPlaying effect above.
+            const playResult = audio.play();
+            if (playResult) void playResult.catch(() => pause());
             return;
           }
           const advanced = useMusicStore.getState().playNext();
