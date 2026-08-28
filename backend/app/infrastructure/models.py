@@ -62,7 +62,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.domain.enums import DownloadStatus, MediaType
 from app.infrastructure.database import Base, UTCDateTime
 
-__all__ = ["User", "ParseTask", "DownloadTask", "PlatformCookie"]
+__all__ = ["User", "ParseTask", "DownloadTask", "MusicSongRow", "PlatformCookie"]
 
 
 def _new_uuid() -> str:
@@ -169,6 +169,40 @@ class ParseTask(Base):
     user: Mapped[User | None] = relationship(back_populates="parse_tasks")
     downloads: Mapped[list[DownloadTask]] = relationship(
         back_populates="parse_task"
+    )
+
+
+class MusicSongRow(Base):
+    """A persisted music search result (song_info for the download pipeline).
+
+    Persisted at search time so the frontend's ``song.id`` (this row's
+    ``song_id``) is stable across searches and can drive ``POST
+    /api/music/import``. ``song_key`` is a content hash
+    (``md5(source|title|artist|album)``) with a unique constraint, so
+    re-searching the same song is an idempotent upsert. ``song_info`` is the
+    musicdl ``SongInfo``-compatible dict the downloader engine consumes
+    (``SongInfo.fromdict``); display columns denormalize it for debugging.
+    """
+
+    __tablename__ = "music_songs"
+
+    song_id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=_new_uuid
+    )
+    song_key: Mapped[str] = mapped_column(String(32), unique=True, nullable=False)
+    source: Mapped[str] = mapped_column(String(64), nullable=False)
+    song_name: Mapped[str] = mapped_column(String(512), nullable=False)
+    singers: Mapped[str | None] = mapped_column(String(512))
+    album: Mapped[str | None] = mapped_column(String(512))
+    cover_url: Mapped[str | None] = mapped_column(Text)
+    duration_s: Mapped[int | None] = mapped_column(Integer)
+    ext: Mapped[str | None] = mapped_column(String(16))
+    song_info: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(), nullable=False, default=_utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(), nullable=False, default=_utcnow, onupdate=_utcnow
     )
 
 

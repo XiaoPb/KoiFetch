@@ -23,6 +23,7 @@ EXPECTED_TABLES = {
     "parse_tasks",
     "download_tasks",
     "platform_cookies",
+    "music_songs",
     "alembic_version",
 }
 
@@ -67,6 +68,21 @@ DOWNLOAD_TASK_COLUMNS = {
 PLATFORM_COOKIE_COLUMNS = {
     "platform",
     "cookie",
+    "updated_at",
+}
+
+MUSIC_SONG_COLUMNS = {
+    "song_id",
+    "song_key",
+    "source",
+    "song_name",
+    "singers",
+    "album",
+    "cover_url",
+    "duration_s",
+    "ext",
+    "song_info",
+    "created_at",
     "updated_at",
 }
 
@@ -136,6 +152,19 @@ class TestInitialMigration:
                 if row[5] == 1
             }
             assert cookie_pk == {"platform"}
+
+            music_columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(music_songs)")
+            }
+            assert MUSIC_SONG_COLUMNS <= music_columns
+            # Two unique constraints must exist: the PK and the content-hash
+            # upsert key (SQLite names auto-indexes sqlite_autoindex_*).
+            music_unique = {
+                row[1]
+                for row in conn.execute("PRAGMA index_list(music_songs)")
+                if row[2] == 1
+            }
+            assert len(music_unique) == 2
 
             parse_indexes = {
                 row[1] for row in conn.execute("PRAGMA index_list(parse_tasks)")

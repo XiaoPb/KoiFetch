@@ -23,6 +23,7 @@ from app.adapters.protocols import (
     AccessTokenProvider,
     CookieProvider,
     DownloaderAdapter,
+    MusicSearchAdapter,
     OneTimeTokenProvider,
     ParserAdapter,
     StorageAdapter,
@@ -37,6 +38,7 @@ from app.infrastructure.config import Settings, get_settings
 __all__ = [
     "get_access_token_provider",
     "get_downloader",
+    "get_music_search",
     "get_one_time_token_provider",
     "get_parser",
     "get_storage",
@@ -90,6 +92,26 @@ def get_downloader(settings: Settings | None = None) -> DownloaderAdapter:
     return StubDownloaderAdapter(
         speed_limit_mb_s=float(settings.download_speed_limit)
     )
+
+
+def get_music_search(settings: Settings | None = None) -> MusicSearchAdapter:
+    """Return the music-search adapter for ``settings.music_search_engine``.
+
+    ``"stub"`` (default) → the deterministic offline stub; ``"engine"`` →
+    the musicdl-backed :class:`MusicdlMusicSearchAdapter` (lazily imported so
+    the app boots and the non-engine tests run without engine packages).
+    """
+    settings = settings or get_settings()
+    if settings.music_search_engine == "engine":
+        from app.adapters.music_search_engine import MusicdlMusicSearchAdapter
+
+        return MusicdlMusicSearchAdapter(
+            music_sources=settings.musicdl_sources,
+            timeout_seconds=settings.engine_timeout_seconds,
+        )
+    from app.adapters.music_search_stub import MusicSearchStubAdapter
+
+    return MusicSearchStubAdapter()
 
 
 def get_storage(settings: Settings | None = None) -> StorageAdapter:

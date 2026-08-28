@@ -77,6 +77,9 @@ class Settings(BaseModel):
     # boots and the non-engine tests run without the engines installed).
     parser_engine: str = "stub"
     downloader_engine: str = "stub"
+    # music search adapter mode: "stub" (default, deterministic offline) or
+    # "engine" (musicdl keyword search; lazily imported like the other engines).
+    music_search_engine: str = "stub"
     # Legacy video-engine fallback: True keeps parse-video-py in the routing
     # table for platforms f2 does not cover (kuaishou/bilibili/xiaohongshu/
     # xigua/...); False makes those platforms raise 1003 平台不支持 so the
@@ -155,7 +158,7 @@ class Settings(BaseModel):
             return [item.strip() for item in value.split(",") if item.strip()]
         return value
 
-    @field_validator("parser_engine", "downloader_engine", mode="after")
+    @field_validator("parser_engine", "downloader_engine", "music_search_engine", mode="after")
     @classmethod
     def _validate_engine_mode(cls, value: str) -> str:
         if value not in ("stub", "engine"):
