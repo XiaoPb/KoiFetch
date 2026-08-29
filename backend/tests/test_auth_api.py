@@ -469,6 +469,7 @@ class TestRefresh:
         assert set(body) == {"code", "message", "data"}
         assert body["code"] == expected_code
         assert body["data"] is None
+        assert response.headers["cache-control"] == "no-store"
 
     def test_expired_token_returns_expired_code(self, client):
         expired = JwtAccessTokenProvider(SECRET, ttl=timedelta(seconds=-5))
@@ -480,6 +481,7 @@ class TestRefresh:
 
         assert response.status_code == 401
         assert response.json()["code"] == CODE_TOKEN_EXPIRED
+        assert response.headers["cache-control"] == "no-store"
 
     def test_wrong_user_token_returns_invalid_code(self, client, provider):
         token = provider.issue(user_id=999999, username="admin")
@@ -490,6 +492,7 @@ class TestRefresh:
 
         assert response.status_code == 401
         assert response.json()["code"] == CODE_INVALID_TOKEN
+        assert response.headers["cache-control"] == "no-store"
 
 
 class TestEnvelopeEverywhere:

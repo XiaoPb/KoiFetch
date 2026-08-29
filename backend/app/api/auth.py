@@ -77,6 +77,7 @@ _MESSAGE_NOT_LOGGED_IN = "未登录 / Not logged in"
 _MESSAGE_TOKEN_EXPIRED = "登录已过期，请重新登录 / Token expired"
 _MESSAGE_TOKEN_INVALID = "Token无效 / Invalid token"
 _MESSAGE_RATE_LIMITED = "请求过于频繁，请稍后再试 / Too many login attempts, please try again"
+_NO_STORE_HEADERS = {"Cache-Control": "no-store"}
 
 # OpenAPI security scheme: documents the ``Authorization: Bearer <token>``
 # header for protected routes. ``auto_error=False`` makes a missing/malformed
@@ -236,17 +237,26 @@ def refresh_session(
     """Rotate a still-valid bearer token and prevent response caching."""
     if credentials is None:
         raise ApiError(
-            HTTP_401_UNAUTHORIZED, CODE_UNAUTHORIZED, _MESSAGE_NOT_LOGGED_IN
+            HTTP_401_UNAUTHORIZED,
+            CODE_UNAUTHORIZED,
+            _MESSAGE_NOT_LOGGED_IN,
+            headers=_NO_STORE_HEADERS,
         )
     try:
         result = auth.refresh(credentials.credentials)
     except TokenExpiredError as exc:
         raise ApiError(
-            HTTP_401_UNAUTHORIZED, CODE_TOKEN_EXPIRED, _MESSAGE_TOKEN_EXPIRED
+            HTTP_401_UNAUTHORIZED,
+            CODE_TOKEN_EXPIRED,
+            _MESSAGE_TOKEN_EXPIRED,
+            headers=_NO_STORE_HEADERS,
         ) from exc
     except TokenError as exc:
         raise ApiError(
-            HTTP_401_UNAUTHORIZED, CODE_INVALID_TOKEN, _MESSAGE_TOKEN_INVALID
+            HTTP_401_UNAUTHORIZED,
+            CODE_INVALID_TOKEN,
+            _MESSAGE_TOKEN_INVALID,
+            headers=_NO_STORE_HEADERS,
         ) from exc
     response.headers["Cache-Control"] = "no-store"
     return ok(

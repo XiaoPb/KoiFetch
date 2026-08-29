@@ -17,6 +17,7 @@ from sqlalchemy import select
 
 from app.adapters.factory import get_access_token_provider
 from app.adapters.protocols import InvalidTokenError
+from app.adapters import tokens_jwt
 from app.application.auth_service import AuthService
 from app.infrastructure import seed
 from app.infrastructure.config import Settings
@@ -174,17 +175,23 @@ class TestLogin:
 
 
 class TestRefresh:
-    def test_refresh_rotates_valid_token(self, engine, service, provider):
+    def test_refresh_slides_expiry_and_rotates_jti(
+        self, engine, service, provider, monkeypatch
+    ):
         seed_admin(engine)
+        base = tokens_jwt._now() - timedelta(seconds=1)
+        moments = iter((base, base + timedelta(seconds=1)))
+        monkeypatch.setattr(tokens_jwt, "_now", lambda: next(moments))
         old = provider.issue(user_id=1, username="admin")
 
         result = service.refresh(old)
 
-        assert result.username == "admin"
-        assert result.token != old
         old_claims = provider.validate(old)
         fresh_claims = provider.validate(result.token)
+        assert result.username == "admin"
+        assert result.token != old
         assert fresh_claims.token_id != old_claims.token_id
+        assert fresh_claims.expires_at > old_claims.expires_at
         assert result.expires_at == fresh_claims.expires_at
 
     def test_refresh_rejects_token_for_missing_user(self, engine, service, provider):
