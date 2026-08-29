@@ -24,6 +24,10 @@ class UpstreamTooLarge(ValueError):
     """Raised when an upstream response exceeds its configured byte limit."""
 
 
+class UpstreamProtocolError(ValueError):
+    """Raised when an upstream response contains invalid protocol metadata."""
+
+
 Resolver = Callable[[str, int], list[str]]
 
 
@@ -42,6 +46,47 @@ class UpstreamStream:
     headers: dict[str, str]
     chunks: Iterator[bytes]
     close: Callable[[], None]
+
+
+def _close_resources(*resources: object, suppress: bool = False) -> None:
+    """Close all resources, preserving the first close error when requested."""
+    first_error: Exception | None = None
+    for resource in resources:
+        close = getattr(resource, "close", None)
+        if close is None:
+            continue
+        try:
+            close()
+        except Exception as exc:
+            if first_error is None:
+                first_error = exc
+    if first_error is not None and not suppress:
+        raise first_error
+
+
+def _content_length(headers: httpx.Headers) -> int | None:
+    raw = headers.get("content-length")
+    if raw is None:
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise UpstreamProtocolError("invalid upstream content-length") from exc
+    if value < 0:
+        raise UpstreamProtocolError("invalid upstream content-length")
+    return value
+
+
+def _read_body_limited(response: httpx.Response, limit: int) -> bytes:
+    declared_size = _content_length(response.headers)
+    if declared_size is not None and declared_size > limit:
+        raise UpstreamTooLarge("upstream response exceeds byte limit")
+    body = bytearray()
+    for chunk in response.iter_bytes():
+        if len(body) + len(chunk) > limit:
+            raise UpstreamTooLarge("upstream response exceeds byte limit")
+        body.extend(chunk)
+    return bytes(body)
 
 
 def _system_resolver(host: str, port: int) -> list[str]:
@@ -90,23 +135,30 @@ class PinnedIPTransport(httpx.BaseTransport):
         self._transport = transport or httpx.HTTPTransport()
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
-        address = self.target.addresses[0]
-        rewritten_url = request.url.copy_with(host=address)
-        headers = request.headers.copy()
-        host_header = self.target.host
-        if self.target.port != (443 if request.url.scheme == "https" else 80):
-            host_header = f"{host_header}:{self.target.port}"
-        headers["host"] = host_header
-        extensions = dict(request.extensions)
-        extensions["sni_hostname"] = self.target.host
-        rewritten = httpx.Request(
-            request.method,
-            rewritten_url,
-            headers=headers,
-            content=request.stream,
-            extensions=extensions,
-        )
-        return self._transport.handle_request(rewritten)
+        last_error: Exception | None = None
+        for address in self.target.addresses:
+            rewritten_url = request.url.copy_with(host=address)
+            headers = request.headers.copy()
+            host_name = self.target.host.strip("[]")
+            host_header = f"[{host_name}]" if ":" in host_name else host_name
+            if self.target.port != (443 if request.url.scheme == "https" else 80):
+                host_header = f"{host_header}:{self.target.port}"
+            headers["host"] = host_header
+            extensions = dict(request.extensions)
+            extensions["sni_hostname"] = host_name
+            rewritten = httpx.Request(
+                request.method,
+                rewritten_url,
+                headers=headers,
+                content=request.stream,
+                extensions=extensions,
+            )
+            try:
+                return self._transport.handle_request(rewritten)
+            except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+                last_error = exc
+        assert last_error is not None
+        raise last_error
 
     def close(self) -> None:
         self._transport.close()
@@ -204,14 +256,15 @@ class SafeUpstreamClient:
             client = self._client(target)
             try:
                 request = client.build_request("GET", current_url, headers=headers)
-                response = client.send(request, stream=stream)
+                # Always defer body consumption.  ``open`` applies its cap
+                # itself, and redirects are discarded without being read.
+                response = client.send(request, stream=True)
             except Exception:
-                client.close()
+                _close_resources(client, suppress=True)
                 raise
             if response.is_redirect:
                 location = response.headers.get("location")
-                response.close()
-                client.close()
+                _close_resources(response, client, suppress=True)
                 if not location or redirect_count >= self._max_redirects:
                     raise UnsafeUpstreamUrl("too many or invalid upstream redirects")
                 current_url = urljoin(current_url, location)
@@ -222,13 +275,18 @@ class SafeUpstreamClient:
     def open(self, url: str, *, headers: dict[str, str] | None = None) -> httpx.Response:
         response, client = self._send(url, headers=headers, stream=False)
         try:
-            response.read()
-        except Exception:
-            response.close()
-            client.close()
+            body = _read_body_limited(response, self._max_bytes)
+        except BaseException:
+            _close_resources(response, client, suppress=True)
             raise
-        client.close()
-        return response
+        _close_resources(response, client)
+        return httpx.Response(
+            response.status_code,
+            headers=response.headers,
+            content=body,
+            request=response.request,
+            extensions=response.extensions,
+        )
 
     def stream(
         self,
@@ -246,16 +304,15 @@ class SafeUpstreamClient:
             nonlocal closed
             if not closed:
                 closed = True
-                response.close()
-                client.close()
+                _close_resources(response, client)
 
         try:
-            declared = response.headers.get("content-length")
-            declared_size = int(declared) if declared is not None else None
-        except (TypeError, ValueError):
-            declared_size = None
+            declared_size = _content_length(response.headers)
+        except BaseException:
+            _close_resources(response, client, suppress=True)
+            raise
         if declared_size is not None and declared_size > limit:
-            close()
+            _close_resources(response, client, suppress=True)
             raise UpstreamTooLarge("upstream response exceeds byte limit")
 
         def chunks() -> Iterator[bytes]:
@@ -266,8 +323,11 @@ class SafeUpstreamClient:
                     if total > limit:
                         raise UpstreamTooLarge("upstream response exceeds byte limit")
                     yield chunk
-            except Exception:
-                close()
+            except BaseException:
+                try:
+                    close()
+                except Exception:
+                    pass
                 raise
             else:
                 close()
@@ -288,20 +348,10 @@ class SafeUpstreamClient:
 
     def read_limited(self, response: httpx.Response, *, max_bytes: int | None = None) -> bytes:
         limit = self._max_bytes if max_bytes is None else max_bytes
-        declared = response.headers.get("content-length")
         try:
-            declared_size = int(declared) if declared is not None else None
-        except (TypeError, ValueError):
-            declared_size = None
-        if declared_size is not None and declared_size > limit:
-            response.close()
-            raise UpstreamTooLarge("upstream response exceeds byte limit")
-        body = bytearray()
-        try:
-            for chunk in response.iter_bytes():
-                body.extend(chunk)
-                if len(body) > limit:
-                    raise UpstreamTooLarge("upstream response exceeds byte limit")
-            return bytes(body)
-        finally:
-            response.close()
+            body = _read_body_limited(response, limit)
+        except BaseException:
+            _close_resources(response, suppress=True)
+            raise
+        _close_resources(response)
+        return body

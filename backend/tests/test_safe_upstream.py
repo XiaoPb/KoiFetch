@@ -7,6 +7,7 @@ import pytest
 
 from app.adapters.safe_upstream import (
     PinnedIPTransport,
+    SafeTarget,
     SafeUpstreamClient,
     UnsafeUpstreamUrl,
     UpstreamTooLarge,
@@ -113,6 +114,54 @@ def test_open_rejects_resolution_failure_during_revalidation() -> None:
     assert connected is False
 
 
+class RecordingStream(httpx.SyncByteStream):
+    def __init__(self, chunks: list[bytes]) -> None:
+        self.chunks = chunks
+        self.yielded: list[bytes] = []
+
+    def __iter__(self):
+        for chunk in self.chunks:
+            self.yielded.append(chunk)
+            yield chunk
+
+
+def test_open_caps_body_accumulation_before_consuming_more_chunks() -> None:
+    body = RecordingStream([b"123", b"45", b"6"])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=body, request=request)
+
+    client = SafeUpstreamClient(
+        resolver=resolver_for("93.184.216.34"), transport=httpx.MockTransport(handler), max_bytes=4
+    )
+    with pytest.raises(UpstreamTooLarge):
+        client.open("https://cdn.example/file")
+    assert body.yielded == [b"123", b"45"]
+
+
+def test_open_does_not_buffer_redirect_body() -> None:
+    redirect_body = RecordingStream([b"discarded"])
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(
+                302,
+                headers={"location": "https://cdn.example/final"},
+                stream=redirect_body,
+                request=request,
+            )
+        return httpx.Response(200, content=b"ok", request=request)
+
+    client = SafeUpstreamClient(
+        resolver=resolver_for("93.184.216.34"), transport=httpx.MockTransport(handler)
+    )
+    assert client.open("https://cdn.example/file").content == b"ok"
+    assert redirect_body.yielded == []
+
+
 def test_read_limited_enforces_declared_and_streamed_sizes() -> None:
     client = SafeUpstreamClient(max_bytes=4)
     response = httpx.Response(200, headers={"content-length": "5"}, content=b"12345")
@@ -122,6 +171,14 @@ def test_read_limited_enforces_declared_and_streamed_sizes() -> None:
     response = httpx.Response(200, content=b"12345")
     with pytest.raises(UpstreamTooLarge):
         client.read_limited(response, max_bytes=4)
+
+
+@pytest.mark.parametrize("content_length", ["not-a-number", "-1"])
+def test_read_limited_rejects_malformed_content_length(content_length: str) -> None:
+    client = SafeUpstreamClient(max_bytes=4)
+    response = httpx.Response(200, headers={"content-length": content_length}, content=b"")
+    with pytest.raises(ValueError, match="content-length"):
+        client.read_limited(response)
 
 
 def test_stream_rejects_declared_size_before_reading_body() -> None:
@@ -172,6 +229,21 @@ def test_stream_sends_range_forwards_safe_headers_and_closes() -> None:
     assert b"".join(stream.chunks) == b"abc"
 
 
+def test_stream_rejects_oversized_body_without_content_length() -> None:
+    body = RecordingStream([b"123", b"45"])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=body, request=request)
+
+    client = SafeUpstreamClient(
+        resolver=resolver_for("93.184.216.34"), transport=httpx.MockTransport(handler), max_bytes=4
+    )
+    stream = client.stream("https://cdn.example/file")
+    with pytest.raises(UpstreamTooLarge):
+        list(stream.chunks)
+    assert body.yielded == [b"123", b"45"]
+
+
 def test_pinned_transport_rewrites_address_and_retains_host_and_sni() -> None:
     target = SafeUpstreamClient(resolver=resolver_for("93.184.216.34")).validate(
         "https://cdn.example:8443/media.mp4"
@@ -192,3 +264,79 @@ def test_pinned_transport_rewrites_address_and_retains_host_and_sni() -> None:
         "host": "cdn.example:8443",
         "sni": "cdn.example",
     }
+
+
+def test_pinned_transport_retries_each_validated_address() -> None:
+    target = SafeTarget(
+        url="https://cdn.example/media.mp4",
+        host="cdn.example",
+        port=443,
+        addresses=("93.184.216.34", "93.184.216.35"),
+    )
+    seen: list[str] = []
+
+    class FailoverTransport(httpx.BaseTransport):
+        def handle_request(self, request: httpx.Request) -> httpx.Response:
+            seen.append(str(request.url))
+            if len(seen) == 1:
+                raise httpx.ConnectError("first address unavailable", request=request)
+            return httpx.Response(200, content=b"ok", request=request)
+
+        def close(self) -> None:
+            pass
+
+    transport = PinnedIPTransport(target, transport=FailoverTransport())
+    with httpx.Client(transport=transport) as client:
+        assert client.get(target.url).content == b"ok"
+    assert seen == [
+        "https://93.184.216.34/media.mp4",
+        "https://93.184.216.35/media.mp4",
+    ]
+
+
+def test_pinned_transport_brackets_ipv6_host_authority() -> None:
+    target = SafeTarget(
+        url="https://[2001:db8::1]:8443/media.mp4",
+        host="2001:db8::1",
+        port=8443,
+        addresses=("2001:db8::2",),
+    )
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["host"] = request.headers["host"]
+        seen["sni"] = request.extensions["sni_hostname"]
+        return httpx.Response(200, content=b"ok", request=request)
+
+    with httpx.Client(transport=PinnedIPTransport(target, httpx.MockTransport(handler))) as client:
+        client.get(target.url)
+    assert seen == {
+        "url": "https://[2001:db8::2]:8443/media.mp4",
+        "host": "[2001:db8::1]:8443",
+        "sni": "2001:db8::1",
+    }
+
+
+def test_explicit_stream_close_closes_client_when_response_close_raises() -> None:
+    class CloseTrackingTransport(httpx.MockTransport):
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        response = httpx.Response(200, content=b"ok", request=request)
+
+        def bad_close() -> None:
+            raise RuntimeError("response close failed")
+
+        response.close = bad_close  # type: ignore[method-assign]
+        return response
+
+    transport = CloseTrackingTransport(handler)
+    client = SafeUpstreamClient(resolver=resolver_for("93.184.216.34"), transport=transport)
+    stream = client.stream("https://cdn.example/file")
+    with pytest.raises(RuntimeError, match="response close failed"):
+        stream.close()
+    assert transport.closed is True
