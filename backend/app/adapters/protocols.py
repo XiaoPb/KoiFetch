@@ -308,6 +308,7 @@ class AccessTokenClaims:
 
     user_id: int
     username: str
+    token_id: str
     issued_at: datetime
     expires_at: datetime
 

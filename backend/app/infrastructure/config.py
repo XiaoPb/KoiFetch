@@ -64,6 +64,7 @@ class Settings(BaseModel):
     temp_music_path: Path = Path("data/bubble/music")
 
     # --- Runtime behavior ---
+    access_token_ttl_days: int = Field(default=7, ge=1, le=30)
     max_concurrent: int = Field(default=3, ge=1)
     download_speed_limit: int = Field(default=0, ge=0)  # MB/s; 0 = unlimited
     bubble_expire_hours: int = Field(default=24, ge=1)

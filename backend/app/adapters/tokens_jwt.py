@@ -1,4 +1,4 @@
-"""JWT token providers: access tokens (24h) and one-time download tokens (5 min).
+"""JWT token providers: access tokens (7d) and one-time download tokens (5 min).
 
 Implements :class:`app.adapters.protocols.AccessTokenProvider` and
 :class:`app.adapters.protocols.OneTimeTokenProvider` with PyJWT (HS256, shared
@@ -8,8 +8,8 @@ so any number of app instances can validate tokens.
 Claim layout (documented contract — the auth service of Task 7 and the
 download-file API of Task 9 consume these):
 
-* Access token: ``sub`` = user id as a string, ``username``, ``iat``, ``exp``
-  (issued-at + 24h).
+* Access token: ``sub`` = user id as a string, ``username``, ``jti``, ``iat``,
+  ``exp`` (issued-at + 7d by default).
 * One-time token: ``tid`` = a fresh ``uuid4`` *token id*, ``dl`` = the
   download id the token authorizes, ``iat``, ``exp`` (issued-at + 5 min).
 
@@ -50,7 +50,7 @@ from app.adapters.protocols import (
 __all__ = ["JwtAccessTokenProvider", "JwtOneTimeTokenProvider"]
 
 _ALGORITHM = "HS256"
-_ACCESS_TTL = timedelta(hours=24)
+_ACCESS_TTL = timedelta(days=7)
 _ONE_TIME_TTL = timedelta(minutes=5)
 
 
@@ -103,7 +103,7 @@ class _JwtProviderBase:
 
 
 class JwtAccessTokenProvider(_JwtProviderBase, AccessTokenProvider):
-    """HS256 access tokens valid for 24 hours."""
+    """HS256 access tokens valid for seven days by default."""
 
     def __init__(
         self, secret_key: str, *, ttl: timedelta = _ACCESS_TTL
@@ -126,18 +126,21 @@ class JwtAccessTokenProvider(_JwtProviderBase, AccessTokenProvider):
             {
                 "sub": str(user_id),
                 "username": username,
+                "jti": str(uuid.uuid4()),
                 "iat": now,
                 "exp": now + self._ttl,
             }
         )
 
     def validate(self, token: str) -> AccessTokenClaims:
-        payload = self._decode(token, require=("exp", "iat"))
+        payload = self._decode(token, require=("exp", "iat", "jti"))
         user_id = self._parse_user_id(payload.get("sub"))
         username = _require_non_blank(payload.get("username"), "username")
+        token_id = _require_non_blank(payload.get("jti"), "jti")
         return AccessTokenClaims(
             user_id=user_id,
             username=username,
+            token_id=token_id,
             issued_at=_require_datetime(payload.get("iat"), "iat"),
             expires_at=_require_datetime(payload.get("exp"), "exp"),
         )

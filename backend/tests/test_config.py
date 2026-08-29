@@ -47,6 +47,7 @@ class TestDefaults:
         assert settings.max_concurrent == 3
         assert settings.download_speed_limit == 0
         assert settings.bubble_expire_hours == 24
+        assert settings.access_token_ttl_days == 7
         assert settings.worker_poll_interval == 1.0
         assert settings.cleanup_interval_minutes == 60
         assert settings.stale_download_minutes == 60
@@ -199,6 +200,11 @@ class TestCorsParsing:
 
 
 class TestValidation:
+    @pytest.mark.parametrize("bad", [0, -1, 31, 100])
+    def test_access_token_ttl_days_outside_supported_range_rejected(self, clean_env, bad):
+        with pytest.raises(ValidationError):
+            build(access_token_ttl_days=bad)
+
     @pytest.mark.parametrize("bad", [0, -1, -10])
     def test_max_concurrent_below_minimum_rejected(self, clean_env, bad):
         with pytest.raises(ValidationError):

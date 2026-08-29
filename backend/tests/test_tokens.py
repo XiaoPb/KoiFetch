@@ -1,6 +1,6 @@
 """Tests for the JWT token providers (``app/adapters/tokens_jwt.py``).
 
-Covers: issue/validate round-trips, the 24h access-token expiry, the 5-minute
+Covers: issue/validate round-trips, the seven-day access-token expiry, the 5-minute
 one-time token expiry, invalid-signature/garbage/tampered-token rejection, and
 the documented design decision that one-time token *single-use* enforcement
 lives in the caller (the API layer of Task 9), not in the adapter: ``validate``
@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 import jwt as pyjwt
 import pytest
 
+import app.adapters.tokens_jwt as tokens_jwt
 from app.adapters.protocols import (
     InvalidTokenError,
     TokenExpiredError,
@@ -56,10 +57,25 @@ class TestJwtAccessTokenProvider:
         assert claims.username == "admin"
         assert claims.expires_at > claims.issued_at
 
-    def test_access_token_lasts_24_hours(self):
+    def test_default_access_token_lasts_seven_days(self):
         provider = JwtAccessTokenProvider(SECRET)
         claims = provider.validate(provider.issue(user_id=1, username="u"))
-        assert claims.expires_at - claims.issued_at == timedelta(hours=24)
+        assert claims.expires_at - claims.issued_at == timedelta(days=7)
+
+    def test_access_token_ttl_is_measured_from_provider_clock(self, monkeypatch):
+        now = datetime(2026, 8, 29, tzinfo=timezone.utc)
+        monkeypatch.setattr(tokens_jwt, "_now", lambda: now)
+        provider = JwtAccessTokenProvider(SECRET, ttl=timedelta(days=7))
+        claims = provider.validate(provider.issue(user_id=1, username="admin"))
+        assert claims.expires_at == now + timedelta(days=7)
+
+    def test_two_tokens_issued_in_one_second_have_distinct_jti(self, monkeypatch):
+        now = datetime(2026, 8, 29, tzinfo=timezone.utc)
+        monkeypatch.setattr(tokens_jwt, "_now", lambda: now)
+        provider = JwtAccessTokenProvider(SECRET)
+        first = provider.validate(provider.issue(user_id=1, username="admin"))
+        second = provider.validate(provider.issue(user_id=1, username="admin"))
+        assert first.token_id != second.token_id
 
     def test_ttl_override(self):
         provider = JwtAccessTokenProvider(SECRET, ttl=timedelta(hours=1))
