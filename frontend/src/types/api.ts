@@ -74,6 +74,9 @@ export interface LoginData {
   expires_at: string;
 }
 
+/** The refresh endpoint returns the same rotated session payload as login. */
+export type RefreshData = LoginData;
+
 // ---------------------------------------------------------------------------
 // Parse (POST /api/parse)
 // ---------------------------------------------------------------------------

@@ -11,6 +11,7 @@ import type {
   PreviewData,
   SubmitData,
   DownloadProgress,
+  RefreshData,
 } from '../types/api';
 import type { MusicSearchParams, MusicSearchResult } from '../types/music';
 
@@ -22,6 +23,14 @@ export const authApi = {
   /** POST /api/auth/login → {token, username, expires_at}. */
   async login(body: LoginRequest): Promise<LoginData> {
     const { data } = await apiClient.post<LoginData>('/auth/login', body);
+    return data;
+  },
+  /** POST /api/auth/refresh → a rotated session; caller owns 401 handling. */
+  async refresh(token: string): Promise<RefreshData> {
+    const { data } = await apiClient.post<RefreshData>('/auth/refresh', null, {
+      authToken: token,
+      skipUnauthorized: true,
+    });
     return data;
   },
 };

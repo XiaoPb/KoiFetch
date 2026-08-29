@@ -175,4 +175,26 @@ describe('apiClient', () => {
       code: 1,
     });
   });
+
+  it('uses the explicit refresh token instead of the current store token', async () => {
+    useAuthStore.setState({ token: 'new-token', username: 'admin', expiresAt: '2099-01-01T00:00:00Z' });
+    stubAdapter((config) => {
+      expect(config.headers?.get('Authorization')).toBe('Bearer old-token');
+      return { body: okEnvelope({ token: 'fresh-token', username: 'admin', expires_at: '2099-01-01T00:00:00Z' }) };
+    });
+
+    await authApi.refresh('old-token');
+  });
+
+  it('does not invoke the global unauthorized handler for refresh failures', async () => {
+    const handler = vi.fn();
+    setOnUnauthorized(handler);
+    stubAdapter(() => ({
+      status: 401,
+      body: { code: 2004, message: 'token expired', data: null },
+    }));
+
+    await expect(authApi.refresh('old-token')).rejects.toMatchObject({ code: 2004, httpStatus: 401 });
+    expect(handler).not.toHaveBeenCalled();
+  });
 });
