@@ -278,6 +278,16 @@ class TestClientIp:
         request = type("Request", (), {"client": Client(), "headers": {"X-Forwarded-For": "::ffff:198.51.100.1"}, "app": App()})()
         assert get_client_ip(request) == "198.51.100.1"
 
+    def test_mapped_trusted_cidr_allows_mapped_proxy_chain(self):
+        class Client:
+            host = "::ffff:10.0.0.1"
+
+        class App:
+            state = type("State", (), {"settings": type("S", (), {"trusted_proxy_cidrs": ["::ffff:10.0.0.0/120"]})()})()
+
+        request = type("Request", (), {"client": Client(), "headers": {"X-Forwarded-For": "::ffff:198.51.100.1"}, "app": App()})()
+        assert get_client_ip(request) == "198.51.100.1"
+
     def test_unknown_user_is_indistinguishable_from_wrong_password(self, client):
         wrong = client.post(
             "/api/auth/login",

@@ -50,7 +50,11 @@ from app.api.responses import (
     ok,
 )
 from app.application.auth_service import AuthService
-from app.application.login_limiter import LoginLimiter, normalize_username
+from app.application.login_limiter import (
+    LoginLimiter,
+    canonicalize_network,
+    normalize_username,
+)
 
 __all__ = [
     "LoginData",
@@ -146,7 +150,7 @@ def get_client_ip(request: Request) -> str:
     settings = getattr(request.app.state, "settings", None)
     for cidr in getattr(settings, "trusted_proxy_cidrs", []):
         try:
-            trusted.append(ipaddress.ip_network(cidr, strict=False))
+            trusted.append(canonicalize_network(ipaddress.ip_network(cidr, strict=False)))
         except (ValueError, TypeError):
             continue
     if not any(peer_ip in network for network in trusted):

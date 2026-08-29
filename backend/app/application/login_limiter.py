@@ -10,7 +10,12 @@ from dataclasses import dataclass, field
 from threading import RLock
 from typing import Callable
 
-__all__ = ["LoginAttempt", "LoginLimiter", "normalize_username"]
+__all__ = [
+    "LoginAttempt",
+    "LoginLimiter",
+    "canonicalize_network",
+    "normalize_username",
+]
 
 
 def normalize_username(username: str) -> str:
@@ -25,6 +30,23 @@ def _canonical_ip(client_ip: str) -> str:
     except ValueError:
         return value
     return str(getattr(address, "ipv4_mapped", None) or address)
+
+
+def canonicalize_network(
+    network: ipaddress.IPv4Network | ipaddress.IPv6Network,
+) -> ipaddress.IPv4Network | ipaddress.IPv6Network:
+    """Map IPv4-compatible IPv6 proxy ranges to equivalent IPv4 networks."""
+    if network.version != 6 or network.prefixlen < 96:
+        return network
+    mapped_range = ipaddress.ip_network("::ffff:0:0/96")
+    if not network.subnet_of(mapped_range):
+        return network
+    mapped_address = network.network_address.ipv4_mapped
+    if mapped_address is None:
+        return network
+    return ipaddress.ip_network(
+        f"{mapped_address}/{network.prefixlen - 96}", strict=False
+    )
 
 
 @dataclass

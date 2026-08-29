@@ -28,6 +28,8 @@ from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, field_validator
 
+from app.application.login_limiter import canonicalize_network
+
 __all__ = ["Settings", "get_settings"]
 
 
@@ -209,10 +211,10 @@ class Settings(BaseModel):
             if not isinstance(cidr, str):
                 raise ValueError("trusted_proxy_cidrs must contain CIDR strings")
             try:
-                ipaddress.ip_network(cidr.strip(), strict=False)
+                network = ipaddress.ip_network(cidr.strip(), strict=False)
             except ValueError as exc:
                 raise ValueError("trusted_proxy_cidrs contains an invalid network") from exc
-            result.append(cidr.strip())
+            result.append(str(canonicalize_network(network)))
         return result
 
     @field_validator("cookie_encryption_key")

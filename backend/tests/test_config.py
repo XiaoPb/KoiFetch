@@ -319,6 +319,12 @@ class TestTrustedProxySettings:
         with pytest.raises(ValidationError):
             build(trusted_proxy_cidrs=["not-an-ip-network"])
 
+    def test_mapped_trusted_proxy_cidr_is_normalized_to_ipv4(self, clean_env):
+        settings = build(
+            trusted_proxy_cidrs=["::ffff:10.0.0.0/120", "2001:db8::/32"]
+        )
+        assert settings.trusted_proxy_cidrs == ["10.0.0.0/24", "2001:db8::/32"]
+
     def test_from_env_requires_secrets(self, clean_env):
         with pytest.raises(ValidationError):
             Settings.from_env()
