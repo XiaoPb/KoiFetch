@@ -99,3 +99,19 @@ def test_exception_finalization_consumes_reserved_slot_conservatively():
     assert ticket is not None
     limiter.finalize(ticket, success=False, error=True)
     assert limiter.begin_attempt("127.0.0.1", "admin") is None
+
+
+def test_abandoned_reservation_expires_and_stale_ticket_cannot_reblock():
+    now = [10.0]
+    limiter = LoginLimiter(max_attempts=1, window_seconds=5, clock=lambda: now[0])
+    abandoned = limiter.begin_attempt("127.0.0.1", "admin")
+    assert abandoned is not None
+
+    now[0] = 16.0
+    assert limiter.retry_after("127.0.0.1", "admin") == 0
+    assert limiter.key_count == 0
+    fresh = limiter.begin_attempt("127.0.0.1", "admin")
+    assert fresh is not None
+    limiter.finalize(abandoned, success=False)
+    assert limiter.check("127.0.0.1", "admin") is False
+    limiter.finalize(fresh, success=True)

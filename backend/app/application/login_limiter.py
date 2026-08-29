@@ -175,6 +175,9 @@ class LoginLimiter:
         for key, bucket in list(self._buckets.items()):
             while bucket.failures and bucket.failures[0] <= cutoff:
                 bucket.failures.popleft()
+            for token, started in list(bucket.reservations.items()):
+                if started <= cutoff:
+                    del bucket.reservations[token]
             if not bucket.failures and not bucket.reservations:
                 del self._buckets[key]
 
