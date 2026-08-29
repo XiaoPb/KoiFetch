@@ -38,7 +38,7 @@ def engine(tmp_path):
 @pytest.fixture
 def provider():
     return get_access_token_provider(
-        Settings(admin_password=PASSWORD, secret_key=SECRET)
+        Settings(admin_password=PASSWORD, secret_key=SECRET, cookie_encryption_key="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
     )
 
 
@@ -50,7 +50,7 @@ def service(engine, provider):
 def seed_admin(engine, password: str = PASSWORD) -> None:
     assert (
         seed.seed_admin(
-            settings=Settings(admin_password=password, secret_key=SECRET),
+            settings=Settings(admin_password=password, secret_key=SECRET, cookie_encryption_key="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="),
             engine=engine,
         )
         is True

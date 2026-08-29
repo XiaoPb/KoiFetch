@@ -261,8 +261,8 @@ class PlatformCookie(Base):
     One row per f2 platform (douyin/weibo/tiktok today). The cookie is the raw
     browser cookie string the admin pastes in Settings; it is never echoed
     back to clients (the cookies API returns only configured/updated_at) and
-    never logged. Plaintext at rest is a documented v1 decision (single admin,
-    admin-only API); encrypt-at-rest is a v1.1 hardening.
+    never logged. New writes are encrypted at rest; legacy plaintext rows are
+    readable during the migration window.
     """
 
     __tablename__ = "platform_cookies"

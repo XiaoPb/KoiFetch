@@ -15,7 +15,10 @@ environment.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import os
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -30,8 +33,9 @@ __all__ = ["Settings", "get_settings"]
 class Settings(BaseModel):
     """Typed application settings backed by environment variables.
 
-    ``ADMIN_PASSWORD`` and ``SECRET_KEY`` are required: constructing a
-    ``Settings`` without them (or with them empty) raises
+    ``ADMIN_PASSWORD``, ``SECRET_KEY``, and ``COOKIE_ENCRYPTION_KEY`` are
+    required: constructing a ``Settings`` without them (or with them empty)
+    raises
     :class:`pydantic.ValidationError` so a misconfigured service fails fast.
     """
 
@@ -40,6 +44,7 @@ class Settings(BaseModel):
     # --- Required secrets (never log these; safe local values only in .env.example) ---
     admin_password: str = Field(min_length=1)
     secret_key: str = Field(min_length=1)
+    cookie_encryption_key: str
 
     # --- Storage roots (pond = permanent/NAS, bubble = temporary) ---
     video_storage_path: Path = Path("data/pond/video")
@@ -150,6 +155,23 @@ class Settings(BaseModel):
     def _reject_empty_frontend_dist_path(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
             raise ValueError("frontend dist path must not be empty")
+        return value
+
+    @field_validator("cookie_encryption_key")
+    @classmethod
+    def _validate_cookie_encryption_key(cls, value: str) -> str:
+        if not isinstance(value, str) or not re.fullmatch(
+            r"[A-Za-z0-9_-]+={0,2}", value
+        ):
+            raise ValueError("cookie_encryption_key must be URL-safe base64")
+        try:
+            decoded = base64.b64decode(
+                value.encode("ascii"), altchars=b"-_", validate=True
+            )
+        except (UnicodeEncodeError, ValueError, binascii.Error) as exc:
+            raise ValueError("cookie_encryption_key must be URL-safe base64") from exc
+        if len(decoded) != 32:
+            raise ValueError("cookie_encryption_key must decode to exactly 32 bytes")
         return value
 
     @field_validator("cors_origins", mode="before")

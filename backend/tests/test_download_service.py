@@ -64,7 +64,7 @@ BUBBLE_FILENAME = "2026-01-01_shili-shipin_av123.mp4"
 
 
 def make_settings(**overrides) -> Settings:
-    return Settings(admin_password=PASSWORD, secret_key=SECRET, **overrides)
+    return Settings(admin_password=PASSWORD, secret_key=SECRET, cookie_encryption_key="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", **overrides)
 
 
 @pytest.fixture

@@ -16,6 +16,7 @@ python-dotenv>=1.2
 tzdata>=2023.3
 httpx>=0.27
 pytest>=8.4
+cryptography>=42.0
 
 # Test dependency: backend/tests/test_compose.py parses docker-compose.yml with
 # PyYAML (Docker itself is absent in CI, so the compose contract is validated

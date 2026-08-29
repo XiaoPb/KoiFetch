@@ -49,7 +49,7 @@ VIDEO_URL = "https://www.bilibili.com/video/av123"
 
 
 def make_settings(**overrides) -> Settings:
-    return Settings(admin_password=PASSWORD, secret_key=SECRET, **overrides)
+    return Settings(admin_password=PASSWORD, secret_key=SECRET, cookie_encryption_key="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", **overrides)
 
 
 @pytest.fixture

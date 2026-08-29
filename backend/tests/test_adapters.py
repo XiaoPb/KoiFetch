@@ -69,6 +69,7 @@ def settings(tmp_path):
     return Settings(
         admin_password="pw",
         secret_key=TEST_SECRET,
+        cookie_encryption_key="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
         video_storage_path=tmp_path / "pond/video",
         image_storage_path=tmp_path / "pond/image",
         music_storage_path=tmp_path / "pond/music",

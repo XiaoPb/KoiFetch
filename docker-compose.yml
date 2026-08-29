@@ -37,6 +37,7 @@ services:
       # The image copies the built frontend to /app/static (see Dockerfile);
       # override the native default (frontend/dist) so the backend serves it.
       FRONTEND_DIST_PATH: /app/static
+      COOKIE_ENCRYPTION_KEY: ${COOKIE_ENCRYPTION_KEY:?COOKIE_ENCRYPTION_KEY must be set}
     volumes:
       - ./data/db:/app/data/db
       - ./data/bubble:/app/data/bubble
@@ -72,6 +73,7 @@ services:
     env_file: .env
     environment:
       TZ: ${TZ:-Asia/Shanghai}
+      COOKIE_ENCRYPTION_KEY: ${COOKIE_ENCRYPTION_KEY:?COOKIE_ENCRYPTION_KEY must be set}
     volumes:
       - ./data/db:/app/data/db
       - ./data/bubble:/app/data/bubble

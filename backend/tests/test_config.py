@@ -19,6 +19,7 @@ ENV_NAMES = tuple(name.upper() for name in Settings.model_fields)
 DEFAULTS = {
     "admin_password": "pw",
     "secret_key": "sk",
+    "cookie_encryption_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
 }
 
 
@@ -27,6 +28,12 @@ def clean_env(monkeypatch):
     """Remove all settings env vars so tests are hermetic."""
     for name in ENV_NAMES:
         monkeypatch.delenv(name, raising=False)
+    # Keep existing tests focused on the setting under test; the required
+    # cookie key is supplied explicitly by tests that exercise its absence.
+    monkeypatch.setenv(
+        "COOKIE_ENCRYPTION_KEY",
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+    )
 
 
 def build(**overrides) -> Settings:

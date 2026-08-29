@@ -74,7 +74,7 @@ from app.api.parse import router as parse_router
 from app.api.preview import router as preview_router
 from app.api.responses import error, ok, register_exception_handlers
 from app.application.auth_service import AuthService
-from app.application.cookie_service import PlatformCookieService
+from app.application.cookie_service import CookieCipher, PlatformCookieService
 from app.application.download_events import event_hub
 from app.application.download_service import DownloadService
 from app.application.music_service import MusicService
@@ -269,8 +269,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     """Build the application, optionally with explicit settings.
 
     ``settings`` defaults to the process-wide singleton (:func:`get_settings`),
-    which reads ``ADMIN_PASSWORD``/``SECRET_KEY`` from the environment; tests
-    pass a settings object built from a temp directory instead.
+    which reads ``ADMIN_PASSWORD``/``SECRET_KEY``/``COOKIE_ENCRYPTION_KEY``
+    from the environment; tests pass a settings object built from a temp
+    directory instead.
     """
     settings = settings or get_settings()
 
@@ -298,6 +299,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.cookie_service = PlatformCookieService(
         engine=get_engine(settings.database_url),
+        cipher=CookieCipher(settings.cookie_encryption_key),
     )
     app.state.parse_service = ParseService(
         parser=get_parser(settings, cookie_provider=app.state.cookie_service),

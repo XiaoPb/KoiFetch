@@ -126,6 +126,12 @@ class TestBackendService:
         environment = compose["services"]["backend"]["environment"]
         assert environment["TZ"] == "${TZ:-Asia/Shanghai}"
 
+    def test_cookie_encryption_key_is_injected_without_literal_secret(self, compose):
+        for service in (compose["services"]["backend"], compose["services"]["worker"]):
+            value = service["environment"]["COOKIE_ENCRYPTION_KEY"]
+            assert value.startswith("${COOKIE_ENCRYPTION_KEY:")
+            assert "AAAAAAAA" not in value
+
 
 class TestWorkerService:
     def test_worker_command_is_entrypoint_module(self, compose):

@@ -37,7 +37,7 @@ MUSIC_TASK_ID = "33333333-3333-3333-3333-333333333333"
 
 
 def make_settings(**overrides) -> Settings:
-    return Settings(admin_password=PASSWORD, secret_key=SECRET, **overrides)
+    return Settings(admin_password=PASSWORD, secret_key=SECRET, cookie_encryption_key="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", **overrides)
 
 
 def _seed_task(engine, *, task_id, url, media_type, format, title="t", duration=323,
