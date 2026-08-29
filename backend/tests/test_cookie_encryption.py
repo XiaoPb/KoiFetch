@@ -2,9 +2,11 @@
 
 import base64
 import io
+import logging
 import os
 import subprocess
 import sys
+import threading
 from contextlib import redirect_stdout
 
 import pytest
@@ -155,12 +157,13 @@ def test_migration_rolls_back_when_encryption_fails(cookie_engine):
         }
 
 
-def test_migration_does_not_overwrite_a_concurrent_cookie_update(cookie_engine):
+def test_migration_lock_allows_newer_concurrent_update_after_commit(cookie_engine):
     with session_scope(cookie_engine) as session:
         session.add(PlatformCookie(platform="douyin", cookie="secret=old"))
 
-    # Simulate a concurrent writer changing the value after migration read but
-    # before its conditional update.  The migration must detect the mismatch.
+    writer_ready = threading.Event()
+    writer_started = threading.Event()
+
     class CoordinatedCipher:
         def __init__(self):
             self.did_update = False
@@ -168,21 +171,40 @@ def test_migration_does_not_overwrite_a_concurrent_cookie_update(cookie_engine):
         def encrypt(self, value):
             if not self.did_update:
                 self.did_update = True
-                with session_scope(cookie_engine) as concurrent:
-                    concurrent.execute(
-                        update(PlatformCookie)
-                        .where(PlatformCookie.platform == "douyin")
-                        .values(cookie="secret=newer")
-                    )
+                writer_ready.set()
+                assert writer_started.wait(timeout=5)
             return CookieCipher(KEY).encrypt(value)
 
         def decrypt(self, value):
             return CookieCipher(KEY).decrypt(value)
 
-    with pytest.raises(CookieStorageError):
-        migrate_platform_cookies(cookie_engine, CoordinatedCipher())
+    def writer():
+        writer_ready.wait(timeout=5)
+        writer_started.set()
+        with session_scope(cookie_engine) as concurrent:
+            concurrent.execute(
+                update(PlatformCookie)
+                .where(PlatformCookie.platform == "douyin")
+                .values(cookie="secret=newer")
+            )
+
+    thread = threading.Thread(target=writer)
+    thread.start()
+    assert migrate_platform_cookies(cookie_engine, CoordinatedCipher()) == 1
+    thread.join(timeout=10)
+    assert not thread.is_alive()
     with session_scope(cookie_engine) as session:
         assert session.get(PlatformCookie, "douyin").cookie == "secret=newer"
+
+
+def test_migration_sql_logs_never_include_legacy_cookie(cookie_engine, caplog):
+    legacy = "DISTINCTIVE_LEGACY_COOKIE_SHOULD_NOT_BE_LOGGED=1"
+    with session_scope(cookie_engine) as session:
+        session.add(PlatformCookie(platform="douyin", cookie=legacy))
+    caplog.set_level(logging.INFO, logger="sqlalchemy.engine.Engine")
+
+    assert migrate_platform_cookies(cookie_engine, CookieCipher(KEY)) == 1
+    assert legacy not in caplog.text
 
 
 def test_migration_cli_loads_dotenv_and_reports_count_only(tmp_path):
@@ -216,6 +238,18 @@ def test_settings_requires_cookie_encryption_key():
         Settings(admin_password="pw", secret_key="sk")
     settings = Settings(admin_password="pw", secret_key="sk", cookie_encryption_key=KEY)
     assert settings.cookie_encryption_key == KEY
+
+
+def test_settings_redacts_malformed_cookie_key_from_validation_errors():
+    distinctive = "REDACT_ME_COOKIE_KEY_123"
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(
+            admin_password="pw",
+            secret_key="sk",
+            cookie_encryption_key=distinctive,
+        )
+    assert distinctive not in str(exc_info.value)
+    assert distinctive not in repr(exc_info.value)
 
 
 def test_app_wires_cookie_cipher_from_settings(tmp_path):

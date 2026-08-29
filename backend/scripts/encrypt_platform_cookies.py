@@ -11,10 +11,10 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from dotenv import load_dotenv
-from sqlalchemy import update
+from sqlalchemy.orm import Session
 
-from app.application.cookie_service import CookieCipher, CookieStorageError
-from app.infrastructure.database import Engine, get_engine, session_scope
+from app.application.cookie_service import CookieCipher
+from app.infrastructure.database import Engine, get_engine
 from app.infrastructure.models import PlatformCookie
 
 
@@ -32,26 +32,29 @@ def migrate_platform_cookies(
     if isinstance(cipher, str):
         cipher = CookieCipher(cipher)
     migrated = 0
-    with session_scope(engine) as session:
+    connection = engine.connect()
+    session = Session(bind=connection, autoflush=False, expire_on_commit=False)
+    try:
+        if connection.dialect.name == "sqlite":
+            connection.exec_driver_sql("BEGIN IMMEDIATE")
+        else:
+            connection.begin()
         rows = session.query(PlatformCookie).order_by(PlatformCookie.platform).all()
         for row in rows:
             if row.cookie.startswith("enc:"):
                 # Validate encrypted rows so unknown versions are fail-closed.
                 cipher.decrypt(row.cookie)
                 continue
-            original = row.cookie
-            encrypted = cipher.encrypt(original)
-            result = session.execute(
-                update(PlatformCookie)
-                .where(
-                    PlatformCookie.platform == row.platform,
-                    PlatformCookie.cookie == original,
-                )
-                .values(cookie=encrypted)
-            )
-            if result.rowcount != 1:
-                raise CookieStorageError("cookie migration conflict")
+            row.cookie = cipher.encrypt(row.cookie)
             migrated += 1
+        session.flush()
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        session.close()
+        connection.close()
     return migrated
 
 

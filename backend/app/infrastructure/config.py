@@ -39,7 +39,7 @@ class Settings(BaseModel):
     :class:`pydantic.ValidationError` so a misconfigured service fails fast.
     """
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "forbid", "hide_input_in_errors": True}
 
     # --- Required secrets (never log these; safe local values only in .env.example) ---
     admin_password: str = Field(min_length=1)
