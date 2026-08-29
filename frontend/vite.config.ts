@@ -29,6 +29,7 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     setupFiles: ['./src/test/setup.ts'],
+    include: ['src/**/*.{test,spec}.{js,ts,jsx,tsx}'],
     css: false,
     // Keep test execution in worker threads for deterministic parallelism.
     pool: 'threads',

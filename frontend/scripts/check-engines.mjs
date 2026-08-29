@@ -1,53 +1,52 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import semver from 'semver';
 
-const declaredNodeEngine = '^20.19.0 || ^22.13.0 || >=24.0.0';
-const checkedNodeLines = ['20.19.0', '22.13.0', '24.0.0'];
+const requiredTools = ['vite', '@vitejs/plugin-react', 'jsdom', 'vitest'];
 
 function readJson(relativePath) {
   return JSON.parse(readFileSync(fileURLToPath(new URL(relativePath, import.meta.url)), 'utf8'));
 }
 
-function parseVersion(value) {
-  return value.replace(/^v/, '').split('.').map(Number);
-}
-
-function compareVersions(left, right) {
-  for (let index = 0; index < 3; index += 1) {
-    if (left[index] !== right[index]) return left[index] - right[index];
+/**
+ * Verify that every Node version admitted by the project is supported by each
+ * installed frontend build/test tool. semver.subset checks the complete range,
+ * including gaps between OR alternatives.
+ */
+export function validateEngineContract(projectRange, toolEngines) {
+  const normalizedProjectRange = semver.validRange(projectRange);
+  if (!normalizedProjectRange) {
+    throw new Error(`Invalid project Node engine range: ${projectRange}`);
   }
-  return 0;
+
+  for (const [packageName, toolRange] of Object.entries(toolEngines)) {
+    const normalizedToolRange = semver.validRange(toolRange);
+    if (!normalizedToolRange) {
+      throw new Error(`Invalid Node engine range for ${packageName}: ${toolRange}`);
+    }
+    if (!semver.subset(normalizedProjectRange, normalizedToolRange)) {
+      throw new Error(
+        `Project Node engine range ${projectRange} is not a subset of ${packageName} Node engine range ${toolRange}`,
+      );
+    }
+  }
 }
 
-function satisfies(version, range) {
-  return range.split('||').some((alternative) => {
-    const normalized = alternative.trim();
-    if (normalized.startsWith('>=')) {
-      return compareVersions(version, parseVersion(normalized.slice(2))) >= 0;
-    }
-    if (normalized.startsWith('^')) {
-      const minimum = parseVersion(normalized.slice(1));
-      const upperBound = [minimum[0] + 1, 0, 0];
-      return compareVersions(version, minimum) >= 0 && compareVersions(version, upperBound) < 0;
-    }
-    return false;
-  });
+function packageEngine(packageName) {
+  return readJson(`../node_modules/${packageName}/package.json`).engines?.node;
 }
 
-const packageJson = readJson('../package.json');
-assert.equal(packageJson.engines?.node, declaredNodeEngine);
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  const packageJson = readJson('../package.json');
+  const projectRange = packageJson.engines?.node;
+  assert.ok(projectRange, 'frontend/package.json must declare engines.node');
 
-for (const packageName of ['vite', '@vitejs/plugin-react', 'jsdom']) {
-  const packageEngine = readJson(`../node_modules/${packageName}/package.json`).engines?.node;
-  assert.ok(packageEngine, `${packageName} must declare a Node engine`);
-  assert.ok(
-    checkedNodeLines.some(
-      (version) => satisfies(parseVersion(version), declaredNodeEngine) && satisfies(parseVersion(version), packageEngine),
-    ),
-    `${declaredNodeEngine} must intersect ${packageName} (${packageEngine})`,
+  const toolEngines = Object.fromEntries(
+    requiredTools
+      .map((packageName) => [packageName, packageEngine(packageName)])
+      .filter(([, range]) => range),
   );
+  validateEngineContract(projectRange, toolEngines);
+  console.log(`Node engine contract OK: ${projectRange}`);
 }
-
-assert.ok(satisfies(parseVersion(process.version), declaredNodeEngine));
-console.log(`Node engine contract OK: ${declaredNodeEngine}`);

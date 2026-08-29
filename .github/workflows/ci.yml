@@ -60,6 +60,12 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci --prefix frontend
 
+      - name: Check frontend Node engine contract
+        run: npm run check:engines --prefix frontend
+
+      - name: Test frontend Node engine checker
+        run: node --test frontend/scripts/check-engines.test.mjs
+
       - name: Run frontend tests
         run: npm test --prefix frontend
 
