@@ -18,8 +18,10 @@ Where a behavior is a documented v1 limitation it is called out as such.
 ### 1.1 Prerequisites
 
 - Python 3.12+ (the runtime image is `python:3.12-slim`).
-- Node.js 18+ and npm (`frontend/package.json` declares `"node": ">=18"`; the
-  Docker build stage uses `node:22-alpine`).
+- Node.js `^20.19.0 || ^22.13.0 || >=24.0.0` and npm. This matches the
+  frontend's Vite 8/jsdom 29 toolchain: Node 20.19+ and 22.13+ are supported
+  LTS lines, as are newer Node 24+ releases. The Docker build stage uses
+  `node:22-alpine`.
 
 ### 1.2 One-time setup
 
