@@ -248,7 +248,6 @@ class SafeUpstreamClient:
         url: str,
         *,
         headers: dict[str, str] | None = None,
-        stream: bool,
     ) -> tuple[httpx.Response, httpx.Client]:
         current_url = url
         for redirect_count in range(self._max_redirects + 1):
@@ -273,7 +272,7 @@ class SafeUpstreamClient:
         raise UnsafeUpstreamUrl("too many upstream redirects")
 
     def open(self, url: str, *, headers: dict[str, str] | None = None) -> httpx.Response:
-        response, client = self._send(url, headers=headers, stream=False)
+        response, client = self._send(url, headers=headers)
         try:
             body = _read_body_limited(response, self._max_bytes)
         except BaseException:
@@ -296,7 +295,7 @@ class SafeUpstreamClient:
         max_bytes: int | None = None,
     ) -> UpstreamStream:
         request_headers = {"Range": range_header} if range_header is not None else None
-        response, client = self._send(url, headers=request_headers, stream=True)
+        response, client = self._send(url, headers=request_headers)
         limit = self._max_bytes if max_bytes is None else max_bytes
         closed = False
 

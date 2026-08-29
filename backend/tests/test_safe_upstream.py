@@ -10,6 +10,7 @@ from app.adapters.safe_upstream import (
     SafeTarget,
     SafeUpstreamClient,
     UnsafeUpstreamUrl,
+    UpstreamProtocolError,
     UpstreamTooLarge,
 )
 
@@ -177,7 +178,7 @@ def test_read_limited_enforces_declared_and_streamed_sizes() -> None:
 def test_read_limited_rejects_malformed_content_length(content_length: str) -> None:
     client = SafeUpstreamClient(max_bytes=4)
     response = httpx.Response(200, headers={"content-length": content_length}, content=b"")
-    with pytest.raises(ValueError, match="content-length"):
+    with pytest.raises(UpstreamProtocolError, match="content-length"):
         client.read_limited(response)
 
 
