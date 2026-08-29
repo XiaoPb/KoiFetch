@@ -191,6 +191,74 @@ services via `env_file: .env`.
 | --- | --- | --- |
 | `HEALTHCHECK_URL` | `http://127.0.0.1:8000/api/health` | Override for the readiness probe (`app/health.py`) |
 
+### 3.4 Security operations
+
+#### Cookie encryption key and migration
+
+Generate `COOKIE_ENCRYPTION_KEY` with a cryptographically secure source:
+
+```bash
+python -c "import base64,secrets; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())"
+```
+
+The generated value is URL-safe base64 encoding of exactly 32 bytes (a
+32-byte key). Store it
+in the deployment secret manager and keep a protected backup beside the DB
+backup. **never log this key; never commit this key.** Key loss makes cookies unreadable; a
+wrong or unknown key fails closed rather than returning plaintext.
+
+For an existing database, stop writes, back up both the database (including
+SQLite WAL/SHM files) and `COOKIE_ENCRYPTION_KEY`, then run this from the
+repository root with the deployment `.env` present:
+
+```bash
+python backend/scripts/encrypt_platform_cookies.py
+```
+
+The script loads `.env` from the current working directory and prints the
+number of legacy rows encrypted. Verify that count against the backup, then
+run the same command a second time: the second run must report 0. The
+migration is transactional, so a failure rolls back all rows. In Compose use
+`docker compose exec backend python backend/scripts/encrypt_platform_cookies.py`
+with the service's `.env` already loaded. Do not rotate the key without a
+decrypt/re-encrypt procedure using the old key and a separately backed-up new
+key; do not rotate the key without that procedure, because changing it makes
+existing cookies unreadable.
+
+#### Login limiter and proxy identity
+
+The login limiter is process-local. Its capacity and attempts multiply/isolate
+per worker, so each replica has a separate budget; use external shared rate
+limiting at the ingress for a public multi-worker or multi-replica deployment.
+`TRUSTED_PROXY_CIDRS` must include only the immediate controlled proxy CIDRs.
+By default the application ignores X-Forwarded-For and uses the direct peer
+address; never trust a caller-controlled proxy range.
+
+#### SSRF and upstream fetches
+
+The shared music/preview client accepts **http(s) only** and rejects
+credentials plus private, loopback, link-local, reserved, unspecified, and
+multicast addresses. It re-resolves each redirect/connect, uses a pinned IP
+while preserving the original Host/SNI, and enforces bounded redirects and a
+bounded body. Configured proxy behavior is applied by that same client; do
+not bypass it with a second HTTP client. Music playback URLs are resolved from
+server-side persisted engine metadata: there is no caller-supplied music URL.
+
+The correct Node engine range remains
+`^20.19.0 || ^22.13.0 || >=24.0.0`; keep `check:engines` in CI and before
+frontend builds.
+
+CI runs both dependency audits after lock/requirements installation:
+
+```bash
+python -m pip_audit -r backend/requirements.txt
+npm audit --prefix frontend --audit-level=high
+```
+
+These commands fail the gate on findings; do not mask failures or add broad
+vulnerability ignores. Audit tooling is CI-only and is not part of the
+production runtime image.
+
 ---
 
 ## 4. Volume / NAS mounts
