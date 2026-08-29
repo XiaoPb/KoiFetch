@@ -80,6 +80,11 @@ _MESSAGE_RATE_LIMITED = "请求过于频繁，请稍后再试 / Too many login a
 _bearer_scheme = HTTPBearer(auto_error=False)
 
 
+def _canonical_address(value: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
+    address = ipaddress.ip_address(value)
+    return getattr(address, "ipv4_mapped", None) or address
+
+
 class LoginRequest(BaseModel):
     """Login credentials.
 
@@ -134,7 +139,7 @@ def get_client_ip(request: Request) -> str:
     """Resolve a client IP, trusting X-Forwarded-For only from trusted peers."""
     peer = request.client.host if request.client is not None else "unknown"
     try:
-        peer_ip = ipaddress.ip_address(peer)
+        peer_ip = _canonical_address(peer)
     except (ValueError, TypeError):
         return str(peer or "unknown")
     trusted = []
@@ -157,7 +162,7 @@ def get_client_ip(request: Request) -> str:
         return str(peer_ip)
     addresses = []
     try:
-        addresses = [ipaddress.ip_address(part) for part in parts]
+        addresses = [_canonical_address(part) for part in parts]
     except (ValueError, TypeError):
         return str(peer_ip)
     for address in reversed(addresses):
@@ -188,7 +193,9 @@ def login(
             HTTP_429_TOO_MANY_REQUESTS,
             CODE_RATE_LIMITED,
             _MESSAGE_RATE_LIMITED,
-            headers={"Retry-After": str(limiter.retry_after(client_ip, username))},
+            headers={
+                "Retry-After": str(max(1, limiter.retry_after(client_ip, username)))
+            },
         )
     try:
         result = auth.login(body.username, body.password)

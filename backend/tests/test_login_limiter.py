@@ -115,3 +115,27 @@ def test_abandoned_reservation_expires_and_stale_ticket_cannot_reblock():
     limiter.finalize(abandoned, success=False)
     assert limiter.check("127.0.0.1", "admin") is False
     limiter.finalize(fresh, success=True)
+
+
+def test_active_bucket_is_not_evicted_when_capacity_is_reached():
+    limiter = LoginLimiter(max_attempts=1, window_seconds=300, max_keys=1)
+    first = limiter.begin_attempt("127.0.0.1", "a")
+    assert first is not None
+    assert limiter.begin_attempt("127.0.0.2", "b") is None
+    limiter.finalize(first, success=False)
+    assert limiter.begin_attempt("127.0.0.1", "a") is None
+    assert limiter.key_count == 1
+
+
+def test_ipv4_mapped_ip_uses_same_canonical_bucket():
+    limiter = LoginLimiter(max_attempts=1, window_seconds=300)
+    limiter.record_failure("::ffff:198.51.100.1", "admin")
+    assert limiter.check("198.51.100.1", "ADMIN") is False
+
+
+def test_compatibility_record_failure_keeps_only_max_attempts():
+    limiter = LoginLimiter(max_attempts=2, window_seconds=300)
+    for _ in range(10):
+        limiter.record_failure("127.0.0.1", "admin")
+    bucket = limiter._buckets[("127.0.0.1", "admin")]
+    assert len(bucket.failures) == 2

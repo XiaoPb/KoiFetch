@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import math
 import time
 from collections import deque
@@ -15,6 +16,15 @@ __all__ = ["LoginAttempt", "LoginLimiter", "normalize_username"]
 def normalize_username(username: str) -> str:
     """Return the canonical username used for authentication throttling."""
     return username.strip().casefold()
+
+
+def _canonical_ip(client_ip: str) -> str:
+    value = str(client_ip).strip()
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        return value
+    return str(getattr(address, "ipv4_mapped", None) or address)
 
 
 @dataclass
@@ -98,6 +108,8 @@ class LoginLimiter:
             bucket = self._buckets.get(key)
             if bucket is None:
                 bucket = self._create_bucket(key, now)
+                if bucket is None:
+                    return None
             if len(bucket.failures) + len(bucket.reservations) >= self.max_attempts:
                 bucket.last_used = now
                 return None
@@ -146,7 +158,11 @@ class LoginLimiter:
             bucket = self._buckets.get(key)
             if bucket is None:
                 bucket = self._create_bucket(key, now)
+                if bucket is None:
+                    return
             bucket.failures.append(now)
+            while len(bucket.failures) > self.max_attempts:
+                bucket.failures.popleft()
             bucket.last_used = now
 
     def clear(self, client_ip: str, username: str) -> None:
@@ -168,7 +184,7 @@ class LoginLimiter:
             return max(1, math.ceil(self.window_seconds - (now - min(starts))))
 
     def _key(self, client_ip: str, username: str) -> tuple[str, str]:
-        return (str(client_ip).strip(), normalize_username(username))
+        return (_canonical_ip(client_ip), normalize_username(username))
 
     def _prune(self, now: float) -> None:
         cutoff = now - self.window_seconds
@@ -181,12 +197,19 @@ class LoginLimiter:
             if not bucket.failures and not bucket.reservations:
                 del self._buckets[key]
 
-    def _create_bucket(self, key: tuple[str, str], now: float) -> _Bucket:
+    def _create_bucket(self, key: tuple[str, str], now: float) -> _Bucket | None:
         if len(self._buckets) >= self.max_keys:
+            inactive = {
+                item: bucket
+                for item, bucket in self._buckets.items()
+                if not bucket.reservations
+            }
+            if not inactive:
+                return None
             victim = min(
-                self._buckets,
+                inactive,
                 key=lambda item: (
-                    self._buckets[item].last_used,
+                    inactive[item].last_used,
                     item[0],
                     item[1],
                 ),

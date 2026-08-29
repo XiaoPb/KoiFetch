@@ -226,6 +226,26 @@ class TestLogin:
             429,
         ]
 
+    def test_rate_limit_retry_after_is_positive_when_denial_has_no_bucket(
+        self, engine, provider
+    ):
+        app = build_app(engine, provider)
+
+        class DenyingLimiter:
+            def begin_attempt(self, client_ip, username):
+                return None
+
+            def retry_after(self, client_ip, username):
+                return 0
+
+        app.state.login_limiter = DenyingLimiter()
+        response = TestClient(app).post(
+            "/api/auth/login",
+            json={"username": "admin", "password": "wrong-password"},
+        )
+        assert response.status_code == 429
+        assert int(response.headers["retry-after"]) >= 1
+
 
 class TestClientIp:
     def test_trusted_proxy_chain_supports_ipv4_and_ipv6(self):
@@ -247,6 +267,16 @@ class TestClientIp:
 
         request = type("Request", (), {"client": Client(), "headers": {"X-Forwarded-For": "not-an-ip"}, "app": App()})()
         assert get_client_ip(request) == "127.0.0.1"
+
+    def test_ipv4_mapped_peer_and_forwarded_ip_are_canonicalized(self):
+        class Client:
+            host = "::ffff:10.0.0.1"
+
+        class App:
+            state = type("State", (), {"settings": type("S", (), {"trusted_proxy_cidrs": ["10.0.0.0/8"]})()})()
+
+        request = type("Request", (), {"client": Client(), "headers": {"X-Forwarded-For": "::ffff:198.51.100.1"}, "app": App()})()
+        assert get_client_ip(request) == "198.51.100.1"
 
     def test_unknown_user_is_indistinguishable_from_wrong_password(self, client):
         wrong = client.post(
