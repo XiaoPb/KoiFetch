@@ -217,6 +217,7 @@ def test_stream_sends_range_forwards_safe_headers_and_closes() -> None:
         resolver=resolver_for("93.184.216.34"), transport=httpx.MockTransport(handler)
     )
     stream = client.stream("https://cdn.example/file", range_header="bytes=0-2")
+    assert seen[0].headers["user-agent"] == "Mozilla/5.0 (KoiFetch/0.1)"
     assert seen[0].headers["range"] == "bytes=0-2"
     assert stream.status_code == 206
     assert stream.content_type == "video/mp4"
@@ -228,6 +229,39 @@ def test_stream_sends_range_forwards_safe_headers_and_closes() -> None:
         "last-modified": "today",
     }
     assert b"".join(stream.chunks) == b"abc"
+
+
+def test_pinned_transport_uses_proxy_and_retains_validated_identity(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class RecordingHTTPTransport(httpx.BaseTransport):
+        def __init__(self, **kwargs) -> None:
+            captured.update(kwargs)
+
+        def handle_request(self, request: httpx.Request) -> httpx.Response:
+            captured["url"] = str(request.url)
+            captured["host"] = request.headers["host"]
+            captured["sni"] = request.extensions.get("sni_hostname")
+            return httpx.Response(200, content=b"ok", request=request)
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(httpx, "HTTPTransport", RecordingHTTPTransport)
+    client = SafeUpstreamClient(
+        resolver=resolver_for("93.184.216.34"), proxy="http://proxy.example:8080"
+    )
+    target = client.validate("https://cdn.example/media.mp4")
+    http_client = client._client(target)
+    try:
+        http_client._transport.handle_request(httpx.Request("GET", target.url))
+    finally:
+        http_client.close()
+
+    assert captured["proxy"] == "http://proxy.example:8080"
+    assert captured["url"] == "https://93.184.216.34/media.mp4"
+    assert captured["host"] == "cdn.example"
+    assert captured["sni"] == "cdn.example"
 
 
 def test_stream_rejects_oversized_body_without_content_length() -> None:

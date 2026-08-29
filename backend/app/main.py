@@ -303,12 +303,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         parser=get_parser(settings, cookie_provider=app.state.cookie_service),
         engine=get_engine(settings.database_url),
     )
-    upstream = SafeUpstreamClient(timeout=settings.engine_timeout_seconds)
+    upstream = SafeUpstreamClient(
+        timeout=settings.engine_timeout_seconds, proxy=settings.engine_proxy
+    )
     app.state.upstream_client = upstream
     app.state.preview_service = PreviewService(
         engine=get_engine(settings.database_url),
         upstream=upstream,
-        proxy=settings.engine_proxy,
     )
     try:
         storage = get_storage(settings)

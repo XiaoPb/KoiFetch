@@ -81,20 +81,6 @@ _MAX_ALBUM_BYTES = 200 * 1024 * 1024   # 200 MB total
 _EXT_UNSAFE = re.compile(r"[^a-z0-9]+")
 
 
-class _UserAgentTransport(httpx.BaseTransport):
-    """Add the service UA to the backwards-compatible test transport seam."""
-
-    def __init__(self, transport: httpx.BaseTransport) -> None:
-        self._transport = transport
-
-    def handle_request(self, request: httpx.Request) -> httpx.Response:
-        request.headers["User-Agent"] = _UA["User-Agent"]
-        return self._transport.handle_request(request)
-
-    def close(self) -> None:
-        self._transport.close()
-
-
 def _extension_of(url: str) -> str:
     """Lowercase alnum extension of the last path segment (default ``jpg``)."""
     last = url.split("?", 1)[0].rsplit("/", 1)[-1]
@@ -146,7 +132,6 @@ class PreviewService:
         engine: Engine | None = None,
         upstream: SafeUpstreamClient | None = None,
         transport: httpx.BaseTransport | None = None,
-        proxy: str | None = None,
     ) -> None:
         self._engine = engine
         # ``transport`` remains a deterministic test seam for existing tests;
@@ -156,12 +141,10 @@ class PreviewService:
         elif transport is not None:
             self._upstream = SafeUpstreamClient(
                 resolver=lambda host, port: ["93.184.216.34"],
-                transport=_UserAgentTransport(transport),
+                transport=transport,
             )
         else:
             self._upstream = SafeUpstreamClient()
-        self._proxy = proxy
-
     def preview(self, task_id: str) -> dict:
         """Return the preview metadata/stream info for ``task_id``.
 

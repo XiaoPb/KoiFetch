@@ -201,7 +201,7 @@ class MusicService:
                 )
             song_info = row.song_info or {}
             url = song_info.get("download_url")
-        if not isinstance(url, str) or not url:
+        if _playable_url(song_info) is None:
             raise ApiError(
                 HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_INVALID_STREAM_URL
             )
@@ -232,11 +232,18 @@ def _play_proxy_url(song_id: str, song_info: dict) -> str | None:
     ``download_url_status.ok`` is deliberately NOT required here (some musicdl
     sources leave it empty on search); the player surfaces real failures.
     """
+    if _playable_url(song_info) is None:
+        return None
+    return f"/api/music/{quote(song_id, safe='')}/stream"
+
+
+def _playable_url(song_info: dict) -> str | None:
+    """Return a persisted HTTP playable URL, otherwise ``None``."""
     protocol = str(song_info.get("protocol") or "HTTP").upper()
     url = song_info.get("download_url")
     if protocol != "HTTP" or not isinstance(url, str) or not url.startswith(("http://", "https://")):
         return None
-    return f"/api/music/{quote(song_id, safe='')}/stream"
+    return url
 
 
 def _parse_duration_seconds(duration: str | None) -> int | None:

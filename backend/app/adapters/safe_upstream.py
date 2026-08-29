@@ -15,6 +15,8 @@ from urllib.parse import urljoin, urlsplit
 
 import httpx
 
+_DEFAULT_HEADERS = {"User-Agent": "Mozilla/5.0 (KoiFetch/0.1)"}
+
 
 class UnsafeUpstreamUrl(ValueError):
     """Raised when an upstream URL cannot be safely fetched."""
@@ -128,11 +130,13 @@ class PinnedIPTransport(httpx.BaseTransport):
         self,
         target: SafeTarget,
         transport: httpx.BaseTransport | None = None,
+        *,
+        proxy: str | None = None,
     ) -> None:
         if not target.addresses:
             raise UnsafeUpstreamUrl("target has no pinned address")
         self.target = target
-        self._transport = transport or httpx.HTTPTransport()
+        self._transport = transport or httpx.HTTPTransport(proxy=proxy)
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
         last_error: Exception | None = None
@@ -173,12 +177,14 @@ class SafeUpstreamClient:
         timeout: float = 30.0,
         max_redirects: int = 3,
         max_bytes: int = 200 * 1024 * 1024,
+        proxy: str | None = None,
     ) -> None:
         self._resolver = resolver or _system_resolver
         self._transport = transport
         self._timeout = timeout
         self._max_redirects = max_redirects
         self._max_bytes = max_bytes
+        self._proxy = proxy
 
     def validate(self, url: str) -> SafeTarget:
         try:
@@ -240,7 +246,7 @@ class SafeUpstreamClient:
         return SafeTarget(target.url, target.host, target.port, tuple(addresses))
 
     def _client(self, target: SafeTarget) -> httpx.Client:
-        transport = self._transport or PinnedIPTransport(target)
+        transport = self._transport or PinnedIPTransport(target, proxy=self._proxy)
         return httpx.Client(transport=transport, timeout=self._timeout, follow_redirects=False)
 
     def _send(
@@ -294,7 +300,9 @@ class SafeUpstreamClient:
         range_header: str | None = None,
         max_bytes: int | None = None,
     ) -> UpstreamStream:
-        request_headers = {"Range": range_header} if range_header is not None else None
+        request_headers = dict(_DEFAULT_HEADERS)
+        if range_header is not None:
+            request_headers["Range"] = range_header
         response, client = self._send(url, headers=request_headers)
         limit = self._max_bytes if max_bytes is None else max_bytes
         closed = False
