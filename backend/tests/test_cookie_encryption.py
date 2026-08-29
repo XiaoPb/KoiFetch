@@ -2,12 +2,14 @@
 
 import base64
 import io
+import os
+import subprocess
+import sys
 from contextlib import redirect_stdout
 
 import pytest
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from app.application.cookie_service import (
     CookieCipher,
@@ -151,6 +153,62 @@ def test_migration_rolls_back_when_encryption_fails(cookie_engine):
             "secret=one",
             "secret=two",
         }
+
+
+def test_migration_does_not_overwrite_a_concurrent_cookie_update(cookie_engine):
+    with session_scope(cookie_engine) as session:
+        session.add(PlatformCookie(platform="douyin", cookie="secret=old"))
+
+    # Simulate a concurrent writer changing the value after migration read but
+    # before its conditional update.  The migration must detect the mismatch.
+    class CoordinatedCipher:
+        def __init__(self):
+            self.did_update = False
+
+        def encrypt(self, value):
+            if not self.did_update:
+                self.did_update = True
+                with session_scope(cookie_engine) as concurrent:
+                    concurrent.execute(
+                        update(PlatformCookie)
+                        .where(PlatformCookie.platform == "douyin")
+                        .values(cookie="secret=newer")
+                    )
+            return CookieCipher(KEY).encrypt(value)
+
+        def decrypt(self, value):
+            return CookieCipher(KEY).decrypt(value)
+
+    with pytest.raises(CookieStorageError):
+        migrate_platform_cookies(cookie_engine, CoordinatedCipher())
+    with session_scope(cookie_engine) as session:
+        assert session.get(PlatformCookie, "douyin").cookie == "secret=newer"
+
+
+def test_migration_cli_loads_dotenv_and_reports_count_only(tmp_path):
+    database_url = f"sqlite:///{tmp_path / 'cli.db'}"
+    engine = build_engine(database_url)
+    Base.metadata.create_all(engine)
+    with session_scope(engine) as session:
+        session.add(PlatformCookie(platform="douyin", cookie="secret=cli"))
+    (tmp_path / ".env").write_text(
+        f"DATABASE_URL={database_url}\nCOOKIE_ENCRYPTION_KEY={KEY}\n",
+        encoding="utf-8",
+    )
+    script = os.path.join(os.path.dirname(__file__), "..", "scripts", "encrypt_platform_cookies.py")
+    env = os.environ.copy()
+    env.pop("DATABASE_URL", None)
+    env.pop("COOKIE_ENCRYPTION_KEY", None)
+    result = subprocess.run(
+        [sys.executable, os.path.abspath(script)],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.strip() == "1"
+    assert "secret=cli" not in result.stdout + result.stderr
 
 
 def test_settings_requires_cookie_encryption_key():

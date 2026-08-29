@@ -48,7 +48,7 @@ __all__ = ["CookieCipher", "PlatformCookieService", "CookieStorageError"]
 
 
 class CookieStorageError(Exception):
-    """A cookie write failed; the message never carries the cookie value."""
+    """Safe domain error for cookie read, write, decrypt, and storage failures."""
 
 
 _MESSAGE_STORAGE_ERROR = "Cookie 存储失败 / Cookie storage failed"
