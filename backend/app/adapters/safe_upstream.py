@@ -181,7 +181,10 @@ class SafeUpstreamClient:
         return addresses
 
     def _revalidate(self, target: SafeTarget) -> SafeTarget:
-        addresses = self._resolve_and_check(target.host, target.port)
+        try:
+            addresses = self._resolve_and_check(target.host, target.port)
+        except (OSError, socket.gaierror) as exc:
+            raise UnsafeUpstreamUrl("upstream hostname could not be resolved") from exc
         return SafeTarget(target.url, target.host, target.port, tuple(addresses))
 
     def _client(self, target: SafeTarget) -> httpx.Client:

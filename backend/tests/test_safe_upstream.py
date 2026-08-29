@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import socket
+
 import httpx
 import pytest
 
@@ -77,6 +79,28 @@ def test_open_rejects_dns_rebinding_before_connect() -> None:
 
     def resolve(host: str, port: int) -> list[str]:
         return next(resolutions)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal connected
+        connected = True
+        return httpx.Response(200, content=b"ok", request=request)
+
+    client = SafeUpstreamClient(resolver=resolve, transport=httpx.MockTransport(handler))
+    with pytest.raises(UnsafeUpstreamUrl):
+        client.open("https://cdn.example/file")
+    assert connected is False
+
+
+def test_open_rejects_resolution_failure_during_revalidation() -> None:
+    calls = 0
+    connected = False
+
+    def resolve(host: str, port: int) -> list[str]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ["93.184.216.34"]
+        raise socket.gaierror("temporary resolver failure")
 
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal connected
