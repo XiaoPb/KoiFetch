@@ -8,9 +8,9 @@ This router is deliberately thin — the use cases live in
   ``songs[].play_url`` is a same-origin proxy path (never a platform URL);
   ``song_info`` is intentionally absent from the schema. Blank keyword /
   invalid category / page < 1 → generic 400 envelope.
-* ``GET /api/music/stream?src=...`` — same-origin byte proxy for playback
-  (Range passthrough, engine UA; raw bytes like the preview stream endpoint,
-  errors as envelopes). Only http(s) ``src`` values are accepted.
+* ``GET /api/music/{song_id}/stream`` — same-origin byte proxy for playback;
+  the persisted song row supplies the upstream URL (Range passthrough, engine
+  UA; raw bytes like the preview stream endpoint).
 * ``POST /api/music/import {song_id}`` — creates a MUSIC ParseTask from a
   persisted song; returns ``data: {task_id}``. Unknown song → generic 400.
   The frontend then submits the download through the existing pipeline.
@@ -161,16 +161,23 @@ def music_search(
     return ok(data=_serialize_search(result), message=_MESSAGE_SEARCH_OK)
 
 
-@router.get("/stream")
+@router.get("/{song_id}/stream")
 def music_stream(
+    song_id: str,
     request: Request,
     service: Annotated[MusicService, Depends(get_music_service)],
-    src: str = Query(min_length=1),
 ) -> StreamingResponse:
-    """Same-origin byte proxy for music playback (Range passthrough)."""
-    stream = service.stream(src, request.headers.get("range"))
+    """Same-origin byte proxy for persisted music playback."""
+    stream = service.stream_song(song_id, request.headers.get("range"))
+
+    def iterator():
+        try:
+            yield from stream.chunks
+        finally:
+            stream.close()
+
     return StreamingResponse(
-        stream.chunks,
+        iterator(),
         status_code=stream.status_code,
         headers=stream.headers,
         media_type=stream.content_type,

@@ -17,6 +17,7 @@ import zipfile
 import httpx
 import pytest
 
+from app.adapters.safe_upstream import SafeUpstreamClient
 from app.api.responses import CODE_BAD_REQUEST, CODE_TASK_NOT_FOUND, ApiError
 from app.application.preview_service import PreviewService
 from app.domain import MediaType
@@ -147,6 +148,24 @@ IMAGE_TASK_ID = "22222222-2222-2222-2222-222222222222"
 
 
 class TestVideoStreamProxy:
+    def test_private_manifest_url_is_translated_to_api_error(self, engine):
+        service = PreviewService(
+            engine=engine,
+            upstream=SafeUpstreamClient(
+                transport=httpx.MockTransport(
+                    lambda request: httpx.Response(200, content=b"must-not-fetch")
+                )
+            ),
+        )
+        _seed_media_task(
+            engine,
+            task_id=VIDEO_TASK_ID,
+            metadata={"video_url": "http://127.0.0.1/manifest.m3u8"},
+        )
+        with pytest.raises(ApiError) as exc_info:
+            service.stream_video(VIDEO_TASK_ID, range_header=None)
+        assert exc_info.value.code == CODE_BAD_REQUEST
+
     def test_stream_video_proxies_bytes_and_passes_range(self, engine):
         def handler(request: httpx.Request) -> httpx.Response:
             assert request.headers.get("user-agent") == "Mozilla/5.0 (KoiFetch/0.1)"

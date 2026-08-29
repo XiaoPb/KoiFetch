@@ -5,12 +5,17 @@ temp database, so the whole contract is exercised offline.
 """
 
 import pytest
+import httpx
 from fastapi.testclient import TestClient
 
+from app.adapters.safe_upstream import SafeUpstreamClient
+from app.api.music import get_music_service
 from app.api.responses import CODE_OK
+from app.application.music_service import MusicService
 from app.infrastructure import seed
 from app.infrastructure.config import Settings
-from app.infrastructure.database import Base, build_engine
+from app.infrastructure.database import Base, build_engine, session_scope
+from app.infrastructure.models import MusicSongRow
 from app.main import create_app
 
 SECRET = "test-secret-key-0123456789abcdef"
@@ -103,12 +108,68 @@ def test_import_unknown_song_returns_400(client):
     assert response.json()["code"] == 400
 
 
-def test_stream_proxies_an_upstream_url(client):
-    # The upstream is fetched server-side; a malformed src is a 400 envelope,
-    # proving the guard (a real fetch would need network — not exercised here).
-    response = client.get("/api/music/stream", params={"src": "not-a-url"})
+def test_legacy_src_stream_route_is_not_available(client):
+    response = client.get("/api/music/stream", params={"src": "http://127.0.0.1/secret"})
+    assert response.status_code == 404
+    assert response.json()["code"] == 404
+
+
+def test_song_stream_loads_persisted_url_and_forwards_range(env):
+    settings, engine, app = env
+    song_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    with session_scope(engine) as session:
+        session.add(
+            MusicSongRow(
+                song_id=song_id,
+                song_key="a" * 32,
+                source="NeteaseMusicClient",
+                song_name="晴天",
+                singers="周杰伦",
+                song_info={"download_url": "https://cdn.example/song.mp3"},
+            )
+        )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["range"] == "bytes=0-2"
+        return httpx.Response(
+            206,
+            headers={"content-type": "audio/mpeg", "content-range": "bytes 0-2/3"},
+            content=b"abc",
+        )
+
+    upstream = SafeUpstreamClient(
+        resolver=lambda host, port: ["93.184.216.34"],
+        transport=httpx.MockTransport(handler),
+    )
+    app.dependency_overrides[get_music_service] = lambda: MusicService(
+        engine=engine, upstream=upstream
+    )
+    response = TestClient(app).get(
+        f"/api/music/{song_id}/stream", headers={"Range": "bytes=0-2"}
+    )
+    assert response.status_code == 206
+    assert response.content == b"abc"
+
+
+def test_song_stream_unknown_id_returns_api_error_without_fetch(env):
+    settings, engine, app = env
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url)
+        return httpx.Response(200, content=b"should-not-fetch")
+
+    upstream = SafeUpstreamClient(
+        resolver=lambda host, port: ["93.184.216.34"],
+        transport=httpx.MockTransport(handler),
+    )
+    app.dependency_overrides[get_music_service] = lambda: MusicService(
+        engine=engine, upstream=upstream
+    )
+    response = TestClient(app).get("/api/music/not-a-song/stream")
     assert response.status_code == 400
     assert response.json()["code"] == 400
+    assert calls == []
 
 
 def test_hot_keywords_endpoint(client):

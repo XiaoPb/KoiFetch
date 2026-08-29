@@ -50,6 +50,12 @@ import httpx
 from sqlalchemy import Engine
 from starlette.status import HTTP_400_BAD_REQUEST
 
+from app.adapters.safe_upstream import (
+    SafeUpstreamClient,
+    UnsafeUpstreamUrl,
+    UpstreamProtocolError,
+    UpstreamTooLarge,
+)
 from app.api.responses import CODE_BAD_REQUEST, CODE_TASK_NOT_FOUND, ApiError
 from app.domain import MediaType, format_duration
 from app.infrastructure.database import session_scope
@@ -69,12 +75,24 @@ _MESSAGE_IMAGE_TOO_LARGE = "图片过大，无法下载 / Image too large to dow
 _MESSAGE_ALBUM_TOO_LARGE = "图集过大，无法打包 / Album too large to pack"
 
 _UA = {"User-Agent": "Mozilla/5.0 (KoiFetch/0.1)"}
-_STREAM_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
-_CHUNK_SIZE = 64 * 1024
 _MAX_IMAGE_BYTES = 20 * 1024 * 1024    # 20 MB per image
 _MAX_ALBUM_BYTES = 200 * 1024 * 1024   # 200 MB total
 
 _EXT_UNSAFE = re.compile(r"[^a-z0-9]+")
+
+
+class _UserAgentTransport(httpx.BaseTransport):
+    """Add the service UA to the backwards-compatible test transport seam."""
+
+    def __init__(self, transport: httpx.BaseTransport) -> None:
+        self._transport = transport
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        request.headers["User-Agent"] = _UA["User-Agent"]
+        return self._transport.handle_request(request)
+
+    def close(self) -> None:
+        self._transport.close()
 
 
 def _extension_of(url: str) -> str:
@@ -126,12 +144,22 @@ class PreviewService:
         self,
         *,
         engine: Engine | None = None,
+        upstream: SafeUpstreamClient | None = None,
         transport: httpx.BaseTransport | None = None,
         proxy: str | None = None,
     ) -> None:
         self._engine = engine
-        # Test seam (mirrors EngineDownloaderAdapter): None = real network.
-        self._transport = transport
+        # ``transport`` remains a deterministic test seam for existing tests;
+        # production callers inject the shared SafeUpstreamClient instead.
+        if upstream is not None:
+            self._upstream = upstream
+        elif transport is not None:
+            self._upstream = SafeUpstreamClient(
+                resolver=lambda host, port: ["93.184.216.34"],
+                transport=_UserAgentTransport(transport),
+            )
+        else:
+            self._upstream = SafeUpstreamClient()
         self._proxy = proxy
 
     def preview(self, task_id: str) -> dict:
@@ -157,54 +185,45 @@ class PreviewService:
         the caller owns ``close``.
         """
         url = self._video_url(task_id)
-        kwargs: dict = {"timeout": _STREAM_TIMEOUT, "follow_redirects": True}
-        if self._proxy:
-            kwargs["proxy"] = self._proxy
-        if self._transport is not None:
-            kwargs["transport"] = self._transport
-        request_headers = dict(_UA)
-        if range_header:
-            request_headers["Range"] = range_header
-
-        client = httpx.Client(**kwargs)
         try:
-            response = client.send(
-                client.build_request("GET", url, headers=request_headers),
-                stream=True,
-            )
-            if response.is_error:
+            stream = self._upstream.stream(url, range_header=range_header)
+            if stream.status_code >= 400:
+                stream.close()
                 raise ApiError(
                     HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_UPSTREAM
                 )
-            content_type = response.headers.get(
-                "content-type", "application/octet-stream"
-            )
+            content_type = stream.content_type or "application/octet-stream"
             # Lowercase a copy for HLS detection only; the original casing is
             # kept for the passthrough Content-Type header.
             if (
                 "mpegurl" in content_type.lower()
                 or url.split("?", 1)[0].lower().endswith(".m3u8")
             ):
+                stream.close()
                 raise ApiError(
                     HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_HLS_UNSUPPORTED
                 )
             headers = {"Accept-Ranges": "bytes", "Content-Type": content_type}
-            if response.headers.get("content-length") is not None:
-                headers["Content-Length"] = response.headers["content-length"]
-            if response.headers.get("content-range") is not None:
-                headers["Content-Range"] = response.headers["content-range"]
+            for source_name, output_name in (
+                ("content-length", "Content-Length"),
+                ("content-range", "Content-Range"),
+            ):
+                if source_name in stream.headers:
+                    headers[output_name] = stream.headers[source_name]
             return MediaStream(
-                status_code=response.status_code,
+                status_code=stream.status_code,
                 content_type=content_type,
                 headers=headers,
-                chunks=response.iter_bytes(chunk_size=_CHUNK_SIZE),
-                close=lambda: (response.close(), client.close()),
+                chunks=stream.chunks,
+                close=stream.close,
             )
         except ApiError:
-            client.close()
             raise
-        except httpx.RequestError as exc:
-            client.close()
+        except (UnsafeUpstreamUrl, UpstreamTooLarge, UpstreamProtocolError) as exc:
+            raise ApiError(
+                HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_UPSTREAM
+            ) from exc
+        except Exception as exc:
             raise ApiError(
                 HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_UPSTREAM
             ) from exc
@@ -299,16 +318,10 @@ class PreviewService:
         return urls, task.title
 
     def _fetch_bytes(self, url: str) -> bytes:
-        kwargs: dict = {"timeout": _STREAM_TIMEOUT, "follow_redirects": True}
-        if self._proxy:
-            kwargs["proxy"] = self._proxy
-        if self._transport is not None:
-            kwargs["transport"] = self._transport
         try:
-            with httpx.Client(**kwargs) as client:
-                response = client.get(url, headers=_UA)
-                response.raise_for_status()
-                return response.content
+            response = self._upstream.open(url, headers=_UA)
+            response.raise_for_status()
+            return response.content
         except ApiError:
             raise
         except Exception as exc:
