@@ -3,8 +3,9 @@
 Two things live here (both are HTTP-layer concerns — all real work happens in
 :class:`app.application.auth_service.AuthService`):
 
-* ``POST /api/auth/login`` — validate admin credentials and issue a 24-hour
-  JWT. The endpoint never logs or echoes credentials.
+* ``POST /api/auth/login`` — validate admin credentials and issue a configured
+  access-token JWT (seven days by default). The endpoint never logs or echoes
+  credentials.
 * :func:`require_admin` — a FastAPI dependency that validates the ``Bearer``
   access token (via the OpenAPI-documented ``HTTPBearer`` security scheme) and
   returns its claims. Task 10 (``POST /api/nas/save``) and any other
