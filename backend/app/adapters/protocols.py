@@ -25,8 +25,9 @@ Design decisions (documented once, relied on by Tasks 7-12):
   through the domain ``build_path`` helper, re-verifying containment at
   open/write time (TOCTOU note, Task 5). Traversal attempts raise
   :class:`app.domain.paths.PathOutsideRootError`.
-* **Tokens: two protocols, stateless validate.** JWT access tokens (24h) and
-  one-time file tokens (5 min) are separate concerns with separate callers
+* **Tokens: two protocols, stateless validate.** JWT access tokens (seven days
+  by default, configurable) and one-time file tokens (5 min) are separate
+  concerns with separate callers
   (auth service vs. download-file API), so they are two protocols. ``validate``
   is *pure*: it never marks a token used. Single-use enforcement for one-time
   tokens is the caller's job (Task 9 records the returned ``token_id`` before
@@ -315,7 +316,7 @@ class AccessTokenClaims:
 
 @runtime_checkable
 class AccessTokenProvider(Protocol):
-    """Issue/validate the 24h JWT bearer token used by the auth service."""
+    """Issue/validate the configurable JWT bearer token used by the auth service."""
 
     def issue(self, *, user_id: int, username: str) -> str:
         """Create a signed access token for a user."""

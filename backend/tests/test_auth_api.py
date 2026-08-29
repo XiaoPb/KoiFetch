@@ -122,7 +122,7 @@ class TestLogin:
         claims = provider.validate(data["token"])
         assert claims.user_id == admin_id
         assert claims.username == "admin"
-        assert claims.expires_at - claims.issued_at == timedelta(hours=24)
+        assert claims.expires_at - claims.issued_at == timedelta(days=7)
         # expires_at is ISO-8601 with timezone — parseable by the frontend.
         from datetime import datetime
 

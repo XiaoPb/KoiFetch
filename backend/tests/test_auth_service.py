@@ -4,7 +4,7 @@ Covers: bcrypt verification against the seeded admin (correct/wrong/missing
 user are indistinguishable failures, including timing — the missing-user path
 runs a dummy bcrypt comparison), blank/non-string input rejection, explicit
 rejection of >72-byte passwords (bcrypt truncates instead of raising), token
-issuance with 24h expiry and correct claims, the ``login`` convenience that
+issuance with seven-day expiry and correct claims, the ``login`` convenience that
 bundles authentication + issuance, and the security contract that passwords
 never appear in logs.
 """
@@ -144,7 +144,7 @@ class TestAuthenticate:
 
 
 class TestIssueAccessToken:
-    def test_issue_returns_24h_token_with_user_claims(self, engine, service, provider):
+    def test_issue_returns_seven_day_token_with_user_claims(self, engine, service, provider):
         seed_admin(engine)
         user = service.authenticate("admin", PASSWORD)
         token = service.issue_access_token(user)
@@ -152,7 +152,7 @@ class TestIssueAccessToken:
         claims = provider.validate(token)
         assert claims.user_id == user.id
         assert claims.username == "admin"
-        assert claims.expires_at - claims.issued_at == timedelta(hours=24)
+        assert claims.expires_at - claims.issued_at == timedelta(days=7)
 
 
 class TestLogin:
@@ -164,7 +164,7 @@ class TestLogin:
         claims = provider.validate(result.token)
         assert claims.username == "admin"
         assert result.expires_at == claims.expires_at
-        assert result.expires_at - claims.issued_at == timedelta(hours=24)
+        assert result.expires_at - claims.issued_at == timedelta(days=7)
 
     def test_login_failure_returns_none(self, engine, service):
         seed_admin(engine)
