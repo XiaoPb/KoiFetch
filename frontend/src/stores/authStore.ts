@@ -62,10 +62,11 @@ export function createAuthStore() {
         expiresAt: null,
 
         login: async (username, password) => {
-          const loginRevision = sessionRevision;
+          // Reserve this operation when it is initiated. This makes the
+          // latest login win even if an older login or refresh resolves first.
+          const loginRevision = ++sessionRevision;
           const data: LoginData = await authApi.login({ username, password });
           if (sessionRevision !== loginRevision) return;
-          sessionRevision += 1;
           set({ token: data.token, username: data.username, expiresAt: data.expires_at });
         },
 
@@ -81,11 +82,12 @@ export function createAuthStore() {
           if (!token || isExpired(expiresAt)) return Promise.resolve();
 
           const startedToken = token;
-          const startedRevision = sessionRevision;
+          // Reserve the refresh operation before issuing the request, so a
+          // later login/logout invalidates it regardless of response order.
+          const startedRevision = ++sessionRevision;
           inFlightRefresh = authApi.refresh(startedToken)
             .then((data) => {
               if (sessionRevision !== startedRevision || get().token !== startedToken) return;
-              sessionRevision += 1;
               set({ token: data.token, username: data.username, expiresAt: data.expires_at });
             })
             .finally(() => {

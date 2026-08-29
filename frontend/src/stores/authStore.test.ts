@@ -122,6 +122,75 @@ describe('authStore', () => {
     expect(store.getState().token).toBe('login-token');
   });
 
+  it('lets a login started after refresh win even when refresh returns first', async () => {
+    let resolveRefresh!: (data: LoginData) => void;
+    let resolveLogin!: (data: LoginData) => void;
+    (authApi.refresh as Mock).mockReturnValue(new Promise<LoginData>((resolve) => {
+      resolveRefresh = resolve;
+    }));
+    (authApi.login as Mock).mockReturnValue(new Promise<LoginData>((resolve) => {
+      resolveLogin = resolve;
+    }));
+    const store = createAuthStore();
+    store.setState({ token: 'old', username: 'admin', expiresAt: FUTURE });
+
+    const refresh = store.getState().refreshSession();
+    const login = store.getState().login('admin', 'pw');
+    resolveRefresh({ token: 'stale-refresh', username: 'admin', expires_at: FUTURE });
+    await refresh;
+    resolveLogin({ token: 'login-token', username: 'admin', expires_at: FUTURE });
+    await login;
+
+    expect(store.getState().token).toBe('login-token');
+  });
+
+  it('makes the last initiated concurrent login win regardless of response order', async () => {
+    let resolveFirst!: (data: LoginData) => void;
+    let resolveSecond!: (data: LoginData) => void;
+    (authApi.login as Mock)
+      .mockReturnValueOnce(new Promise<LoginData>((resolve) => { resolveFirst = resolve; }))
+      .mockReturnValueOnce(new Promise<LoginData>((resolve) => { resolveSecond = resolve; }));
+    const store = createAuthStore();
+
+    const firstLogin = store.getState().login('admin', 'first');
+    const secondLogin = store.getState().login('admin', 'second');
+    resolveSecond({ token: 'second-token', username: 'admin', expires_at: FUTURE });
+    await secondLogin;
+    resolveFirst({ token: 'first-token', username: 'admin', expires_at: FUTURE });
+    await firstLogin;
+
+    expect(store.getState().token).toBe('second-token');
+  });
+
+  it('still makes the last initiated login win when the first response arrives first', async () => {
+    let resolveFirst!: (data: LoginData) => void;
+    let resolveSecond!: (data: LoginData) => void;
+    (authApi.login as Mock)
+      .mockReturnValueOnce(new Promise<LoginData>((resolve) => { resolveFirst = resolve; }))
+      .mockReturnValueOnce(new Promise<LoginData>((resolve) => { resolveSecond = resolve; }));
+    const store = createAuthStore();
+
+    const firstLogin = store.getState().login('admin', 'first');
+    const secondLogin = store.getState().login('admin', 'second');
+    resolveFirst({ token: 'first-token', username: 'admin', expires_at: FUTURE });
+    await firstLogin;
+    resolveSecond({ token: 'second-token', username: 'admin', expires_at: FUTURE });
+    await secondLogin;
+
+    expect(store.getState().token).toBe('second-token');
+  });
+
+  it('keeps the existing session when an initiated login fails', async () => {
+    (authApi.login as Mock).mockRejectedValue(new Error('invalid credentials'));
+    const store = createAuthStore();
+    store.setState({ token: 'existing', username: 'admin', expiresAt: FUTURE });
+
+    await expect(store.getState().login('admin', 'wrong')).rejects.toThrow('invalid credentials');
+
+    expect(store.getState().token).toBe('existing');
+    expect(store.getState().username).toBe('admin');
+  });
+
   it('does not let an older refresh restore a logged-out session', async () => {
     let resolveRefresh!: (data: LoginData) => void;
     (authApi.refresh as Mock).mockReturnValue(new Promise<LoginData>((resolve) => {
