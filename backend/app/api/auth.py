@@ -29,7 +29,7 @@ from __future__ import annotations
 import ipaddress
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field, field_validator
 from starlette.status import HTTP_401_UNAUTHORIZED, HTTP_429_TOO_MANY_REQUESTS
@@ -178,11 +178,12 @@ def get_client_ip(request: Request) -> str:
 @router.post("/login", response_model=LoginResponse)
 def login(
     request: Request,
+    response: Response,
     body: LoginRequest,
     auth: Annotated[AuthService, Depends(get_auth_service)],
     limiter: Annotated[LoginLimiter, Depends(get_login_limiter)],
 ) -> dict:
-    """Authenticate the admin and issue a 24-hour access token.
+    """Authenticate the admin and issue a seven-day access token.
 
     Success: ``200`` with ``{token, username, expires_at}``. Failure: ``401``
     with a stable code — the response is identical for a wrong password and a
@@ -212,6 +213,41 @@ def login(
             HTTP_401_UNAUTHORIZED, CODE_INVALID_CREDENTIALS, _MESSAGE_LOGIN_FAILED
         )
     limiter.finalize(ticket, success=True)
+    response.headers["Cache-Control"] = "no-store"
+    return ok(
+        data={
+            "token": result.token,
+            "username": result.username,
+            "expires_at": result.expires_at.isoformat(),
+        },
+        message=_MESSAGE_LOGIN_OK,
+    )
+
+
+@router.post("/refresh", response_model=LoginResponse)
+def refresh_session(
+    response: Response,
+    credentials: Annotated[
+        HTTPAuthorizationCredentials | None, Depends(_bearer_scheme)
+    ],
+    auth: Annotated[AuthService, Depends(get_auth_service)],
+) -> dict:
+    """Rotate a still-valid bearer token and prevent response caching."""
+    if credentials is None:
+        raise ApiError(
+            HTTP_401_UNAUTHORIZED, CODE_UNAUTHORIZED, _MESSAGE_NOT_LOGGED_IN
+        )
+    try:
+        result = auth.refresh(credentials.credentials)
+    except TokenExpiredError as exc:
+        raise ApiError(
+            HTTP_401_UNAUTHORIZED, CODE_TOKEN_EXPIRED, _MESSAGE_TOKEN_EXPIRED
+        ) from exc
+    except TokenError as exc:
+        raise ApiError(
+            HTTP_401_UNAUTHORIZED, CODE_INVALID_TOKEN, _MESSAGE_TOKEN_INVALID
+        ) from exc
+    response.headers["Cache-Control"] = "no-store"
     return ok(
         data={
             "token": result.token,

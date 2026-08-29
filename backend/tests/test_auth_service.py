@@ -16,6 +16,7 @@ import pytest
 from sqlalchemy import select
 
 from app.adapters.factory import get_access_token_provider
+from app.adapters.protocols import InvalidTokenError
 from app.application.auth_service import AuthService
 from app.infrastructure import seed
 from app.infrastructure.config import Settings
@@ -170,6 +171,28 @@ class TestLogin:
         seed_admin(engine)
         assert service.login("admin", "wrong") is None
         assert service.login("nobody", PASSWORD) is None
+
+
+class TestRefresh:
+    def test_refresh_rotates_valid_token(self, engine, service, provider):
+        seed_admin(engine)
+        old = provider.issue(user_id=1, username="admin")
+
+        result = service.refresh(old)
+
+        assert result.username == "admin"
+        assert result.token != old
+        old_claims = provider.validate(old)
+        fresh_claims = provider.validate(result.token)
+        assert fresh_claims.token_id != old_claims.token_id
+        assert result.expires_at == fresh_claims.expires_at
+
+    def test_refresh_rejects_token_for_missing_user(self, engine, service, provider):
+        seed_admin(engine)
+        token = provider.issue(user_id=999999, username="admin")
+
+        with pytest.raises(InvalidTokenError):
+            service.refresh(token)
 
 
 class TestNeverLogsSecrets:

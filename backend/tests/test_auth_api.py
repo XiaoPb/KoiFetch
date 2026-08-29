@@ -128,6 +128,14 @@ class TestLogin:
 
         assert datetime.fromisoformat(data["expires_at"]) == claims.expires_at
 
+    def test_success_is_not_cacheable(self, client):
+        response = client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": PASSWORD},
+        )
+        assert response.status_code == 200
+        assert response.headers["cache-control"] == "no-store"
+
     def test_wrong_password_returns_401_with_stable_code(self, client):
         response = client.post(
             "/api/auth/login",
@@ -421,6 +429,67 @@ class TestRequireAdmin:
         assert set(body) == {"code", "message", "data"}
         assert body["message"]
         assert body["data"] is None
+
+
+class TestRefresh:
+    def test_valid_token_is_rotated(self, client, provider):
+        old = client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": PASSWORD},
+        ).json()["data"]["token"]
+
+        response = client.post(
+            "/api/auth/refresh", headers={"Authorization": f"Bearer {old}"}
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["code"] == CODE_OK
+        fresh = body["data"]["token"]
+        assert fresh != old
+        assert provider.validate(fresh).token_id != provider.validate(old).token_id
+        assert response.headers["cache-control"] == "no-store"
+
+    @pytest.mark.parametrize(
+        ("authorization", "expected_code"),
+        [
+            (None, CODE_UNAUTHORIZED),
+            ("Bearer", CODE_UNAUTHORIZED),
+            ("Token abc", CODE_UNAUTHORIZED),
+            ("Bearer not-a-jwt", CODE_INVALID_TOKEN),
+        ],
+    )
+    def test_invalid_or_missing_bearer_has_stable_401_envelope(
+        self, client, authorization, expected_code
+    ):
+        headers = {} if authorization is None else {"Authorization": authorization}
+        response = client.post("/api/auth/refresh", headers=headers)
+        assert response.status_code == 401
+        body = response.json()
+        assert set(body) == {"code", "message", "data"}
+        assert body["code"] == expected_code
+        assert body["data"] is None
+
+    def test_expired_token_returns_expired_code(self, client):
+        expired = JwtAccessTokenProvider(SECRET, ttl=timedelta(seconds=-5))
+        token = expired.issue(user_id=1, username="admin")
+
+        response = client.post(
+            "/api/auth/refresh", headers={"Authorization": f"Bearer {token}"}
+        )
+
+        assert response.status_code == 401
+        assert response.json()["code"] == CODE_TOKEN_EXPIRED
+
+    def test_wrong_user_token_returns_invalid_code(self, client, provider):
+        token = provider.issue(user_id=999999, username="admin")
+
+        response = client.post(
+            "/api/auth/refresh", headers={"Authorization": f"Bearer {token}"}
+        )
+
+        assert response.status_code == 401
+        assert response.json()["code"] == CODE_INVALID_TOKEN
 
 
 class TestEnvelopeEverywhere:
