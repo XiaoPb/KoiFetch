@@ -35,6 +35,13 @@ Object.defineProperty(window, 'ResizeObserver', {
   value: ResizeObserverMock,
 });
 
+// jsdom 29 exposes TransitionEvent, which makes rc-motion enable CSS
+// transitions even though Vitest does not load styles.  Without a transition
+// end event, antd overlays stay mounted after close in tests.  Match the
+// style-free test environment used by earlier jsdom versions.
+Reflect.deleteProperty(window, 'TransitionEvent');
+Reflect.deleteProperty(Object.getPrototypeOf(document.createElement('div').style), 'WebkitTransition');
+
 // Some antd internals call scrollTo on mount; jsdom lacks it.
 Object.defineProperty(window, 'scrollTo', {
   writable: true,
