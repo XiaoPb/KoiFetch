@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import ipaddress
 import os
 import re
 from functools import lru_cache
@@ -45,6 +46,12 @@ class Settings(BaseModel):
     admin_password: str = Field(min_length=1)
     secret_key: str = Field(min_length=1)
     cookie_encryption_key: str
+
+    # Login throttling is deliberately process-local (one limiter per app).
+    login_max_attempts: int = Field(default=5, ge=1, le=1000)
+    login_window_seconds: int = Field(default=300, ge=1, le=86_400)
+    login_max_keys: int = Field(default=10_000, ge=1, le=1_000_000)
+    trusted_proxy_cidrs: list[str] = Field(default_factory=list)
 
     # --- Storage roots (pond = permanent/NAS, bubble = temporary) ---
     video_storage_path: Path = Path("data/pond/video")
@@ -156,6 +163,57 @@ class Settings(BaseModel):
         if isinstance(value, str) and not value.strip():
             raise ValueError("frontend dist path must not be empty")
         return value
+
+    @field_validator("secret_key")
+    @classmethod
+    def _validate_secret_key(cls, value: str) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("secret_key must not be blank")
+        normalized = value.strip().casefold()
+        placeholders = {
+            "secret",
+            "secret-key",
+            "default",
+            "default-secret-key",
+            "change-me",
+            "changeme",
+            "please-change-me",
+            "your-secret-key",
+            "replace-me",
+            "sk",
+        }
+        if (
+            normalized in placeholders
+            or "change-me" in normalized
+            or normalized.startswith(("replace_with", "your_", "placeholder"))
+        ):
+            raise ValueError("secret_key must be a strong, deployment-specific value")
+        if len(value.encode("utf-8")) < 32:
+            raise ValueError("secret_key must be at least 32 UTF-8 bytes")
+        return value
+
+    @field_validator("trusted_proxy_cidrs", mode="before")
+    @classmethod
+    def _parse_trusted_proxy_cidrs(cls, value: object) -> object:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return []
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        return value
+
+    @field_validator("trusted_proxy_cidrs")
+    @classmethod
+    def _validate_trusted_proxy_cidrs(cls, value: list[str]) -> list[str]:
+        result = []
+        for cidr in value:
+            if not isinstance(cidr, str):
+                raise ValueError("trusted_proxy_cidrs must contain CIDR strings")
+            try:
+                ipaddress.ip_network(cidr.strip(), strict=False)
+            except ValueError as exc:
+                raise ValueError("trusted_proxy_cidrs contains an invalid network") from exc
+            result.append(cidr.strip())
+        return result
 
     @field_validator("cookie_encryption_key")
     @classmethod

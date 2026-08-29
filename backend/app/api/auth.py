@@ -18,19 +18,21 @@ DI hooks (override in tests via ``app.dependency_overrides``):
 ``create_app`` populates both ``app.state`` attributes; handlers must only be
 mounted on an app built by ``create_app`` (or one that sets the same state).
 
-**Rate limiting (PRD 1005 请求过于频繁):** v1 deliberately ships no limiter.
-The login handler is kept thin so a dependency or middleware can be inserted
-later without changing the endpoint — see the comment inside the handler.
+**Rate limiting (PRD 1005 请求过于频繁):** failed attempts are bounded by a
+process-local :class:`app.application.login_limiter.LoginLimiter` wired by
+``create_app``. The limiter runs before bcrypt and uses a trusted client-IP
+resolution policy.
 """
 
 from __future__ import annotations
 
+import ipaddress
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field, field_validator
-from starlette.status import HTTP_401_UNAUTHORIZED
+from starlette.status import HTTP_401_UNAUTHORIZED, HTTP_429_TOO_MANY_REQUESTS
 
 from app.adapters.protocols import (
     AccessTokenClaims,
@@ -41,18 +43,22 @@ from app.adapters.protocols import (
 from app.api.responses import (
     CODE_INVALID_CREDENTIALS,
     CODE_INVALID_TOKEN,
+    CODE_RATE_LIMITED,
     CODE_TOKEN_EXPIRED,
     CODE_UNAUTHORIZED,
     ApiError,
     ok,
 )
 from app.application.auth_service import AuthService
+from app.application.login_limiter import LoginLimiter, normalize_username
 
 __all__ = [
     "LoginData",
     "LoginRequest",
     "LoginResponse",
     "get_auth_service",
+    "get_client_ip",
+    "get_login_limiter",
     "get_token_provider",
     "require_admin",
     "router",
@@ -65,6 +71,7 @@ _MESSAGE_LOGIN_OK = "登录成功 / Login successful"
 _MESSAGE_NOT_LOGGED_IN = "未登录 / Not logged in"
 _MESSAGE_TOKEN_EXPIRED = "登录已过期，请重新登录 / Token expired"
 _MESSAGE_TOKEN_INVALID = "Token无效 / Invalid token"
+_MESSAGE_RATE_LIMITED = "请求过于频繁，请稍后再试 / Too many login attempts, please try again"
 
 # OpenAPI security scheme: documents the ``Authorization: Bearer <token>``
 # header for protected routes. ``auto_error=False`` makes a missing/malformed
@@ -118,10 +125,53 @@ def get_token_provider(request: Request) -> AccessTokenProvider:
     return request.app.state.token_provider
 
 
+def get_login_limiter(request: Request) -> LoginLimiter:
+    """DI hook for the process-local login limiter."""
+    return request.app.state.login_limiter
+
+
+def get_client_ip(request: Request) -> str:
+    """Resolve a client IP, trusting X-Forwarded-For only from trusted peers."""
+    peer = request.client.host if request.client is not None else "unknown"
+    try:
+        peer_ip = ipaddress.ip_address(peer)
+    except (ValueError, TypeError):
+        return str(peer or "unknown")
+    trusted = []
+    settings = getattr(request.app.state, "settings", None)
+    for cidr in getattr(settings, "trusted_proxy_cidrs", []):
+        try:
+            trusted.append(ipaddress.ip_network(cidr, strict=False))
+        except (ValueError, TypeError):
+            continue
+    if not any(peer_ip in network for network in trusted):
+        return str(peer_ip)
+    headers = getattr(request, "headers", {})
+    forwarded = headers.get("x-forwarded-for", "") or headers.get(
+        "X-Forwarded-For", ""
+    )
+    if not isinstance(forwarded, str) or not forwarded.strip():
+        return str(peer_ip)
+    parts = [part.strip() for part in forwarded.split(",")]
+    if not parts or any(not part for part in parts):
+        return str(peer_ip)
+    addresses = []
+    try:
+        addresses = [ipaddress.ip_address(part) for part in parts]
+    except (ValueError, TypeError):
+        return str(peer_ip)
+    for address in reversed(addresses):
+        if not any(address in network for network in trusted):
+            return str(address)
+    return str(peer_ip)
+
+
 @router.post("/login", response_model=LoginResponse)
 def login(
+    request: Request,
     body: LoginRequest,
     auth: Annotated[AuthService, Depends(get_auth_service)],
+    limiter: Annotated[LoginLimiter, Depends(get_login_limiter)],
 ) -> dict:
     """Authenticate the admin and issue a 24-hour access token.
 
@@ -130,14 +180,22 @@ def login(
     nonexistent user, so the endpoint never leaks which one it was. Credentials
     are never logged.
     """
-    # Rate limiting (PRD 1005 请求过于频繁): v1 omits a limiter; when one
-    # lands, add it as a dependency here or as middleware — nothing else in
-    # this handler changes.
+    client_ip = get_client_ip(request)
+    username = normalize_username(body.username)
+    if not limiter.check(client_ip, username):
+        raise ApiError(
+            HTTP_429_TOO_MANY_REQUESTS,
+            CODE_RATE_LIMITED,
+            _MESSAGE_RATE_LIMITED,
+            headers={"Retry-After": str(limiter.retry_after(client_ip, username))},
+        )
     result = auth.login(body.username, body.password)
     if result is None:
+        limiter.record_failure(client_ip, username)
         raise ApiError(
             HTTP_401_UNAUTHORIZED, CODE_INVALID_CREDENTIALS, _MESSAGE_LOGIN_FAILED
         )
+    limiter.clear(client_ip, username)
     return ok(
         data={
             "token": result.token,

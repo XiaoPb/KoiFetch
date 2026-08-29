@@ -45,6 +45,7 @@ from sqlalchemy import Engine, select
 from app.adapters.protocols import AccessTokenProvider
 from app.infrastructure.database import session_scope
 from app.infrastructure.models import User
+from app.application.login_limiter import normalize_username
 
 __all__ = ["AuthService", "LoginResult"]
 
@@ -102,7 +103,7 @@ class AuthService:
         """
         if not isinstance(username, str) or not isinstance(password, str):
             return None
-        username = username.strip()
+        username = normalize_username(username)
         if not username or not password:
             return None
         with session_scope(self._engine) as session:

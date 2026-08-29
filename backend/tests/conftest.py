@@ -28,7 +28,7 @@ from app.infrastructure.models import DownloadTask, ParseTask
 # test module). Tests that care about a hermetic environment delete these via
 # ``clean_env`` in test_config.py.
 os.environ.setdefault("ADMIN_PASSWORD", "pw")
-os.environ.setdefault("SECRET_KEY", "sk")
+os.environ.setdefault("SECRET_KEY", "test-secret-key-0123456789abcdef")
 os.environ.setdefault("COOKIE_ENCRYPTION_KEY", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
 
 

@@ -21,6 +21,7 @@ code          meaning                 HTTP        notes
 1003          平台不支持              400         parse: unsupported platform —
                                                     live in engine mode (the stub
                                                     supports every URL)
+1005          请求过于频繁            429         login throttling
 1006          Cookie缺失/无效        400         parse: the platform needs a
                                                     cookie that is missing or
                                                     was rejected (f2 engines)
@@ -73,10 +74,9 @@ NAS 5001-5004) raised via :class:`ApiError`; do not reuse the HTTP-mirroring
 convention for them. The parse range is only partially live today: ``1001``
 URL为空, ``1002`` URL格式无效, ``1003`` 平台不支持 (live for real engines; the
 stub supports every URL) and ``1006`` Cookie缺失/无效 (live for the f2 engines:
-douyin/tiktok) have constants above; ``1004`` 解析超时 and ``1005``
-请求过于频繁 are reserved for later tasks (parse timeout, rate limiter) and
-deliberately have no constants yet, so the table and the constants cannot
-drift apart.
+douyin/tiktok) have constants above; ``1004`` 解析超时 remains reserved for a
+future parse-timeout implementation, while ``1005`` is used by the login
+rate limiter.
 
 Handlers registered by :func:`register_exception_handlers`:
 
@@ -113,6 +113,7 @@ __all__ = [
     "CODE_INTERNAL_ERROR",
     "CODE_INVALID_CREDENTIALS",
     "CODE_INVALID_TOKEN",
+    "CODE_RATE_LIMITED",
     "CODE_OK",
     "CODE_PLATFORM_UNSUPPORTED",
     "CODE_COOKIE_ERROR",
@@ -147,6 +148,7 @@ CODE_FORBIDDEN = 2002
 CODE_INVALID_TOKEN = 2003
 CODE_TOKEN_EXPIRED = 2004
 CODE_INVALID_CREDENTIALS = 2005
+CODE_RATE_LIMITED = 1005
 CODE_INTERNAL_ERROR = 9001
 
 _MESSAGE_OK = "ok"
@@ -174,16 +176,21 @@ class ApiError(Exception):
     credentials, tokens, or filesystem paths.
     """
 
-    def __init__(self, http_status: int, code: int, message: str) -> None:
+    def __init__(
+        self, http_status: int, code: int, message: str, *, headers: dict[str, str] | None = None
+    ) -> None:
         super().__init__(message)
         self.http_status = http_status
         self.code = code
         self.message = message
+        self.headers = headers
 
 
 async def api_error_handler(request: Request, exc: ApiError) -> JSONResponse:
     return JSONResponse(
-        status_code=exc.http_status, content=error(exc.code, exc.message)
+        status_code=exc.http_status,
+        content=error(exc.code, exc.message),
+        headers=exc.headers,
     )
 
 

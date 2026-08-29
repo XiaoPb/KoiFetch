@@ -25,7 +25,7 @@ def engine(tmp_path):
 
 
 def make_settings(password: str = "admin-pass") -> Settings:
-    return Settings(admin_password=password, secret_key="sk", cookie_encryption_key="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+    return Settings(admin_password=password, secret_key="test-secret-key-0123456789abcdef", cookie_encryption_key="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
 
 
 class TestSeedAdmin:
@@ -97,7 +97,7 @@ class TestSeedAdmin:
         # Settings requires ADMIN_PASSWORD; a settings object without it cannot
         # even be constructed, so seeding fails before touching the database.
         with pytest.raises(ValidationError):
-            seed.seed_admin(settings=Settings(secret_key="sk", cookie_encryption_key="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="), engine=engine)
+            seed.seed_admin(settings=Settings(secret_key="test-secret-key-0123456789abcdef", cookie_encryption_key="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="), engine=engine)
 
     def test_cli_module_never_logs_password(self, engine, monkeypatch, capsys):
         monkeypatch.setattr(seed, "get_engine", lambda: engine)

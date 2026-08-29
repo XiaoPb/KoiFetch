@@ -34,7 +34,7 @@ import app.infrastructure.models  # noqa: F401
 
 
 def make_settings(**overrides) -> Settings:
-    return Settings(admin_password="pw", secret_key="sk", cookie_encryption_key="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", **overrides)
+    return Settings(admin_password="pw", secret_key="test-secret-key-0123456789abcdef", cookie_encryption_key="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", **overrides)
 
 
 @pytest.fixture

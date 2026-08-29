@@ -235,8 +235,8 @@ def test_migration_cli_loads_dotenv_and_reports_count_only(tmp_path):
 
 def test_settings_requires_cookie_encryption_key():
     with pytest.raises(ValidationError):
-        Settings(admin_password="pw", secret_key="sk")
-    settings = Settings(admin_password="pw", secret_key="sk", cookie_encryption_key=KEY)
+        Settings(admin_password="pw", secret_key="test-secret-key-0123456789abcdef")
+    settings = Settings(admin_password="pw", secret_key="test-secret-key-0123456789abcdef", cookie_encryption_key=KEY)
     assert settings.cookie_encryption_key == KEY
 
 
@@ -245,7 +245,7 @@ def test_settings_redacts_malformed_cookie_key_from_validation_errors():
     with pytest.raises(ValidationError) as exc_info:
         Settings(
             admin_password="pw",
-            secret_key="sk",
+            secret_key="test-secret-key-0123456789abcdef",
             cookie_encryption_key=distinctive,
         )
     assert distinctive not in str(exc_info.value)
@@ -255,7 +255,7 @@ def test_settings_redacts_malformed_cookie_key_from_validation_errors():
 def test_app_wires_cookie_cipher_from_settings(tmp_path):
     settings = Settings(
         admin_password="pw",
-        secret_key="sk",
+        secret_key="test-secret-key-0123456789abcdef",
         cookie_encryption_key=KEY,
         database_url=f"sqlite:///{tmp_path / 'app.db'}",
     )

@@ -29,7 +29,7 @@ def make_settings(tmp_path: Path, **overrides) -> Settings:
     """Settings with storage roots under ``tmp_path`` so tests never touch repo data."""
     values = {field: tmp_path / field for field in STORAGE_ROOT_FIELDS}
     values.update(overrides)
-    return Settings(admin_password="pw", secret_key="sk", cookie_encryption_key="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", **values)
+    return Settings(admin_password="pw", secret_key="test-secret-key-0123456789abcdef", cookie_encryption_key="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", **values)
 
 
 class _FakeResponse:

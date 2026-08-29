@@ -18,7 +18,7 @@ ENV_NAMES = tuple(name.upper() for name in Settings.model_fields)
 
 DEFAULTS = {
     "admin_password": "pw",
-    "secret_key": "sk",
+    "secret_key": "test-secret-key-0123456789abcdef",
     "cookie_encryption_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
 }
 
@@ -78,7 +78,7 @@ class TestDefaults:
 class TestEnvOverrides:
     def test_env_vars_override_defaults(self, clean_env, monkeypatch):
         monkeypatch.setenv("ADMIN_PASSWORD", "env-admin")
-        monkeypatch.setenv("SECRET_KEY", "env-secret")
+        monkeypatch.setenv("SECRET_KEY", "env-secret-key-0123456789abcdef0")
         monkeypatch.setenv("MAX_CONCURRENT", "5")
         monkeypatch.setenv("DOWNLOAD_SPEED_LIMIT", "10")
         monkeypatch.setenv("BUBBLE_EXPIRE_HOURS", "48")
@@ -93,7 +93,7 @@ class TestEnvOverrides:
         settings = Settings.from_env()
 
         assert settings.admin_password == "env-admin"
-        assert settings.secret_key == "env-secret"
+        assert settings.secret_key == "env-secret-key-0123456789abcdef0"
         assert settings.max_concurrent == 5
         assert settings.download_speed_limit == 10
         assert settings.bubble_expire_hours == 48
@@ -107,7 +107,7 @@ class TestEnvOverrides:
 
     def test_unset_optional_vars_fall_back_to_defaults(self, clean_env, monkeypatch):
         monkeypatch.setenv("ADMIN_PASSWORD", "pw")
-        monkeypatch.setenv("SECRET_KEY", "sk")
+        monkeypatch.setenv("SECRET_KEY", "test-secret-key-0123456789abcdef")
         settings = Settings.from_env()
         assert settings.max_concurrent == 3
         assert settings.bubble_expire_hours == 24
@@ -124,20 +124,20 @@ class TestDotenvLoading:
         dotenv_file = tmp_path / ".env"
         dotenv_file.write_text(
             "ADMIN_PASSWORD=dotenv-admin\n"
-            "SECRET_KEY=dotenv-secret\n"
+            "SECRET_KEY=dotenv-secret-key-0123456789abcdef\n"
             "MAX_CONCURRENT=9\n",
             encoding="utf-8",
         )
         settings = Settings.from_env(dotenv_path=dotenv_file)
         assert settings.admin_password == "dotenv-admin"
-        assert settings.secret_key == "dotenv-secret"
+        assert settings.secret_key == "dotenv-secret-key-0123456789abcdef"
         assert settings.max_concurrent == 9
 
     def test_process_env_overrides_dotenv_values(self, clean_env, monkeypatch, tmp_path):
         dotenv_file = tmp_path / ".env"
         dotenv_file.write_text(
             "ADMIN_PASSWORD=dotenv-admin\n"
-            "SECRET_KEY=dotenv-secret\n"
+            "SECRET_KEY=dotenv-secret-key-0123456789abcdef\n"
             "MAX_CONCURRENT=9\n",
             encoding="utf-8",
         )
@@ -146,11 +146,11 @@ class TestDotenvLoading:
         settings = Settings.from_env(dotenv_path=dotenv_file)
         assert settings.admin_password == "real-admin"  # process env wins
         assert settings.max_concurrent == 3
-        assert settings.secret_key == "dotenv-secret"  # dotenv fills the gap
+        assert settings.secret_key == "dotenv-secret-key-0123456789abcdef"  # dotenv fills the gap
 
     def test_missing_dotenv_file_still_uses_defaults(self, clean_env, monkeypatch, tmp_path):
         monkeypatch.setenv("ADMIN_PASSWORD", "pw")
-        monkeypatch.setenv("SECRET_KEY", "sk")
+        monkeypatch.setenv("SECRET_KEY", "test-secret-key-0123456789abcdef")
         settings = Settings.from_env(dotenv_path=tmp_path / ".env")  # does not exist
         assert settings.max_concurrent == 3
         assert settings.bubble_expire_hours == 24
@@ -164,7 +164,7 @@ class TestDotenvLoading:
 class TestCorsParsing:
     def test_comma_separated_env_parsed_into_list(self, clean_env, monkeypatch):
         monkeypatch.setenv("ADMIN_PASSWORD", "pw")
-        monkeypatch.setenv("SECRET_KEY", "sk")
+        monkeypatch.setenv("SECRET_KEY", "test-secret-key-0123456789abcdef")
         monkeypatch.setenv(
             "CORS_ORIGINS",
             "http://localhost:5173, http://localhost:8000 ,https://example.com",
@@ -178,13 +178,13 @@ class TestCorsParsing:
 
     def test_whitespace_only_env_yields_empty_list(self, clean_env, monkeypatch):
         monkeypatch.setenv("ADMIN_PASSWORD", "pw")
-        monkeypatch.setenv("SECRET_KEY", "sk")
+        monkeypatch.setenv("SECRET_KEY", "test-secret-key-0123456789abcdef")
         monkeypatch.setenv("CORS_ORIGINS", "   ")
         assert Settings.from_env().cors_origins == []
 
     def test_single_origin_env(self, clean_env, monkeypatch):
         monkeypatch.setenv("ADMIN_PASSWORD", "pw")
-        monkeypatch.setenv("SECRET_KEY", "sk")
+        monkeypatch.setenv("SECRET_KEY", "test-secret-key-0123456789abcdef")
         monkeypatch.setenv("CORS_ORIGINS", "http://localhost:5173")
         assert Settings.from_env().cors_origins == ["http://localhost:5173"]
 
@@ -193,7 +193,7 @@ class TestCorsParsing:
         # a raw value that happens to look like (broken) JSON must still be
         # treated as a single origin, not rejected.
         monkeypatch.setenv("ADMIN_PASSWORD", "pw")
-        monkeypatch.setenv("SECRET_KEY", "sk")
+        monkeypatch.setenv("SECRET_KEY", "test-secret-key-0123456789abcdef")
         monkeypatch.setenv("CORS_ORIGINS", "[not json")
         assert Settings.from_env().cors_origins == ["[not json"]
 
@@ -246,7 +246,7 @@ class TestValidation:
 
     def test_invalid_env_value_rejected(self, clean_env, monkeypatch):
         monkeypatch.setenv("ADMIN_PASSWORD", "pw")
-        monkeypatch.setenv("SECRET_KEY", "sk")
+        monkeypatch.setenv("SECRET_KEY", "test-secret-key-0123456789abcdef")
         monkeypatch.setenv("MAX_CONCURRENT", "not-a-number")
         with pytest.raises(ValidationError):
             Settings.from_env()
@@ -254,7 +254,7 @@ class TestValidation:
     def test_unknown_field_rejected(self, clean_env):
         # extra="forbid" catches typos in direct construction.
         with pytest.raises(ValidationError):
-            Settings(admin_password="pw", secret_key="sk", admin_pasword="typo")
+            Settings(admin_password="pw", secret_key="test-secret-key-0123456789abcdef", admin_pasword="typo")
 
 
 class TestTimezone:
@@ -270,7 +270,7 @@ class TestTimezone:
 
     def test_invalid_timezone_env_rejected(self, clean_env, monkeypatch):
         monkeypatch.setenv("ADMIN_PASSWORD", "pw")
-        monkeypatch.setenv("SECRET_KEY", "sk")
+        monkeypatch.setenv("SECRET_KEY", "test-secret-key-0123456789abcdef")
         monkeypatch.setenv("TZ", "Not/AZone")
         with pytest.raises(ValidationError):
             Settings.from_env()
@@ -283,7 +283,7 @@ class TestRequiredSecrets:
 
     def test_admin_password_required(self, clean_env):
         with pytest.raises(ValidationError):
-            Settings(secret_key="sk")
+            Settings(secret_key="test-secret-key-0123456789abcdef")
 
     def test_secret_key_required(self, clean_env):
         with pytest.raises(ValidationError):
@@ -291,11 +291,33 @@ class TestRequiredSecrets:
 
     def test_empty_admin_password_rejected(self, clean_env):
         with pytest.raises(ValidationError):
-            Settings(admin_password="", secret_key="sk")
+            Settings(admin_password="", secret_key="test-secret-key-0123456789abcdef")
 
     def test_empty_secret_key_rejected(self, clean_env):
         with pytest.raises(ValidationError):
             Settings(admin_password="pw", secret_key="")
+
+    @pytest.mark.parametrize("secret", ["sk", "change-me", "default-secret-key"])
+    def test_weak_secret_key_rejected_and_not_rendered(self, clean_env, secret):
+        with pytest.raises(ValidationError) as exc_info:
+            Settings(admin_password="pw", secret_key=secret)
+        assert secret not in str(exc_info.value)
+
+    def test_unicode_secret_must_have_32_utf8_bytes(self, clean_env):
+        with pytest.raises(ValidationError):
+            Settings(admin_password="pw", secret_key="密" * 10)
+
+
+class TestTrustedProxySettings:
+    def test_trusted_proxy_cidrs_parse_from_env(self, clean_env, monkeypatch):
+        monkeypatch.setenv("ADMIN_PASSWORD", "pw")
+        monkeypatch.setenv("SECRET_KEY", "test-secret-key-0123456789abcdef")
+        monkeypatch.setenv("TRUSTED_PROXY_CIDRS", "10.0.0.0/8, 2001:db8::/32")
+        assert Settings.from_env().trusted_proxy_cidrs == ["10.0.0.0/8", "2001:db8::/32"]
+
+    def test_invalid_trusted_proxy_cidr_rejected(self, clean_env):
+        with pytest.raises(ValidationError):
+            build(trusted_proxy_cidrs=["not-an-ip-network"])
 
     def test_from_env_requires_secrets(self, clean_env):
         with pytest.raises(ValidationError):
@@ -305,7 +327,7 @@ class TestRequiredSecrets:
 class TestSingleton:
     def test_get_settings_returns_cached_instance(self, clean_env, monkeypatch):
         monkeypatch.setenv("ADMIN_PASSWORD", "pw")
-        monkeypatch.setenv("SECRET_KEY", "sk")
+        monkeypatch.setenv("SECRET_KEY", "test-secret-key-0123456789abcdef")
         get_settings.cache_clear()
         try:
             first = get_settings()

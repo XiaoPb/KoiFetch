@@ -25,6 +25,7 @@ from app.adapters.factory import get_access_token_provider
 from app.adapters.protocols import AccessTokenClaims
 from app.adapters.tokens_jwt import JwtAccessTokenProvider
 from app.api.auth import (
+    get_client_ip,
     get_auth_service,
     get_token_provider,
     require_admin,
@@ -34,6 +35,7 @@ from app.api.responses import (
     CODE_INTERNAL_ERROR,
     CODE_INVALID_CREDENTIALS,
     CODE_INVALID_TOKEN,
+    CODE_RATE_LIMITED,
     CODE_OK,
     CODE_TOKEN_EXPIRED,
     CODE_UNAUTHORIZED,
@@ -135,6 +137,71 @@ class TestLogin:
         assert set(body) == {"code", "message", "data"}
         assert body["code"] == CODE_INVALID_CREDENTIALS
         assert body["data"] is None
+
+    def test_sixth_failed_login_is_rate_limited_with_retry_after(self, client):
+        for _ in range(5):
+            response = client.post(
+                "/api/auth/login",
+                json={"username": "admin", "password": "wrong-password"},
+            )
+            assert response.status_code == 401
+        response = client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": "wrong-password"},
+        )
+        assert response.status_code == 429
+        assert response.json()["code"] == CODE_RATE_LIMITED
+        assert response.headers["retry-after"].isdigit()
+
+    def test_success_clears_failed_attempt_bucket(self, client):
+        for _ in range(4):
+            client.post(
+                "/api/auth/login",
+                json={"username": "admin", "password": "wrong-password"},
+            )
+        assert client.post(
+            "/api/auth/login", json={"username": "admin", "password": PASSWORD}
+        ).status_code == 200
+        for _ in range(5):
+            assert client.post(
+                "/api/auth/login",
+                json={"username": "admin", "password": "wrong-password"},
+            ).status_code == 401
+
+    def test_forwarded_for_is_ignored_without_trusted_proxy(self, client):
+        for _ in range(5):
+            client.post(
+                "/api/auth/login",
+                json={"username": "admin", "password": "wrong-password"},
+                headers={"X-Forwarded-For": "203.0.113.1"},
+            )
+        assert client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": "wrong-password"},
+            headers={"X-Forwarded-For": "203.0.113.1"},
+        ).status_code == 429
+
+
+class TestClientIp:
+    def test_trusted_proxy_chain_supports_ipv4_and_ipv6(self):
+        class Client:
+            host = "10.0.0.1"
+
+        class App:
+            state = type("State", (), {"settings": type("S", (), {"trusted_proxy_cidrs": ["10.0.0.0/8", "2001:db8::/32"]})()})()
+
+        request = type("Request", (), {"client": Client(), "headers": {"X-Forwarded-For": "198.51.100.1, 2001:db8::1, 10.0.0.1"}, "app": App()})()
+        assert get_client_ip(request) == "198.51.100.1"
+
+    def test_malformed_forwarded_header_falls_back_to_peer(self):
+        class Client:
+            host = "127.0.0.1"
+
+        class App:
+            state = type("State", (), {"settings": type("S", (), {"trusted_proxy_cidrs": ["127.0.0.0/8"]})()})()
+
+        request = type("Request", (), {"client": Client(), "headers": {"X-Forwarded-For": "not-an-ip"}, "app": App()})()
+        assert get_client_ip(request) == "127.0.0.1"
 
     def test_unknown_user_is_indistinguishable_from_wrong_password(self, client):
         wrong = client.post(

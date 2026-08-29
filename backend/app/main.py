@@ -74,6 +74,7 @@ from app.api.parse import router as parse_router
 from app.api.preview import router as preview_router
 from app.api.responses import error, ok, register_exception_handlers
 from app.application.auth_service import AuthService
+from app.application.login_limiter import LoginLimiter
 from app.application.cookie_service import CookieCipher, PlatformCookieService
 from app.application.download_events import event_hub
 from app.application.download_service import DownloadService
@@ -337,6 +338,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     # The music /hot endpoint reads the configured hot keywords.
     app.state.settings = settings
+    app.state.login_limiter = LoginLimiter(
+        max_attempts=settings.login_max_attempts,
+        window_seconds=settings.login_window_seconds,
+        max_keys=settings.login_max_keys,
+    )
     # The in-process event hub: the download WebSocket subscribes here and the
     # worker (Task 11) publishes progress through the same singleton.
     app.state.download_event_hub = event_hub
