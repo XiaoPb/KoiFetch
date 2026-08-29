@@ -34,13 +34,10 @@ jobs:
           cache: pip
           cache-dependency-path: backend/requirements.txt
 
-      # Full dependency install (incl. git-installed parse-video-py and
-      # musicdl) exactly as the runtime image does — the tests exercise the
-      # real engine adapters' import surface.
+      # Full dependency install (incl. git-installed parse-video-py and the
+      # verified compatibility wheels) exactly as the runtime image does.
       - name: Install backend dependencies
-        run: |
-          pip install -r backend/requirements.txt
-          bash backend/scripts/install_f2.sh
+        run: python backend/scripts/install_backend_dependencies.py
 
       # Keep the audit tool out of the production image while making the CI
       # gate reproducible.  The version is pinned to the current PyPI release.
@@ -48,7 +45,7 @@ jobs:
         run: python -m pip install pip-audit==2.10.1
 
       - name: Audit Python dependencies
-        run: python -m pip_audit -r backend/requirements.txt
+        run: python -m pip_audit
 
       - name: Run backend test suite
         run: python -m pytest backend/tests -q

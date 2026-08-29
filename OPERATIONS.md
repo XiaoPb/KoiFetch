@@ -28,8 +28,8 @@ Where a behavior is a documented v1 limitation it is called out as such.
 ```bash
 # Repo root
 python -m venv .venv                                   # create the virtualenv (once)
-.venv/Scripts/python.exe -m pip install -r backend/requirements.txt   # backend deps (Windows)
-#   or: source .venv/bin/activate && pip install -r backend/requirements.txt   (POSIX)
+python backend/scripts/install_backend_dependencies.py                 # backend deps (all platforms)
+#   or: source .venv/bin/activate && python backend/scripts/install_backend_dependencies.py (POSIX)
 
 npm install --prefix frontend                          # frontend deps (once)
 #   or, since package-lock.json is committed: npm ci --prefix frontend
@@ -251,13 +251,24 @@ frontend builds.
 CI runs both dependency audits after lock/requirements installation:
 
 ```bash
-python -m pip_audit -r backend/requirements.txt
+python -m pip_audit
 npm audit --prefix frontend --audit-level=high
 ```
 
 These commands fail the gate on findings; do not mask failures or add broad
 vulnerability ignores. Audit tooling is CI-only and is not part of the
-production runtime image.
+production runtime image. The installed-environment audit may print one
+explicit skip for `parse-video-py`: it is a fixed-SHA Git dependency with no
+PyPI project for pip-audit to query. This is documented handling, not a
+vulnerability ignore; every PyPI-resolvable package must still report clean.
+All native, CI, and Docker installs use
+`python backend/scripts/install_backend_dependencies.py`, which verifies the
+upstream musicdl 2.13.6 and f2 0.0.1.7 wheel hashes before rebuilding their
+metadata. The compatibility rewrite is required because upstream musicdl
+declares `cryptography<47`, while the secure runtime floor is
+`cryptography>=50.0.1,<51`; f2's incompatible hard pins are removed in favor
+of this project's explicit dependencies. The installer ends with
+`python -m pip check` and a network-free import smoke test.
 
 ---
 

@@ -45,19 +45,18 @@ WORKDIR /app
 # effective for container-local time; slim images ship without /usr/share/zoneinfo.
 # (The PyPI `tzdata` package in requirements.txt already covers ZoneInfo lookups.)
 # `git` is required by pip for the git-installed parse-video-py dependency
-# (backend/requirements.txt) — without it the pip install step fails.
+# (backend/requirements.txt) — without it the dependency install step fails.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends tzdata git \
     && rm -rf /var/lib/apt/lists/*
 
 # Install dependencies first so dependency changes do not invalidate the app layer.
-COPY backend/requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
-
-# f2 is installed with --no-deps: its metadata pins (pytest==8.3.4,
-# cryptography==44.0.0) conflict with musicdl's cryptography>=46.0.5,<47 —
-# see the f2 block in backend/requirements.txt for the explicit runtime deps.
-RUN pip install --no-cache-dir --no-deps f2==0.0.1.7
+# The standard-library installer builds verified compatibility wheels before
+# resolving dependencies, so the original musicdl/f2 conflict metadata never
+# enters the environment.
+COPY backend/requirements.txt ./backend/requirements.txt
+COPY backend/scripts/build_compatible_wheels.py backend/scripts/install_backend_dependencies.py ./backend/scripts/
+RUN python backend/scripts/install_backend_dependencies.py
 
 # Network-free f2 import sanity check (handler modules fetch token APIs at
 # import time; utils/exceptions cover the cryptography compatibility risk).

@@ -33,12 +33,14 @@ def _index(text: str, needle: str) -> int:
 
 def test_ci_audits_python_and_javascript_dependencies_in_gate_order():
     text = _workflow_run_text()
-    backend_install = _index(text, "pip install -r backend/requirements.txt")
+    backend_install = _index(
+        text, "python backend/scripts/install_backend_dependencies.py"
+    )
     audit_install = re.search(
         r"python -m pip install pip-audit==[0-9]+\.[0-9]+\.[0-9]+", text
     )
     assert audit_install, "pip-audit must be installed at a pinned version"
-    python_audit = _index(text, "python -m pip_audit -r backend/requirements.txt")
+    python_audit = _index(text, "python -m pip_audit")
     npm_ci = _index(text, "npm ci --prefix frontend")
     npm_audit = _index(text, "npm audit --prefix frontend --audit-level=high")
     frontend_tests = _index(text, "npm test --prefix frontend")
@@ -46,6 +48,7 @@ def test_ci_audits_python_and_javascript_dependencies_in_gate_order():
 
     assert backend_install < audit_install.start() < python_audit
     assert npm_ci < npm_audit < frontend_tests < frontend_build
+    assert "python -m pip_audit -r" not in text
 
 
 def test_ci_keeps_engine_self_test_and_backend_gate_without_masking_failures():
@@ -92,8 +95,13 @@ def test_operations_runbook_covers_cookie_migration_and_security_boundaries():
         "shared music/preview client",
         "no caller-supplied music URL",
         "^20.19.0 || ^22.13.0 || >=24.0.0",
-        "python -m pip_audit -r backend/requirements.txt",
+        "python -m pip_audit",
         "npm audit --prefix frontend --audit-level=high",
+        "install_backend_dependencies.py",
+        "cryptography>=50.0.1,<51",
+        "musicdl",
+        "f2",
+        "pip check",
     )
     for phrase in required:
         assert phrase in text, f"operations runbook missing: {phrase}"
@@ -103,7 +111,7 @@ def test_operations_runbook_covers_cookie_migration_and_security_boundaries():
 def test_release_checklist_has_executable_security_rows_without_secrets():
     text = RELEASE_FILE.read_text(encoding="utf-8")
     required = (
-        "python -m pip_audit -r backend/requirements.txt",
+        "python -m pip_audit",
         "npm audit --prefix frontend --audit-level=high",
         "python backend/scripts/encrypt_platform_cookies.py",
         "backup DB and COOKIE_ENCRYPTION_KEY",
