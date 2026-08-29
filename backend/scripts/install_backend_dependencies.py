@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 import tempfile
@@ -36,12 +37,34 @@ def install(requirements: Path, wheel_cache: Path | None = None) -> None:
         wheels = build_compatible_wheels(wheelhouse, wheel_cache)
         _pip("install", "--upgrade", "pip==26.2.1")
         _pip("install", "-r", str(filtered))
-        _pip("install", "--force-reinstall", "--no-deps", *(str(wheel) for wheel in wheels))
+        # Keep the rewritten Requires-Dist metadata active so a clean venv
+        # receives musicdl's complete runtime dependency closure.
+        _pip("install", "--force-reinstall", *(str(wheel) for wheel in wheels))
         # Equivalent to the ``pip check`` command, using this interpreter.
         _pip("check")
+        patch_script = requirements.parent / "scripts" / "patch_musicdl_py310.py"
+        if not patch_script.is_file():
+            patch_script = Path(__file__).with_name("patch_musicdl_py310.py")
+        subprocess.run([sys.executable, str(patch_script)], check=True)
+        app_root = requirements.parent / "app"
+        if not app_root.is_dir():
+            app_root = Path.cwd() / "app"
+        environment = dict(os.environ)
+        environment["PYTHONPATH"] = str(app_root.parent) + (
+            os.pathsep + environment["PYTHONPATH"]
+            if environment.get("PYTHONPATH")
+            else ""
+        )
         subprocess.run(
-            [sys.executable, "-c", "import f2.exceptions, f2.utils.utils; import musicdl"],
+            [
+                sys.executable,
+                "-c",
+                "from musicdl import musicdl; import f2.exceptions, f2.utils.utils; "
+                "from app.adapters.safe_upstream import SafeUpstreamClient; "
+                "print(musicdl.MusicClient.__name__, SafeUpstreamClient.__name__)",
+            ],
             check=True,
+            env=environment,
         )
 
 

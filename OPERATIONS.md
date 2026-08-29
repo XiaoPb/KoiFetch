@@ -127,7 +127,7 @@ reverse proxy (production deployments sit behind their own external proxy).
 | `docker compose logs -f backend` / `docker compose logs -f worker` | Follow one service's logs (both log to stdout) |
 | `docker compose ps` | Show container status |
 | `docker compose down` | Stop the stack. The bind-mounted `./data` tree (SQLite DB, bubble, pond) persists |
-| `docker compose config` | Validate and print the resolved configuration (needs Docker with Compose). When Docker is absent, `python -m pytest backend/tests/test_compose.py -v` statically validates the same YAML contract |
+| `docker compose config` | Validate and print the resolved configuration (needs Docker with Compose). When Docker is unavailable, `python -m pytest backend/tests/test_compose.py -v` statically validates the same YAML contract |
 | `docker compose restart backend` | Restart one service without rebuilding |
 
 ### 2.1 The frontend build is embedded
@@ -422,13 +422,13 @@ carries its one-line rationale:
 | Browser extensions | Outside the web-app scope |
 | PWA (service worker / manifest) | Not part of the v1 web app |
 | JWT refresh tokens | Access tokens are 24-hour and stateless; re-login is the v1 path |
-| Rate limiting (PRD `1005`) | Deliberately absent; the login handler is thin so a limiter can be added without changing the endpoint |
+| Shared rate limiting across replicas | The login limiter is implemented per process; an external shared limiter remains recommended for public multi-replica deployments |
 | `GET /api/downloads` download-list endpoint | The frontend's download list is session-only and cannot be rehydrated after a refresh (recovery item) |
 | Cancel endpoint | The state graph has no cancelling transition; retry = re-submit |
-| Real platform engines | The parser/downloader are deterministic stubs behind the adapter protocols (`app/adapters/protocols.py`) |
+| Additional platform engine coverage | Engine adapters for the currently supported platforms are implemented; expanding coverage remains future work |
 | Streaming previews | The storage adapter loads whole files into memory for previews; no streaming method on the protocol yet |
 | Heartbeat column for worker staleness | `STALE_DOWNLOAD_MINUTES` anchors on `created_at` (no heartbeat); a long download can be expired by design |
-| Full `docker compose config` validation on a Docker machine | `backend/tests/test_compose.py` statically validates the YAML today; Docker is absent in CI |
+| Full `docker compose config` validation on a Docker machine | `backend/tests/test_compose.py` statically validates the YAML when Docker is unavailable; run the live command where Docker is provisioned |
 
 ---
 

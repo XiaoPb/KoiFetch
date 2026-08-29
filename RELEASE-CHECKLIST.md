@@ -9,11 +9,9 @@ the checks in order; any unexpected failure blocks the release.
 - All commands run from the **repository root** unless a CWD is given.
 - Backend commands assume the project venv is activated (`python` on PATH).
 - Two rows — the live `docker compose config` and `docker compose up --build`
-  — **require a Docker-enabled machine**. Docker is not installed in the
-  development/CI environment, so those rows are verified there by a static
-  PyYAML contract (`backend/tests/test_compose.py`, which parses
-  `docker-compose.yml` and asserts the service model) and must be executed on a
-  Docker host for final sign-off.
+  — require Docker. When Docker is unavailable, the static PyYAML contract
+  (`backend/tests/test_compose.py`) provides an offline check; run the live
+  rows on a provisioned Docker host for final sign-off.
 - The frontend rows (`npm test`, `npm run build`) are ordinary commands on a
   normal machine. Inside the DSH sandbox they were executed through a
   temporary, uncommitted shim (in-process WebAssembly esbuild + a vite
@@ -25,8 +23,8 @@ the checks in order; any unexpected failure blocks the release.
 
 | # | Check | Command | Expected result | Result (last run) |
 | --- | --- | --- | --- | --- |
-| 1 | Backend test suite | `python -m pytest backend/tests -q` | `637 passed` | ✅ `637 passed, 1 warning in 55.32s` |
-| 2 | Frontend test suite | `npm test --prefix frontend` | `15 passed` test files / `147 passed` tests | ✅ `Test Files 15 passed (15) / Tests 147 passed (147)` |
+| 1 | Backend test suite | `python -m pytest backend/tests -q` | Exit 0; no test failures | ✅ latest run passed; warning output is informational |
+| 2 | Frontend test suite | `npm test --prefix frontend` | Exit 0; no test failures | ✅ latest run passed |
 | 3 | Frontend typecheck + build | `npm run build --prefix frontend` (runs `tsc --noEmit && vite build`) | `tsc` exits 0; Vite writes `frontend/dist/`; `npm` exits 0 | ✅ `tsc` clean; Vite `✓ 3149 modules transformed ... ✓ built in 9.32s`, 10 files in `frontend/dist/` (only an informational >500 kB chunk-size warning) |
 | 4 | Compose config (static contract) | `python -m pytest backend/tests/test_compose.py -q` | `18 passed` | ✅ `18 passed in 0.03s` |
 | 5 | Compose config (live) | `docker compose config` | Resolved two-service model (`koi-fetch`: backend + worker, `env_file: .env`, `8000:8000`, bind mounts, healthchecks) | ⏳ **requires Docker host** — statically verified by #4; PyYAML parse prints the identical model (services, build context, ports, env_file, healthchecks) |
@@ -45,11 +43,10 @@ the checks in order; any unexpected failure blocks the release.
 
 ## Verification evidence (most recent run)
 
-- **Backend (637):**
-  `637 passed, 1 warning in 55.32s` (warning: upstream StarletteDeprecationWarning
-  about `httpx` in `fastapi/testclient` — informational, no behavioral impact).
-- **Frontend tests (147):**
-  `Test Files 15 passed (15) / Tests 147 passed (147)`, `npm test` exit 0.
+- **Backend:** latest `python -m pytest backend/tests -q` run exited 0; the
+  StarletteDeprecationWarning about `httpx` in `fastapi/testclient` is
+  informational and has no behavioral impact.
+- **Frontend tests:** latest `npm test --prefix frontend` run exited 0.
 - **Compose static (18):**
   `18 passed in 0.03s` — two services, no frontend service, no `nginx.conf`,
   `env_file: .env`, repo-root build context, `FRONTEND_DIST_PATH=/app/static`,

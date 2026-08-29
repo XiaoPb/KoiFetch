@@ -126,3 +126,13 @@ def test_release_checklist_has_executable_security_rows_without_secrets():
     for phrase in required:
         assert phrase in text, f"release checklist missing: {phrase}"
     assert "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" not in text
+
+
+def test_release_docs_use_dynamic_statuses_and_current_runtime_scope():
+    operations = OPERATIONS_FILE.read_text(encoding="utf-8")
+    release = RELEASE_FILE.read_text(encoding="utf-8")
+    assert "Deliberately absent" not in operations
+    assert "deterministic stubs" not in operations
+    for stale in ("637 passed", "147 passed", "Docker is not installed"):
+        assert stale not in release
+    assert "Exit 0; no test failures" in release

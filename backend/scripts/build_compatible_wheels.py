@@ -15,6 +15,7 @@ import csv
 import hashlib
 import io
 import os
+import re
 import shutil
 import tempfile
 import urllib.request
@@ -23,6 +24,24 @@ from dataclasses import dataclass
 from pathlib import Path
 
 MUSICDL_CRYPTOGRAPHY_REQUIREMENT = "cryptography<51,>=50.0.1"
+
+_F2_COMPAT_REQUIREMENTS = {
+    "aiofiles": "aiofiles>=24.1.0",
+    "aiosqlite": "aiosqlite>=0.20.0",
+    "click": "click<9,>=8.1.7",
+    "cryptography": "cryptography<51,>=50.0.1",
+    "httpx": "httpx>=0.27",
+    "importlib-resources": "importlib-resources>=6.4.5",
+    "jsonpath-ng": "jsonpath-ng>=1.6.1",
+    "m3u8": "m3u8<7,>=6.0.0",
+    "protobuf": "protobuf>=6.33.0",
+    "pydantic": "pydantic>=2.9",
+    "pyexecjs": "pyexecjs>=1.5.1",
+    "pyyaml": "PyYAML>=6.0",
+    "qrcode": "qrcode>=8.0",
+    "rich": "rich<15,>=13.9.3",
+    "websockets-proxy": "websockets-proxy>=0.1.2",
+}
 
 
 @dataclass(frozen=True)
@@ -85,7 +104,14 @@ def _rewrite_metadata(package: str, raw: bytes) -> bytes:
     rewritten: list[str] = []
     for line in lines:
         if package == "f2" and line.startswith("Requires-Dist:"):
-            continue
+            requirement = line.partition(":")[2].strip()
+            dependency_name = re.split(r"[<>=!~;\s]", requirement, maxsplit=1)[0].lower()
+            replacement = _F2_COMPAT_REQUIREMENTS.get(dependency_name)
+            if replacement is None:
+                # Dev-only requirements (black, pytest, pytest-asyncio, babel)
+                # are intentionally absent from the runtime compatibility wheel.
+                continue
+            line = f"Requires-Dist: {replacement}\n"
         if package == "musicdl" and line.startswith("Requires-Dist: cryptography"):
             ending = "\r\n" if line.endswith("\r\n") else "\n"
             line = f"Requires-Dist: {MUSICDL_CRYPTOGRAPHY_REQUIREMENT}{ending}"

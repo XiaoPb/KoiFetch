@@ -54,16 +54,14 @@ RUN apt-get update \
 # The standard-library installer builds verified compatibility wheels before
 # resolving dependencies, so the original musicdl/f2 conflict metadata never
 # enters the environment.
+COPY backend/app ./app
 COPY backend/requirements.txt ./backend/requirements.txt
-COPY backend/scripts/build_compatible_wheels.py backend/scripts/install_backend_dependencies.py ./backend/scripts/
+COPY backend/scripts/build_compatible_wheels.py backend/scripts/install_backend_dependencies.py backend/scripts/patch_musicdl_py310.py ./backend/scripts/
 RUN python backend/scripts/install_backend_dependencies.py
 
 # Network-free f2 import sanity check (handler modules fetch token APIs at
 # import time; utils/exceptions cover the cryptography compatibility risk).
 RUN python -c "import f2.exceptions, f2.utils.utils"
-
-# Application code (ports-and-adapters layout under app/).
-COPY backend/app ./app
 
 # Alembic migration configuration and scripts: the backend startup command
 # (`alembic upgrade head`) runs with WORKDIR /app, so alembic.ini must live at

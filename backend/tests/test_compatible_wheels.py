@@ -108,6 +108,16 @@ def test_metadata_diff_is_narrow_and_hash_mismatch_fails_closed(tmp_path, monkey
     assert "Requires-Dist: cryptography<51,>=50.0.1" in rewritten
     assert "Requires-Dist: requests" in rewritten
     assert "cryptography<47" not in rewritten
+    f2_metadata = builder._rewrite_metadata(
+        "f2",
+        b"Metadata-Version: 2.1\nName: f2\n"
+        b"Requires-Dist: aiofiles==24.1.0\n"
+        b"Requires-Dist: pytest==8.3.4\n"
+        b"Requires-Dist: cryptography==44.0.0\n",
+    ).decode()
+    assert "Requires-Dist: aiofiles>=24.1.0" in f2_metadata
+    assert "Requires-Dist: cryptography<51,>=50.0.1" in f2_metadata
+    assert "pytest==8.3.4" not in f2_metadata
 
     class Response(io.BytesIO):
         def __enter__(self):
@@ -130,6 +140,8 @@ def test_install_entrypoints_build_compat_wheels_before_pip_audit_and_checks():
     assert "musicdl" in installer and "f2" in installer
     assert "force-reinstall" in installer
     assert "pip==26.2.1" in installer
+    assert "patch_musicdl_py310.py" in installer
+    assert "--no-deps" not in installer
     assert "pip check" in installer
     assert "import f2.exceptions" in installer and "import musicdl" in installer
     assert "cryptography>=50.0.1,<51" in requirements
