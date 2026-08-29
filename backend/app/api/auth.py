@@ -182,20 +182,25 @@ def login(
     """
     client_ip = get_client_ip(request)
     username = normalize_username(body.username)
-    if not limiter.check(client_ip, username):
+    ticket = limiter.begin_attempt(client_ip, username)
+    if ticket is None:
         raise ApiError(
             HTTP_429_TOO_MANY_REQUESTS,
             CODE_RATE_LIMITED,
             _MESSAGE_RATE_LIMITED,
             headers={"Retry-After": str(limiter.retry_after(client_ip, username))},
         )
-    result = auth.login(body.username, body.password)
+    try:
+        result = auth.login(body.username, body.password)
+    except Exception:
+        limiter.finalize(ticket, success=False, error=True)
+        raise
     if result is None:
-        limiter.record_failure(client_ip, username)
+        limiter.finalize(ticket, success=False)
         raise ApiError(
             HTTP_401_UNAUTHORIZED, CODE_INVALID_CREDENTIALS, _MESSAGE_LOGIN_FAILED
         )
-    limiter.clear(client_ip, username)
+    limiter.finalize(ticket, success=True)
     return ok(
         data={
             "token": result.token,

@@ -15,6 +15,7 @@ not called directly), so no test-only route ships in production code.
 """
 
 from datetime import timedelta
+import threading
 
 import pytest
 from fastapi import Depends
@@ -180,6 +181,50 @@ class TestLogin:
             json={"username": "admin", "password": "wrong-password"},
             headers={"X-Forwarded-For": "203.0.113.1"},
         ).status_code == 429
+
+    def test_concurrent_failures_reserve_only_five_auth_calls(self, engine, provider):
+        app = build_app(engine, provider)
+        barrier = threading.Barrier(5)
+        calls = 0
+        calls_lock = threading.Lock()
+
+        class FailingAuth:
+            def login(self, username, password):
+                nonlocal calls
+                with calls_lock:
+                    calls += 1
+                    number = calls
+                if number <= 5:
+                    barrier.wait(timeout=5)
+                return None
+
+        app.dependency_overrides[get_auth_service] = lambda: FailingAuth()
+        concurrent_client = TestClient(app)
+        responses = []
+
+        def send_request():
+            responses.append(
+                concurrent_client.post(
+                    "/api/auth/login",
+                    json={"username": "admin", "password": "wrong-password"},
+                )
+            )
+
+        threads = [threading.Thread(target=send_request) for _ in range(6)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+        assert all(not thread.is_alive() for thread in threads)
+        assert calls == 5
+        assert sorted(response.status_code for response in responses) == [
+            401,
+            401,
+            401,
+            401,
+            401,
+            429,
+        ]
 
 
 class TestClientIp:

@@ -54,3 +54,48 @@ def test_limiter_evicts_oldest_key_and_is_thread_safe():
         thread.join()
     assert not errors
     assert limiter.key_count <= 2
+
+
+def test_begin_attempt_reserves_only_five_slots_under_concurrency():
+    limiter = LoginLimiter(max_attempts=5, window_seconds=300)
+    barrier = threading.Barrier(6)
+    tickets = []
+    lock = threading.Lock()
+
+    def worker():
+        ticket = limiter.begin_attempt("127.0.0.1", "admin")
+        with lock:
+            tickets.append(ticket)
+        barrier.wait()
+        if ticket is not None:
+            limiter.finalize(ticket, success=False)
+
+    threads = [threading.Thread(target=worker) for _ in range(6)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert sum(ticket is not None for ticket in tickets) == 5
+    assert sum(ticket is None for ticket in tickets) == 1
+
+
+def test_success_invalidates_earlier_failure_ticket():
+    limiter = LoginLimiter(max_attempts=2, window_seconds=300)
+    first = limiter.begin_attempt("127.0.0.1", "admin")
+    later = limiter.begin_attempt("127.0.0.1", "admin")
+    assert first is not None and later is not None
+
+    limiter.finalize(first, success=True)
+    # This completion belongs to the cleared generation and must not re-block.
+    limiter.finalize(later, success=False)
+    fresh = limiter.begin_attempt("127.0.0.1", "admin")
+    assert fresh is not None
+    limiter.finalize(fresh, success=True)
+
+
+def test_exception_finalization_consumes_reserved_slot_conservatively():
+    limiter = LoginLimiter(max_attempts=1, window_seconds=300)
+    ticket = limiter.begin_attempt("127.0.0.1", "admin")
+    assert ticket is not None
+    limiter.finalize(ticket, success=False, error=True)
+    assert limiter.begin_attempt("127.0.0.1", "admin") is None
