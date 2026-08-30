@@ -33,6 +33,7 @@ real `.env`; the example file contains safe local-development values only.
 | --- | --- | --- |
 | `ADMIN_PASSWORD` | *(required)* | Admin login seed — never log or commit the real value |
 | `SECRET_KEY` | *(required)* | JWT signing key |
+| `COOKIE_ENCRYPTION_KEY` | *(required)* | URL-safe base64 encoding of exactly 32 random bytes for cookie encryption at rest |
 | `VIDEO_STORAGE_PATH` / `IMAGE_STORAGE_PATH` / `MUSIC_STORAGE_PATH` | `data/pond/{video,image,music}` | Permanent (Pond/NAS) storage roots |
 | `TEMP_VIDEO_PATH` / `TEMP_IMAGE_PATH` / `TEMP_MUSIC_PATH` | `data/bubble/{video,image,music}` | Temporary (Bubble) staging roots |
 | `MAX_CONCURRENT` | `3` | Concurrent downloads (`>= 1`) |
@@ -138,8 +139,9 @@ limitations, and the exact deferred v1.1+ scope.
 
 Quick reference:
 
-- **Native full stack** — create the venv and install `backend/requirements.txt`,
-  then from `backend/`: `alembic upgrade head` → seed → uvicorn → worker. All
+- **Native full stack** — create the venv and run
+  `backend/scripts/install_backend_dependencies.py`, then from `backend/`:
+  `alembic upgrade head` → seed → uvicorn → worker. All
   relative paths (database URL, storage roots) resolve against the process
   working directory, so the server, worker, and migrations must share one CWD
   (see OPERATIONS.md §1). UI development uses the Vite dev server

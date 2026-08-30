@@ -27,9 +27,12 @@ Where a behavior is a documented v1 limitation it is called out as such.
 
 ```bash
 # Repo root
-python -m venv .venv                                   # create the virtualenv (once)
-python backend/scripts/install_backend_dependencies.py                 # backend deps (all platforms)
-#   or: source .venv/bin/activate && python backend/scripts/install_backend_dependencies.py (POSIX)
+# POSIX
+python3 -m venv .venv                                  # create the virtualenv (once)
+.venv/bin/python backend/scripts/install_backend_dependencies.py --cache .venv/pip-cache
+# Windows PowerShell (explicit venv interpreter)
+py -3.12 -m venv .venv                                  # create the virtualenv (once)
+.\.venv\Scripts\python.exe backend/scripts/install_backend_dependencies.py --cache .venv\pip-cache
 
 npm install --prefix frontend                          # frontend deps (once)
 #   or, since package-lock.json is committed: npm ci --prefix frontend

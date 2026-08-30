@@ -13,6 +13,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 CI_FILE = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 OPERATIONS_FILE = REPO_ROOT / "OPERATIONS.md"
 RELEASE_FILE = REPO_ROOT / "RELEASE-CHECKLIST.md"
+DEPLOYMENT_FILE = REPO_ROOT / "docs" / "deployment.md"
+README_FILE = REPO_ROOT / "README.md"
 
 
 def _workflow_run_text() -> str:
@@ -112,6 +114,26 @@ def test_operations_runbook_covers_cookie_migration_and_security_boundaries():
     for phrase in required:
         assert phrase in text, f"operations runbook missing: {phrase}"
     assert "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" not in text
+
+
+def test_deployment_docs_use_the_unified_installer_and_current_runtime_contract():
+    text = DEPLOYMENT_FILE.read_text(encoding="utf-8")
+    normalized = re.sub(r"\s+", " ", text)
+    assert "backend/scripts/install_backend_dependencies.py" in text
+    assert "pip install -r backend/requirements.txt" not in text
+    assert "patch_musicdl_py310.py" not in text
+    assert "^20.19.0 || ^22.13.0 || >=24.0.0" in normalized
+    assert "COOKIE_ENCRYPTION_KEY" in text
+    assert "backend/scripts/encrypt_platform_cookies.py" in text
+    assert "expect 718+" not in text
+
+
+def test_readme_install_guidance_uses_the_unified_backend_installer():
+    text = README_FILE.read_text(encoding="utf-8")
+    assert "backend/scripts/install_backend_dependencies.py" in text
+    assert not re.search(r"pip\s+install\s+-r\s+[^\n]*requirements\.txt", text)
+    assert "install `backend/requirements.txt`" not in text
+    assert "COOKIE_ENCRYPTION_KEY" in text
 
 
 def test_release_checklist_has_executable_security_rows_without_secrets():

@@ -228,6 +228,11 @@ def test_install_entrypoints_build_compat_wheels_before_pip_audit_and_checks():
     assert "pip_audit" not in installer
 
 
+def test_docker_image_contains_cookie_migration_script():
+    docker = DOCKERFILE.read_text(encoding="utf-8")
+    assert "backend/scripts/encrypt_platform_cookies.py" in docker
+
+
 def test_native_deploy_uses_only_the_unified_dependency_installer():
     deploy = DEPLOY_NATIVE.read_text(encoding="utf-8")
     assert "install_backend_dependencies.py" in deploy
