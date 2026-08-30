@@ -119,4 +119,35 @@ describe('LivePhotoViewer', () => {
     expect(pause).toHaveBeenCalled();
     expect(video.currentTime).toBe(0);
   });
+
+  it('replaces a changed motion source and ignores an old source event', async () => {
+    const user = userEvent.setup();
+    const { rerender } = renderWithProviders(<LivePhotoViewer pairs={[pairs[0]]} title="Moment" testId="live-photo-source" />);
+    await user.click(screen.getByRole('button', { name: '播放实况' }));
+    const oldVideo = document.querySelector('video') as HTMLVideoElement;
+    const pause = vi.spyOn(oldVideo, 'pause').mockImplementation(() => undefined);
+    const replacement = { ...pairs[0], motion_url: '/api/preview/task/resources/live/0/replacement-motion' };
+
+    rerender(<LivePhotoViewer pairs={[replacement]} title="Moment" testId="live-photo-source" />);
+    await user.click(screen.getByRole('button', { name: '播放实况' }));
+    const newVideo = document.querySelector('video') as HTMLVideoElement;
+    fireEvent.ended(oldVideo);
+
+    expect(pause).toHaveBeenCalled();
+    expect(newVideo).not.toBe(oldVideo);
+    expect(newVideo).toHaveAttribute('src', replacement.motion_url);
+    expect(screen.getByRole('button', { name: '暂停实况' })).toBeInTheDocument();
+  });
+
+  it.each(['error', 'abort'])('returns to the still when motion emits %s', async (eventName) => {
+    const user = userEvent.setup();
+    renderWithProviders(<LivePhotoViewer pairs={[pairs[0]]} title="Moment" />);
+    await user.click(screen.getByRole('button', { name: '播放实况' }));
+    const video = document.querySelector('video') as HTMLVideoElement;
+    if (eventName === 'error') fireEvent.error(video);
+    else fireEvent.abort(video);
+
+    expect(document.querySelector('video')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '播放实况' })).toBeInTheDocument();
+  });
 });

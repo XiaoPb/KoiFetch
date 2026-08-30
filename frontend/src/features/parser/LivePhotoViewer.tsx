@@ -98,6 +98,14 @@ export function LivePhotoViewer({ pairs, title, testId }: LivePhotoViewerProps):
     setPlaying(false);
   };
 
+  const handleMediaFailure = (event: React.SyntheticEvent<HTMLVideoElement>) => {
+    if (event.currentTarget !== videoRef.current || activeIndexRef.current !== activeIndex || !playingRef.current) {
+      return;
+    }
+    stopVideo();
+    setPlaying(false);
+  };
+
   return (
     <div className="live-photo-viewer" data-testid={viewerId}>
       {pair ? (
@@ -112,6 +120,7 @@ export function LivePhotoViewer({ pairs, title, testId }: LivePhotoViewerProps):
               <video
                 ref={setVideoRef}
                 src={pair.motion_url}
+                key={`${activeIndex}:${pair.motion_url}`}
                 autoPlay
                 muted
                 playsInline
@@ -119,6 +128,8 @@ export function LivePhotoViewer({ pairs, title, testId }: LivePhotoViewerProps):
                 data-testid={viewerId ? `${viewerId}-motion` : undefined}
                 className="live-photo-motion"
                 onEnded={handleEnded}
+                onError={handleMediaFailure}
+                onAbort={handleMediaFailure}
               />
             )}
           </div>

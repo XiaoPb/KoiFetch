@@ -3,33 +3,14 @@ import { Alert, App, Button, Descriptions, Divider, Image, Modal, Select, Space,
 import { DownloadOutlined } from '@ant-design/icons';
 import ReactPlayer from 'react-player';
 import { useTranslation } from '../../services/i18n';
-import { downloadApi, previewApi } from '../../services/api';
+import { downloadApi, normalizePreviewData, previewApi } from '../../services/api';
 import { getErrorMessage } from '../../services/apiClient';
 import { useDownloadsStore } from '../../stores/downloadsStore';
 import { usePreviewStore } from '../parser/previewStore';
 import type { PreviewData } from '../../types/api';
-import { LivePhotoViewer, type LivePhotoPair } from '../parser/LivePhotoViewer';
+import { LivePhotoViewer } from '../parser/LivePhotoViewer';
 
 type LoadStatus = 'loading' | 'success' | 'error';
-
-function livePhotoPairs(value: unknown): LivePhotoPair[] | null {
-  if (!value || typeof value !== 'object' || (value as { kind?: unknown }).kind !== 'live_photo') return null;
-  const pairs = (value as { live_photos?: unknown }).live_photos;
-  if (!Array.isArray(pairs) || pairs.length === 0) return null;
-  if (
-    !pairs.every(
-      (pair): pair is LivePhotoPair =>
-        Boolean(pair) &&
-        typeof pair === 'object' &&
-        typeof (pair as { image_url?: unknown }).image_url === 'string' &&
-        ((pair as { motion_url?: unknown }).motion_url === null ||
-          typeof (pair as { motion_url?: unknown }).motion_url === 'string'),
-    )
-  ) {
-    return null;
-  }
-  return pairs;
-}
 
 /**
  * v1 single-media preview Modal (PRD §4.4, Task 15).
@@ -123,9 +104,11 @@ export function PreviewModal(): JSX.Element {
     try {
       const preview = await previewApi.getPreview(taskId);
       if (seq !== requestSeq.current) return; // a newer request superseded us
-      setData(preview);
-      setQuality(preview.available_qualities[0] ?? null);
-      setBitrate(preview.available_bitrates[0] ?? null);
+      const normalized = normalizePreviewData(preview, taskId);
+      if (!normalized) throw new Error('Invalid preview response');
+      setData(normalized);
+      setQuality(normalized.available_qualities[0] ?? null);
+      setBitrate(normalized.available_bitrates[0] ?? null);
       setLoadStatus('success');
     } catch (err) {
       if (seq !== requestSeq.current) return;
@@ -177,7 +160,11 @@ export function PreviewModal(): JSX.Element {
   const hasBitrate = Boolean(data && data.available_bitrates.length > 0);
   const livePairs =
     data?.preview_type === 'live_photo'
-      ? livePhotoPairs(data.manifest) ?? livePhotoPairs(activeTask?.manifest)
+      ? data.manifest?.kind === 'live_photo'
+        ? data.manifest.live_photos
+        : activeTask?.manifest?.kind === 'live_photo'
+          ? activeTask.manifest.live_photos
+          : null
       : null;
 
   return (

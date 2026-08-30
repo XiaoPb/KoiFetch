@@ -225,6 +225,92 @@ function normalizePublicManifest(
 }
 
 /**
+ * Normalize preview metadata and bind every public media route to the task
+ * requested by the caller. Preview responses are untrusted wire data just
+ * like parse responses; keeping this at the API boundary prevents renderers
+ * from ever receiving a third-party media URL.
+ */
+export function normalizePreviewData(value: unknown, taskId: string): PreviewData | null {
+  if (!isRecord(value) || !isSafeTaskId(taskId)) return null;
+  if (value.task_id !== taskId) return null;
+
+  const previewType = stringValue(value.preview_type);
+  if (previewType !== 'video' && previewType !== 'image' && previewType !== 'live_photo' && previewType !== 'music') {
+    return null;
+  }
+  const url = stringValue(value.url);
+  const platform = stringValue(value.platform);
+  if (url === null || !isSafeString(url, MAX_URL_LENGTH) || platform === null || !isSafeString(platform, MAX_LABEL_LENGTH)) {
+    return null;
+  }
+  const title = value.title === null || value.title === undefined ? null : stringValue(value.title);
+  if (title !== null && !isSafeString(title, MAX_LABEL_LENGTH)) return null;
+
+  let cover: string | null = null;
+  if (value.cover !== null && value.cover !== undefined) {
+    const candidate = stringValue(value.cover);
+    const isValid =
+      candidate !== null &&
+      ((previewType === 'image' && isPublicResourceUrl(candidate, taskId, 'image')) ||
+        (previewType === 'live_photo' && isPublicResourceUrl(candidate, taskId, 'live', 'image')));
+    if (isValid) cover = candidate;
+  }
+
+  const duration = value.duration === null || value.duration === undefined ? null : stringValue(value.duration);
+  if (duration !== null && !isSafeString(duration, MAX_LABEL_LENGTH)) return null;
+  const format = value.format === null || value.format === undefined ? null : stringValue(value.format);
+  if (format !== null && !isSafeString(format, MAX_FORMAT_LENGTH)) return null;
+  const fileSizeMb = value.file_size_mb;
+  if (
+    fileSizeMb !== null &&
+    fileSizeMb !== undefined &&
+    (typeof fileSizeMb !== 'number' || !Number.isFinite(fileSizeMb) || fileSizeMb < 0)
+  ) {
+    return null;
+  }
+  if (!isSafeStringArray(value.available_qualities, MAX_LABEL_LENGTH)) return null;
+  if (!isSafeStringArray(value.available_bitrates, MAX_LABEL_LENGTH)) return null;
+
+  const streams = Array.isArray(value.streams)
+    ? value.streams.flatMap((stream) => {
+        if (!isRecord(stream)) return [];
+        const quality = stream.quality === null || stream.quality === undefined ? null : stringValue(stream.quality);
+        const bitrate = stream.bitrate === null || stream.bitrate === undefined ? null : stringValue(stream.bitrate);
+        const streamFormat = stream.format === null || stream.format === undefined ? null : stringValue(stream.format);
+        if (
+          (quality !== null && !isSafePublicText(quality)) ||
+          (bitrate !== null && !isSafePublicText(bitrate)) ||
+          (streamFormat !== null && !isSafeString(streamFormat, MAX_FORMAT_LENGTH))
+        ) {
+          return [];
+        }
+        return [{ quality, bitrate, format: streamFormat }];
+      })
+    : [];
+
+  const manifest =
+    value.manifest === null || value.manifest === undefined
+      ? null
+      : normalizePublicManifest(value.manifest, taskId, previewType);
+
+  return {
+    task_id: taskId,
+    preview_type: previewType,
+    url,
+    platform,
+    title,
+    cover,
+    duration,
+    format,
+    file_size_mb: fileSizeMb === undefined ? null : fileSizeMb,
+    available_qualities: [...value.available_qualities],
+    available_bitrates: [...value.available_bitrates],
+    streams,
+    manifest,
+  };
+}
+
+/**
  * Normalize a backend parse result at the API boundary.
  *
  * Public manifests are copied only when they satisfy the wire contract. The
@@ -292,7 +378,9 @@ export const previewApi = {
   /** GET /api/preview/{task_id} → preview metadata + streams. */
   async getPreview(taskId: string): Promise<PreviewData> {
     const { data } = await apiClient.get<PreviewData>(`/preview/${taskId}`);
-    return data;
+    const normalized = normalizePreviewData(data, taskId);
+    if (!normalized) throw new Error('Invalid preview response');
+    return normalized;
   },
 };
 

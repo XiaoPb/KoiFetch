@@ -1,9 +1,9 @@
 import { describe, expect, it, vi, type Mock } from 'vitest';
 import { apiClient } from './apiClient';
-import { normalizeParseResult, parseApi } from './api';
+import { normalizeParseResult, normalizePreviewData, parseApi, previewApi } from './api';
 
 vi.mock('./apiClient', () => ({
-  apiClient: { post: vi.fn() },
+  apiClient: { post: vi.fn(), get: vi.fn() },
   resolveApiUrl: vi.fn((path: string) => path),
 }));
 
@@ -310,5 +310,70 @@ describe('normalizeParseResult', () => {
     const data = await parseApi.parse(['https://example.com/share/video-1']);
     expect(data.results).toHaveLength(1);
     expect(data.results[0]?.task_id).toBe('video-1');
+  });
+});
+
+describe('normalizePreviewData', () => {
+  const valid = {
+    task_id: 'live-1',
+    preview_type: 'live_photo',
+    url: 'https://example.com/live-1',
+    platform: 'douyin',
+    title: 'Live photo',
+    cover: '/api/preview/live-1/resources/live/0/image',
+    duration: null,
+    format: 'heic',
+    file_size_mb: 1,
+    available_qualities: [],
+    available_bitrates: [],
+    streams: [],
+    manifest: {
+      kind: 'live_photo',
+      live_photos: [
+        {
+          image_url: '/api/preview/live-1/resources/live/0/image',
+          motion_url: '/api/preview/live-1/resources/live/0/motion',
+        },
+      ],
+      warnings: [],
+    },
+  };
+
+  it('retains valid same-task public routes and previewApi applies the normalizer', async () => {
+    expect(normalizePreviewData(valid, 'live-1')).toMatchObject(valid);
+    (apiClient.get as Mock).mockResolvedValue({ data: valid });
+
+    await expect(previewApi.getPreview('live-1')).resolves.toMatchObject(valid);
+  });
+
+  it.each([
+    {
+      manifest: {
+        ...valid.manifest,
+        live_photos: [{ image_url: 'https://cdn.example/image.jpg', motion_url: 'https://cdn.example/motion.mov' }],
+      },
+    },
+    {
+      manifest: {
+        ...valid.manifest,
+        live_photos: [{ image_url: '/api/preview/other-task/resources/live/0/image', motion_url: null }],
+      },
+    },
+  ])('drops an unsafe or cross-task manifest while preserving safe metadata', (unsafe) => {
+    const normalized = normalizePreviewData({ ...valid, ...unsafe }, 'live-1');
+    expect(normalized?.manifest).toBeNull();
+    expect(normalized?.cover).toBe(valid.cover);
+  });
+
+  it.each(['https://cdn.example/cover.jpg', '//cdn.example/cover.jpg', '/api/preview/other-task/resources/live/0/image'])(
+    'drops an unsafe or cross-task cover route %s',
+    (cover) => {
+      const normalized = normalizePreviewData({ ...valid, cover }, 'live-1');
+      expect(normalized?.cover).toBeNull();
+    },
+  );
+
+  it('rejects a preview payload whose task id differs from the requested task', () => {
+    expect(normalizePreviewData({ ...valid, task_id: 'other-task' }, 'live-1')).toBeNull();
   });
 });

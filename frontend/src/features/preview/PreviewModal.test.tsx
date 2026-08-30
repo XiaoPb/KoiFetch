@@ -9,10 +9,14 @@ import type { ParseResult, PreviewData } from '../../types/api';
 import { usePreviewStore } from '../parser/previewStore';
 import { __resetDownloadStreams, selectActiveCount, useDownloadsStore } from '../../stores/downloadsStore';
 
-vi.mock('../../services/api', () => ({
-  previewApi: { getPreview: vi.fn() },
-  downloadApi: { submit: vi.fn(), getProgress: vi.fn(), getLatestByTask: vi.fn() },
-}));
+vi.mock('../../services/api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/api')>();
+  return {
+    ...actual,
+    previewApi: { getPreview: vi.fn() },
+    downloadApi: { submit: vi.fn(), getProgress: vi.fn(), getLatestByTask: vi.fn() },
+  };
+});
 
 // downloadsStore opens a WS client per download; the submit path in this test
 // is covered by mocking the client so no poll timer interferes.
@@ -76,7 +80,7 @@ const imageTask: ParseResult = {
   type: 'image',
   platform: 'xiaohongshu',
   title: 'Post C',
-  cover: 'https://example.com/c.jpg',
+  cover: '/api/preview/t3/resources/image/0',
   duration: null,
   file_size_mb: 0.8,
   format: 'jpg',
@@ -126,7 +130,7 @@ const imagePreview: PreviewData = {
   url: 'https://example.com/p/c',
   platform: 'xiaohongshu',
   title: 'Post C',
-  cover: 'https://example.com/c.jpg',
+  cover: '/api/preview/t3/resources/image/0',
   duration: null,
   format: 'jpg',
   file_size_mb: 0.8,
@@ -327,6 +331,29 @@ describe('PreviewModal', () => {
 
     expect(await screen.findByTestId('preview-cover')).toBeInTheDocument();
     expect(screen.queryByTestId('preview-live-photo-t4')).not.toBeInTheDocument();
+  });
+
+  it('does not render raw CDN media when a mocked preview response bypasses the API normalizer', async () => {
+    (previewApi.getPreview as Mock).mockResolvedValue({
+      ...livePreview,
+      cover: 'https://cdn.example/live-cover.jpg',
+      manifest: {
+        ...livePreview.manifest,
+        live_photos: [
+          {
+            image_url: 'https://cdn.example/live-image.jpg',
+            motion_url: 'https://cdn.example/live-motion.mov',
+          },
+        ],
+      },
+    });
+    usePreviewStore.setState({ activeTask: { ...liveTask, manifest: null } });
+    renderWithProviders(<PreviewModal />);
+
+    await screen.findByTestId('preview-content');
+    expect(screen.queryByTestId('preview-live-photo-t4')).not.toBeInTheDocument();
+    expect(screen.queryByAltText('Live D 1')).not.toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent('cdn.example');
   });
 
   it('shows the backend error with a working retry', async () => {
