@@ -165,7 +165,8 @@ services via `env_file: .env`.
 | Variable | Required / default | Purpose |
 | --- | --- | --- |
 | `ADMIN_PASSWORD` | **required** | Password used to seed the single admin (`admin`) at seed time (bcrypt). Fails fast when missing/blank or longer than 72 bytes (bcrypt truncates). Never log or commit the real value; changing it after the first seed does **not** update the stored hash — see §5.3 |
-| `SECRET_KEY` | **required** | JWT HS256 signing key for the 24-hour access tokens and the 5-minute one-time file tokens. No strength floor is enforced, but use ≥ 32 random bytes; changing it invalidates every issued token (stateless JWT, no refresh in v1) |
+| `SECRET_KEY` | **required** | JWT HS256 signing key for the seven-day access sessions and the 5-minute one-time file tokens. No strength floor is enforced, but use ≥ 32 random bytes; changing it invalidates every issued token |
+| `ACCESS_TOKEN_TTL_DAYS` | `7` (`1-30`) | Lifetime of admin JWT access sessions in days. The frontend rotates one still-valid token once per page startup; this is not a file-token lifetime |
 | `VIDEO_STORAGE_PATH` / `IMAGE_STORAGE_PATH` / `MUSIC_STORAGE_PATH` | `data/pond/{video,image,music}` | Permanent **Pond** storage roots per media type (the NAS target). Relative → resolved against the process CWD; absolute (e.g. a NAS mount) passes through unchanged |
 | `TEMP_VIDEO_PATH` / `TEMP_IMAGE_PATH` / `TEMP_MUSIC_PATH` | `data/bubble/{video,image,music}` | Temporary **Bubble** staging roots for in-flight downloads; swept by cleanup |
 | `MAX_CONCURRENT` | `3` (`>= 1`) | Per-process in-flight download cap — `N` worker processes can have up to `N × MAX_CONCURRENT` tasks downloading at once |
@@ -179,6 +180,31 @@ services via `env_file: .env`.
 | `TZ` | `Asia/Shanghai` | Validated against the IANA database at startup. Compose also sets the container `TZ` (the image ships `tzdata`), so container-local time follows it; application logic stores and compares UTC regardless |
 | `DATABASE_URL` | `sqlite:///./data/db/koifetch.db` | SQLAlchemy database URL. Relative paths resolve against the process CWD; the DB file's parent directory is created automatically |
 | `FRONTEND_DIST_PATH` | `frontend/dist` | Directory of the built frontend (Vite `dist`) the backend serves at `/`. CWD-relative; `/app/static` in the image. Never point it at `.` or the repo root (served verbatim — whole-tree exposure) |
+
+### 3.1.1 Admin session lifecycle
+
+The login endpoint issues a stateless HS256 access token with a seven-day
+default lifetime (`ACCESS_TOKEN_TTL_DAYS`) and returns its `expires_at`. Once
+the persisted auth state has finished hydrating, the frontend attempts exactly
+one refresh per page startup for a token that is still valid. Concurrent startup
+calls share one in-flight request, including React StrictMode re-renders, so a
+page does not rotate the same session more than once. Successful login and
+logout supersede any older startup operation.
+
+`POST /api/auth/refresh` validates the presented token before minting a
+replacement. Expired, malformed, or otherwise invalid tokens are rejected;
+there is no refresh grace window and no refresh-token store. The old stateless
+access token is not revoked by rotation and remains usable until its own `exp`
+time. Consequently, separate browser tabs may each rotate independently, and
+their older tokens can overlap until expiry. Rotating `SECRET_KEY` invalidates
+all issued access and file tokens immediately.
+
+The frontend handles startup edge cases as follows: a hydration failure clears
+the auth/download session and routes to `/login`; a refresh failure logs out
+only when the same session is still current; a stale refresh response or
+rejection is ignored after a newer login, logout, or token replacement wins the
+race. Successful login and refresh responses are marked `Cache-Control:
+no-store`.
 
 ### 3.2 Frontend variables (build-time, `frontend/.env.example` → `.env.local`)
 
@@ -403,7 +429,7 @@ poll round.
 | Storage panel shows degraded; `/api/health` returns `code == 1` with a root in `"error"` | A storage root could not be created (permissions, read-only NAS mount, missing parent) | Check `storage_roots` in the health body and the six storage-root env vars; fix permissions/paths and restart. The app still boots; save/file endpoints fail with a clean storage error |
 | `database is locked` errors | Should be prevented by WAL + a 5-second busy timeout, so this points at something unusual: several processes opening the same DB file, or another tool holding a write lock | Confirm the server/worker/migrations share one CWD (mismatched CWDs use *different* DB files — a different failure); close SQLite browsers / other writers; retry |
 | Admin cannot log in after changing `ADMIN_PASSWORD` | The seed never re-hashes an existing admin row (idempotent upsert) | Reset the admin row (or the database) and re-seed, then use the new password. Note `ADMIN_PASSWORD` over 72 bytes is rejected at seed time |
-| Every session is invalidated at once | `SECRET_KEY` changed — JWT access tokens are stateless, signed with it, and v1 has no refresh | Expected; users re-login (access tokens last 24 hours) |
+| Every session is invalidated at once | `SECRET_KEY` changed — JWT access tokens are stateless and signed with it | Expected; users re-login (the default access-session lifetime is seven days) |
 | 404 on a hashed `/assets/*` file | `index.html` references a hash the served dist does not have (partial/stale build, or a reverse proxy cached the page but not the asset) | Rebuild the frontend and rebuild/restart the backend; invalidate any proxy cache (static files carry no `Cache-Control`, only ETag/304 revalidation) |
 | Where are the logs? | — | Native: the terminal of each process (uvicorn / worker). Docker: `docker compose logs -f backend` / `-f worker`. Unhandled errors are logged server-side with a `request_id`, which the client's generic `9001` envelope echoes for correlation |
 | Ports 8000 / 5173 already in use | Another instance or application | Stop the other process, or change ports (`uvicorn ... --port 8001`; the Vite port in `frontend/vite.config.ts`) |
@@ -425,7 +451,7 @@ carries its one-line rationale:
 | Multi-user accounts | v1 has exactly one admin; the `2002` role-forbidden code is reserved for a future role system |
 | Browser extensions | Outside the web-app scope |
 | PWA (service worker / manifest) | Not part of the v1 web app |
-| JWT refresh tokens | Access tokens are 24-hour and stateless; re-login is the v1 path |
+| Server-side JWT refresh-token store or revocation list | Access sessions are stateless; valid access tokens can be rotated through `POST /api/auth/refresh`, while expired tokens require login again |
 | Shared rate limiting across replicas | The login limiter is implemented per process; an external shared limiter remains recommended for public multi-replica deployments |
 | `GET /api/downloads` download-list endpoint | The frontend's download list is session-only and cannot be rehydrated after a refresh (recovery item) |
 | Cancel endpoint | The state graph has no cancelling transition; retry = re-submit |

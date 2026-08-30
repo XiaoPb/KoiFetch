@@ -40,6 +40,7 @@ the checks in order; any unexpected failure blocks the release.
 | 15 | weak/default secret rejection | `python -m pytest backend/tests/test_config.py backend/tests/test_cookie_encryption.py -q` | Missing, blank, weak/default, malformed, or wrong cookie keys are rejected/fail closed | ⏳ run on the release environment |
 | 16 | Login limiter and trusted proxy verification | `python -m pytest backend/tests/test_login_limiter.py backend/tests/test_auth_api.py -q` with only immediate proxy CIDRs in `TRUSTED_PROXY_CIDRS` | Process-local limits and direct-peer/X-Forwarded-For handling are verified | ⏳ run on the release environment |
 | 17 | SSRF regression tests | `python -m pytest backend/tests/test_safe_upstream.py -q` | Unsafe schemes/addresses, redirect re-resolution, pinned IP Host/SNI, and body/redirect bounds remain blocked | ⏳ run on the release environment |
+| 18 | Seven-day session contract | `python -m pytest backend/tests/test_config.py backend/tests/test_tokens.py backend/tests/test_auth_service.py backend/tests/test_auth_api.py -q` and the focused frontend auth/router tests | Default TTL is 7 days; each page startup performs at most one refresh of a still-valid token; expired tokens have no grace refresh; hydration failures and stale login/refresh races fail closed; stateless multi-tab overlap is expected until each token expires | ⏳ run on the release environment |
 
 ## Verification evidence (most recent run)
 

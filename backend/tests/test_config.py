@@ -22,6 +22,14 @@ DEFAULTS = {
     "cookie_encryption_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
 }
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+AUTH_DOCUMENTATION_FILES = (
+    REPO_ROOT / ".env.example",
+    REPO_ROOT / "README.md",
+    REPO_ROOT / "OPERATIONS.md",
+    REPO_ROOT / "RELEASE-CHECKLIST.md",
+)
+
 
 @pytest.fixture
 def clean_env(monkeypatch):
@@ -74,6 +82,19 @@ class TestDefaults:
         # lives at the repo-local frontend/dist (the container image copies
         # the build to /app/static and sets FRONTEND_DIST_PATH instead).
         assert build().frontend_dist_path == Path("frontend/dist")
+
+
+class TestSessionDocumentation:
+    def test_env_example_documents_seven_day_access_token_ttl(self):
+        text = (REPO_ROOT / ".env.example").read_text(encoding="utf-8")
+        assert "ACCESS_TOKEN_TTL_DAYS=7" in text
+
+    def test_auth_docs_do_not_describe_access_tokens_as_24_hour(self):
+        stale_phrases = ("24-hour access token", "access tokens are 24-hour")
+        for path in AUTH_DOCUMENTATION_FILES:
+            text = path.read_text(encoding="utf-8").lower()
+            for phrase in stale_phrases:
+                assert phrase not in text, f"stale session wording in {path}"
 
 
 class TestEnvOverrides:

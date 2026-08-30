@@ -66,6 +66,7 @@ On success it prints the live URL and the PIDs. Manage the daemons:
 | `KOI_HOST` | `127.0.0.1` | Bind address. |
 | `KOI_DATA_ROOT` | `backend/data` | Runtime data (db/pond/bubble). The repo-root `data/` may be **root-owned** (created by an earlier root deployment) and read-only for non-root — the script keeps everything under `backend/data/` (gitignored, writable). |
 | `PARSER_ENGINE` / `DOWNLOADER_ENGINE` | `engine` | `engine` = real parse-video-py/musicdl adapters; `stub` = deterministic offline adapters. |
+| `ACCESS_TOKEN_TTL_DAYS` | `7` | Admin JWT access-session lifetime in days (`1-30`); a still-valid token is rotated once after each page startup. |
 | `PIP_INDEX` | — | PyPI mirror for faster installs (e.g. Tsinghua). |
 | `SKIP_DEPS=1` | — | Skip pip/npm install and the frontend build (restart only). |
 | `SKIP_FRONTEND=1` | — | Skip only the frontend build. |

@@ -34,6 +34,7 @@ real `.env`; the example file contains safe local-development values only.
 | `ADMIN_PASSWORD` | *(required)* | Admin login seed — never log or commit the real value |
 | `SECRET_KEY` | *(required)* | JWT signing key |
 | `COOKIE_ENCRYPTION_KEY` | *(required)* | URL-safe base64 encoding of exactly 32 random bytes for cookie encryption at rest |
+| `ACCESS_TOKEN_TTL_DAYS` | `7` | Admin JWT access-session lifetime in days (`1`–`30`) |
 | `VIDEO_STORAGE_PATH` / `IMAGE_STORAGE_PATH` / `MUSIC_STORAGE_PATH` | `data/pond/{video,image,music}` | Permanent (Pond/NAS) storage roots |
 | `TEMP_VIDEO_PATH` / `TEMP_IMAGE_PATH` / `TEMP_MUSIC_PATH` | `data/bubble/{video,image,music}` | Temporary (Bubble) staging roots |
 | `MAX_CONCURRENT` | `3` | Concurrent downloads (`>= 1`) |
@@ -47,6 +48,21 @@ real `.env`; the example file contains safe local-development values only.
 | `TZ` | `Asia/Shanghai` | Application timezone (validated against the IANA database) |
 | `DATABASE_URL` | `sqlite:///./data/db/koifetch.db` | SQLAlchemy database URL |
 | `FRONTEND_DIST_PATH` | `frontend/dist` | Built frontend (Vite `dist`) the backend serves at `/`; resolved against the process CWD (run uvicorn from the repo root for the default to work), and set to `/app/static` by the Docker image. Never point it at `.` or the repo root — the path is served verbatim, so that would expose the whole tree |
+
+### Admin session lifecycle
+
+Admin access sessions last seven days by default. After persisted auth state is
+hydrated, each page startup attempts one refresh for a still-valid token; the
+startup action is deduplicated, so React StrictMode or repeated startup calls do
+not issue extra refreshes. Refresh validates the current token before issuing a
+replacement and accepts no expired token—there is no server-side grace window.
+
+The session is stateless: separate tabs may rotate independently, and an older
+token remains valid until its own `exp` time. Rotating `SECRET_KEY` invalidates
+all existing access tokens. If auth hydration fails, the frontend clears the
+session and returns to login. A stale startup-refresh response or rejection is
+ignored when a newer login/logout has already won the race; a refresh failure
+for the still-current session logs out.
 
 ## Smoke testing
 
