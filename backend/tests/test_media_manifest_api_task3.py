@@ -11,6 +11,7 @@ from app.api.parse import get_parse_service
 from app.api.preview import get_preview_service
 from app.application.parse_service import ParseService
 from app.application.preview_service import PreviewService
+from app.adapters.safe_upstream import UpstreamStream
 from app.domain import LivePhotoPair, MediaManifest, MediaResource, MediaType, ParseResult
 from app.infrastructure.database import Base, build_engine, session_scope
 from app.infrastructure.models import ParseTask
@@ -89,6 +90,10 @@ def test_parse_serializes_only_safe_live_photo_routes(client):
         }
     ]
     assert "https://cdn.example" not in json.dumps(result["manifest"])
+    assert result["cover"] == (
+        f"/api/preview/{TASK_ID}/resources/live/0/image"
+    )
+    assert "https://cdn.example" not in json.dumps(result)
 
 
 def test_preview_serializes_only_safe_live_photo_routes(client, engine):
@@ -98,6 +103,207 @@ def test_preview_serializes_only_safe_live_photo_routes(client, engine):
         "/resources/live/0/image"
     )
     assert "https://cdn.example" not in json.dumps(data["manifest"])
+    assert data["cover"] == f"/api/preview/{TASK_ID}/resources/live/0/image"
+    assert "https://cdn.example" not in json.dumps(data)
+
+
+def test_preview_rejects_corrupt_manifest_with_stable_business_error(engine):
+    with session_scope(engine) as session:
+        session.add(
+            ParseTask(
+                task_id=TASK_ID,
+                url=SOURCE_URL,
+                platform="douyin",
+                media_type=MediaType.LIVE_PHOTO,
+                title="live",
+                format="jpg",
+                cover_url="https://cdn.example/cover.jpg",
+                metadata_={"manifest": {"kind": "live_photo", "live_photos": []}},
+            )
+        )
+    app = create_app(settings=settings())
+    app.dependency_overrides[get_preview_service] = lambda: PreviewService(engine=engine)
+    response = TestClient(app).get(f"/api/preview/{TASK_ID}")
+    assert response.status_code == 400
+    assert response.json()["code"] == 400
+    assert response.json()["data"] is None
+
+
+def test_preview_rejects_non_dict_metadata_with_stable_business_error(engine):
+    with session_scope(engine) as session:
+        session.add(
+            ParseTask(
+                task_id=TASK_ID,
+                url=SOURCE_URL,
+                platform="douyin",
+                media_type=MediaType.LIVE_PHOTO,
+                title="live",
+                format="jpg",
+                metadata_=["not", "metadata"],
+            )
+        )
+    app = create_app(settings=settings())
+    app.dependency_overrides[get_preview_service] = lambda: PreviewService(engine=engine)
+    response = TestClient(app).get(f"/api/preview/{TASK_ID}")
+    assert response.status_code == 400
+    assert response.json()["code"] == 400
+
+
+def test_resource_get_and_head_use_the_same_private_cache_policy(engine):
+    with session_scope(engine) as session:
+        session.add(
+            ParseTask(
+                task_id=TASK_ID,
+                url=SOURCE_URL,
+                platform="douyin",
+                media_type=MediaType.LIVE_PHOTO,
+                title="live",
+                format="jpg",
+                metadata_={"manifest": live_manifest().model_dump(mode="json")},
+            )
+        )
+
+    methods = []
+
+    def handler(request: httpx.Request):
+        methods.append(request.method)
+        return httpx.Response(
+            200,
+            headers={
+                "content-type": "image/jpeg",
+                "content-length": "3",
+                "cache-control": "public, max-age=3600",
+            },
+            content=b"jpg" if request.method == "GET" else b"",
+        )
+
+    app = create_app(settings=settings())
+    app.dependency_overrides[get_preview_service] = lambda: PreviewService(
+        engine=engine, transport=httpx.MockTransport(handler)
+    )
+    client = TestClient(app)
+    get_response = client.get(f"/api/preview/{TASK_ID}/resources/live/0/image")
+    head_response = client.head(f"/api/preview/{TASK_ID}/resources/live/0/image")
+    assert methods == ["GET", "HEAD"]
+    assert get_response.headers["cache-control"] == "private, no-store"
+    assert head_response.headers["cache-control"] == "private, no-store"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "resources/video/0",
+        "resources/image/0",
+        "resources/live/0/bad-side",
+        "resources/live/-1/image",
+    ],
+)
+def test_resource_selector_rejects_cross_kind_and_invalid_selectors(engine, path):
+    with session_scope(engine) as session:
+        session.add(
+            ParseTask(
+                task_id=TASK_ID,
+                url=SOURCE_URL,
+                platform="douyin",
+                media_type=MediaType.LIVE_PHOTO,
+                title="live",
+                format="jpg",
+                metadata_={"manifest": live_manifest().model_dump(mode="json")},
+            )
+        )
+    app = create_app(settings=settings())
+    app.dependency_overrides[get_preview_service] = lambda: PreviewService(engine=engine)
+    response = TestClient(app).get(f"/api/preview/{TASK_ID}/{path}")
+    assert response.status_code == 400
+    assert response.json()["code"] == 400
+
+
+def test_unexpected_upstream_proxy_error_is_not_sanitized_as_client_error(engine):
+    with session_scope(engine) as session:
+        session.add(
+            ParseTask(
+                task_id=TASK_ID,
+                url=SOURCE_URL,
+                platform="douyin",
+                media_type=MediaType.LIVE_PHOTO,
+                title="live",
+                format="jpg",
+                metadata_={"manifest": live_manifest().model_dump(mode="json")},
+            )
+        )
+
+    class BrokenUpstream:
+        def stream(self, url, **kwargs):
+            raise RuntimeError("bug with https://cdn.example/private-token")
+
+    service = PreviewService(engine=engine, upstream=BrokenUpstream())
+    with pytest.raises(RuntimeError):
+        service.stream_resource(TASK_ID, "live", 0, side="image")
+
+
+def test_unexpected_proxy_error_uses_generic_9001_envelope_without_url(engine):
+    with session_scope(engine) as session:
+        session.add(
+            ParseTask(
+                task_id=TASK_ID,
+                url=SOURCE_URL,
+                platform="douyin",
+                media_type=MediaType.LIVE_PHOTO,
+                title="live",
+                format="jpg",
+                metadata_={"manifest": live_manifest().model_dump(mode="json")},
+            )
+        )
+
+    class BrokenUpstream:
+        def stream(self, url, **kwargs):
+            raise RuntimeError("bug with https://cdn.example/private-token")
+
+    app = create_app(settings=settings())
+    app.dependency_overrides[get_preview_service] = lambda: PreviewService(
+        engine=engine, upstream=BrokenUpstream()
+    )
+    response = TestClient(app, raise_server_exceptions=False).get(
+        f"/api/preview/{TASK_ID}/resources/live/0/image"
+    )
+    assert response.status_code == 500
+    assert response.json()["code"] == 9001
+    assert "cdn.example" not in response.text
+
+
+def test_resource_stream_closes_upstream_when_response_is_consumed(engine):
+    with session_scope(engine) as session:
+        session.add(
+            ParseTask(
+                task_id=TASK_ID,
+                url=SOURCE_URL,
+                platform="douyin",
+                media_type=MediaType.LIVE_PHOTO,
+                title="live",
+                format="jpg",
+                metadata_={"manifest": live_manifest().model_dump(mode="json")},
+            )
+        )
+    closed = []
+
+    class ClosableUpstream:
+        def stream(self, url, **kwargs):
+            return UpstreamStream(
+                status_code=200,
+                content_type="image/jpeg",
+                headers={"content-length": "3"},
+                chunks=iter([b"jpg"]),
+                close=lambda: closed.append(True),
+            )
+
+    app = create_app(settings=settings())
+    app.dependency_overrides[get_preview_service] = lambda: PreviewService(
+        engine=engine, upstream=ClosableUpstream()
+    )
+    response = TestClient(app).get(f"/api/preview/{TASK_ID}/resources/live/0/image")
+    assert response.status_code == 200
+    assert response.content == b"jpg"
+    assert closed == [True]
 
 
 def test_live_resource_proxy_forwards_range_and_content_headers(engine):

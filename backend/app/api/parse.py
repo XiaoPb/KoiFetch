@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field
 
 from app.api.responses import ok
 from app.application.parse_service import ParseService
-from app.application.media_manifest import public_manifest
+from app.application.media_manifest import public_cover, public_manifest
 from app.domain import MediaManifest, ParseResult
 
 __all__ = [
@@ -114,12 +114,15 @@ def _serialize_result(result: ParseResult) -> dict:
     """
     metadata = result.metadata or {}
     manifest = None
+    cover = None
     if metadata.get("manifest") is not None:
         try:
+            validated_manifest = MediaManifest.model_validate(metadata["manifest"])
             manifest = public_manifest(
                 result.task_id,
-                MediaManifest.model_validate(metadata["manifest"]),
+                validated_manifest,
             )
+            cover = public_cover(result.task_id, validated_manifest)
         except (TypeError, ValueError):
             # A parser failure should normally prevent persistence; retain a
             # defensive omission here so a malformed legacy payload cannot
@@ -131,7 +134,7 @@ def _serialize_result(result: ParseResult) -> dict:
         "type": result.media_type.value,
         "platform": result.platform,
         "title": result.title,
-        "cover": result.cover,
+        "cover": cover,
         "duration": result.duration,
         "file_size_mb": result.file_size_mb,
         "format": result.format,

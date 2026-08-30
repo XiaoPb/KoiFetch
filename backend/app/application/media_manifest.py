@@ -13,7 +13,13 @@ from pydantic import ValidationError
 
 from app.domain import MediaManifest
 
-__all__ = ["ManifestError", "load_manifest", "public_manifest", "serialize_manifest"]
+__all__ = [
+    "ManifestError",
+    "load_manifest",
+    "public_cover",
+    "public_manifest",
+    "serialize_manifest",
+]
 
 _MESSAGE_MANIFEST_MISSING = "媒体清单不存在 / Media manifest is missing"
 _MESSAGE_MANIFEST_INVALID = "媒体清单无效 / Invalid media manifest"
@@ -98,3 +104,13 @@ def public_manifest(task_id: str, manifest: MediaManifest) -> dict[str, Any]:
         ],
         "warnings": list(manifest.warnings),
     }
+
+
+def public_cover(task_id: str, manifest: MediaManifest) -> str | None:
+    """Return a same-origin cover route for manifests with a still image."""
+    base = f"/api/preview/{task_id}/resources"
+    if manifest.kind == "image_album" and manifest.images:
+        return f"{base}/image/0"
+    if manifest.kind == "live_photo" and manifest.live_photos:
+        return f"{base}/live/0/image"
+    return None

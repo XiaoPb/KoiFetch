@@ -93,7 +93,7 @@ class TestPreviewService:
         assert data["url"] == "https://www.bilibili.com/video/av123"
         assert data["platform"] == "bilibili"
         assert data["title"] == "av123"
-        assert data["cover"] == "https://cdn.example.com/cover.jpg"
+        assert data["cover"] is None  # private legacy cover is never public
         assert data["duration"] == "05:23"  # 323s → MM:SS
         assert data["format"] == "mp4"
         assert data["file_size_mb"] == 12.5

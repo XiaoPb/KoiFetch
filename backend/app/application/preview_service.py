@@ -41,6 +41,7 @@ Design decisions (stable contract for Task 9+):
 from __future__ import annotations
 
 import io
+import logging
 import re
 import zipfile
 from dataclasses import dataclass
@@ -60,6 +61,7 @@ from app.api.responses import CODE_BAD_REQUEST, CODE_TASK_NOT_FOUND, ApiError
 from app.application.media_manifest import (
     ManifestError,
     load_manifest,
+    public_cover,
     public_manifest,
 )
 from app.domain import MediaManifest, MediaResource, MediaType, format_duration
@@ -91,6 +93,9 @@ _MAX_ALBUM_BYTES = 200 * 1024 * 1024   # 200 MB total
 _MAX_PROXY_BYTES = 200 * 1024 * 1024   # SafeUpstreamClient default cap
 
 _EXT_UNSAFE = re.compile(r"[^a-z0-9]+")
+_MEDIA_CACHE_CONTROL = "private, no-store"
+
+logger = logging.getLogger(__name__)
 
 
 def _extension_of(url: str) -> str:
@@ -146,6 +151,9 @@ def _safe_media_headers(source: dict[str, str], content_type: str) -> dict[str, 
         if name.lower() in allowed and isinstance(value, str)
     }
     headers["Content-Type"] = content_type
+    # Manifest resources may contain signed URLs; never let an upstream
+    # public/cache directive make a same-origin response shareable.
+    headers["Cache-Control"] = _MEDIA_CACHE_CONTROL
     return headers
 
 
@@ -250,10 +258,19 @@ class PreviewService:
             raise ApiError(
                 HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_UPSTREAM
             ) from exc
-        except Exception as exc:
+        except httpx.HTTPError as exc:
             raise ApiError(
                 HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_UPSTREAM
             ) from exc
+        except Exception:
+            logger.exception(
+                "unexpected media proxy failure task_id=%s kind=%s index=%s side=%s",
+                task_id,
+                kind,
+                index,
+                side,
+            )
+            raise
 
     def head_resource(
         self,
@@ -295,10 +312,19 @@ class PreviewService:
             raise ApiError(
                 HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_UPSTREAM
             ) from exc
-        except Exception as exc:
+        except httpx.HTTPError as exc:
             raise ApiError(
                 HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_UPSTREAM
             ) from exc
+        except Exception:
+            logger.exception(
+                "unexpected media HEAD failure task_id=%s kind=%s index=%s side=%s",
+                task_id,
+                kind,
+                index,
+                side,
+            )
+            raise
 
     def _resolve_resource(
         self, task_id: str, kind: str, index: int, side: str | None
@@ -395,7 +421,11 @@ class PreviewService:
                 raise ApiError(
                     HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_HLS_UNSUPPORTED
                 )
-            headers = {"Accept-Ranges": "bytes", "Content-Type": content_type}
+            headers = {
+                "Accept-Ranges": "bytes",
+                "Content-Type": content_type,
+                "Cache-Control": _MEDIA_CACHE_CONTROL,
+            }
             for source_name, output_name in (
                 ("content-length", "Content-Length"),
                 ("content-range", "Content-Range"),
@@ -415,10 +445,13 @@ class PreviewService:
             raise ApiError(
                 HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_UPSTREAM
             ) from exc
-        except Exception as exc:
+        except httpx.HTTPError as exc:
             raise ApiError(
                 HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_UPSTREAM
             ) from exc
+        except Exception:
+            logger.exception("unexpected legacy media proxy failure task_id=%s", task_id)
+            raise
 
     def _video_url(self, task_id: str) -> str:
         """The task's playable video URL, or a typed :class:`ApiError`."""
@@ -524,7 +557,22 @@ class PreviewService:
 
 def _build_preview(task: ParseTask) -> dict:
     """Map a :class:`ParseTask` row to the v1 preview response payload."""
-    metadata = task.metadata_ or {}
+    metadata = task.metadata_
+    if not isinstance(metadata, dict):
+        raise ApiError(
+            HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_MANIFEST_INVALID
+        )
+    manifest = None
+    if metadata.get("manifest") is not None:
+        try:
+            manifest = load_manifest(task)
+        except ManifestError as exc:
+            message = (
+                str(exc)
+                if str(exc) in {_MESSAGE_MANIFEST_MISSING, _MESSAGE_MANIFEST_INVALID}
+                else _MESSAGE_MANIFEST_INVALID
+            )
+            raise ApiError(HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, message) from exc
     qualities = list(metadata.get("available_qualities") or [])
     bitrates = list(metadata.get("available_bitrates") or [])
     streams: list[dict] = []
@@ -542,7 +590,7 @@ def _build_preview(task: ParseTask) -> dict:
         "url": task.url,
         "platform": task.platform,
         "title": task.title,
-        "cover": task.cover_url,
+        "cover": public_cover(task.task_id, manifest) if manifest else None,
         "duration": (
             format_duration(task.duration) if task.duration is not None else None
         ),
@@ -552,11 +600,6 @@ def _build_preview(task: ParseTask) -> dict:
         "available_bitrates": bitrates,
         "streams": streams,
     }
-    if isinstance(metadata, dict) and metadata.get("manifest") is not None:
-        try:
-            payload["manifest"] = public_manifest(task.task_id, load_manifest(task))
-        except ManifestError:
-            # Keep metadata preview available for old rows, while resource
-            # routes return a typed stable error when strict loading is needed.
-            payload["manifest"] = None
+    if manifest is not None:
+        payload["manifest"] = public_manifest(task.task_id, manifest)
     return payload
