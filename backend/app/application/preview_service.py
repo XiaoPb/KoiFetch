@@ -48,7 +48,7 @@ from typing import Callable, Iterator
 
 import httpx
 from sqlalchemy import Engine
-from starlette.status import HTTP_400_BAD_REQUEST
+from starlette.status import HTTP_400_BAD_REQUEST, HTTP_404_NOT_FOUND
 
 from app.adapters.safe_upstream import (
     SafeUpstreamClient,
@@ -57,7 +57,12 @@ from app.adapters.safe_upstream import (
     UpstreamTooLarge,
 )
 from app.api.responses import CODE_BAD_REQUEST, CODE_TASK_NOT_FOUND, ApiError
-from app.domain import MediaType, format_duration
+from app.application.media_manifest import (
+    ManifestError,
+    load_manifest,
+    public_manifest,
+)
+from app.domain import MediaManifest, MediaResource, MediaType, format_duration
 from app.infrastructure.database import session_scope
 from app.infrastructure.models import ParseTask
 
@@ -73,10 +78,17 @@ _MESSAGE_UPSTREAM = "上游媒体获取失败 / Upstream media fetch failed"
 _MESSAGE_HLS_UNSUPPORTED = "HLS流暂不支持代理播放 / HLS streams are not supported by the proxy"
 _MESSAGE_IMAGE_TOO_LARGE = "图片过大，无法下载 / Image too large to download"
 _MESSAGE_ALBUM_TOO_LARGE = "图集过大，无法打包 / Album too large to pack"
+_MESSAGE_MANIFEST_MISSING = "媒体清单不存在 / Media manifest is missing"
+_MESSAGE_MANIFEST_INVALID = "媒体清单无效 / Invalid media manifest"
+_MESSAGE_RESOURCE_KIND = "媒体资源类型无效 / Invalid media resource kind"
+_MESSAGE_RESOURCE_INDEX = "媒体资源序号无效 / Invalid media resource index"
+_MESSAGE_RESOURCE_SIDE = "Live Photo 资源类型无效 / Invalid Live Photo resource side"
+_MESSAGE_RESOURCE_MISSING = "媒体资源不存在 / Media resource not found"
 
 _UA = {"User-Agent": "Mozilla/5.0 (KoiFetch/0.1)"}
 _MAX_IMAGE_BYTES = 20 * 1024 * 1024    # 20 MB per image
 _MAX_ALBUM_BYTES = 200 * 1024 * 1024   # 200 MB total
+_MAX_PROXY_BYTES = 200 * 1024 * 1024   # SafeUpstreamClient default cap
 
 _EXT_UNSAFE = re.compile(r"[^a-z0-9]+")
 
@@ -98,6 +110,43 @@ def _image_content_type(ext: str) -> str:
         "webp": "image/webp",
         "bmp": "image/bmp",
     }.get(ext, "image/jpeg")
+
+
+def _content_type_for_format(media_format: str) -> str:
+    normalized = media_format.lower()
+    if normalized in {"jpg", "jpeg"}:
+        return "image/jpeg"
+    if normalized == "png":
+        return "image/png"
+    if normalized == "gif":
+        return "image/gif"
+    if normalized == "webp":
+        return "image/webp"
+    if normalized in {"mp4", "m4v"}:
+        return "video/mp4"
+    if normalized == "webm":
+        return "video/webm"
+    return "application/octet-stream"
+
+
+def _safe_media_headers(source: dict[str, str], content_type: str) -> dict[str, str]:
+    """Keep only response headers useful for media playback and caching."""
+    allowed = {
+        "accept-ranges",
+        "cache-control",
+        "content-length",
+        "content-range",
+        "content-type",
+        "etag",
+        "last-modified",
+    }
+    headers = {
+        name.title(): value
+        for name, value in source.items()
+        if name.lower() in allowed and isinstance(value, str)
+    }
+    headers["Content-Type"] = content_type
+    return headers
 
 
 def _slug(text: str) -> str:
@@ -157,6 +206,166 @@ class PreviewService:
                 HTTP_400_BAD_REQUEST, CODE_TASK_NOT_FOUND, _MESSAGE_TASK_NOT_FOUND
             )
         return _build_preview(task)
+
+    def stream_resource(
+        self,
+        task_id: str,
+        kind: str,
+        index: int,
+        *,
+        side: str | None = None,
+        range_header: str | None = None,
+    ) -> MediaStream:
+        """Proxy one validated manifest resource without exposing its URL."""
+        resource = self._resolve_resource(task_id, kind, index, side)
+        try:
+            stream = self._upstream.stream(
+                str(resource.url),
+                range_header=range_header,
+                max_bytes=(
+                    _MAX_IMAGE_BYTES
+                    if kind == "image" or side == "image"
+                    else _MAX_PROXY_BYTES
+                ),
+            )
+            if stream.status_code >= 400:
+                stream.close()
+                raise ApiError(
+                    HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_UPSTREAM
+                )
+            content_type = stream.content_type or _content_type_for_format(
+                resource.format
+            )
+            headers = _safe_media_headers(stream.headers, content_type)
+            return MediaStream(
+                status_code=stream.status_code,
+                content_type=content_type,
+                headers=headers,
+                chunks=stream.chunks,
+                close=stream.close,
+            )
+        except ApiError:
+            raise
+        except (UnsafeUpstreamUrl, UpstreamTooLarge, UpstreamProtocolError) as exc:
+            raise ApiError(
+                HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_UPSTREAM
+            ) from exc
+        except Exception as exc:
+            raise ApiError(
+                HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_UPSTREAM
+            ) from exc
+
+    def head_resource(
+        self,
+        task_id: str,
+        kind: str,
+        index: int,
+        *,
+        side: str | None = None,
+        range_header: str | None = None,
+    ) -> tuple[int, dict[str, str]]:
+        """Return safe upstream headers for a resource HEAD request."""
+        resource = self._resolve_resource(task_id, kind, index, side)
+        try:
+            upstream_headers = dict(_UA)
+            if range_header is not None:
+                upstream_headers["Range"] = range_header
+            response = self._upstream.head(
+                str(resource.url),
+                headers=upstream_headers,
+                max_bytes=(
+                    _MAX_IMAGE_BYTES
+                    if kind == "image" or side == "image"
+                    else _MAX_PROXY_BYTES
+                ),
+            )
+            if response.status_code >= 400:
+                raise ApiError(
+                    HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_UPSTREAM
+                )
+            content_type = response.headers.get(
+                "content-type"
+            ) or _content_type_for_format(resource.format)
+            return response.status_code, _safe_media_headers(
+                dict(response.headers), content_type
+            )
+        except ApiError:
+            raise
+        except (UnsafeUpstreamUrl, UpstreamTooLarge, UpstreamProtocolError) as exc:
+            raise ApiError(
+                HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_UPSTREAM
+            ) from exc
+        except Exception as exc:
+            raise ApiError(
+                HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_UPSTREAM
+            ) from exc
+
+    def _resolve_resource(
+        self, task_id: str, kind: str, index: int, side: str | None
+    ) -> MediaResource:
+        task = self._load_task(task_id)
+        try:
+            manifest = load_manifest(task)
+        except ManifestError as exc:
+            message = (
+                str(exc)
+                if str(exc) in {_MESSAGE_MANIFEST_MISSING, _MESSAGE_MANIFEST_INVALID}
+                else _MESSAGE_MANIFEST_INVALID
+            )
+            raise ApiError(HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, message) from exc
+        expected_type = {
+            "video": MediaType.VIDEO,
+            "image_album": MediaType.IMAGE,
+            "live_photo": MediaType.LIVE_PHOTO,
+        }[manifest.kind]
+        if task.media_type != expected_type:
+            raise ApiError(
+                HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_MANIFEST_INVALID
+            )
+        if kind not in {"video", "image", "live"}:
+            raise ApiError(
+                HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_RESOURCE_KIND
+            )
+        if not isinstance(index, int) or index < 0:
+            raise ApiError(
+                HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_RESOURCE_INDEX
+            )
+        if kind == "video":
+            if (
+                manifest.kind != "video"
+                or index >= len(manifest.videos)
+                or side is not None
+            ):
+                raise ApiError(
+                    HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_RESOURCE_INDEX
+                )
+            return manifest.videos[index]
+        if kind == "image":
+            if (
+                manifest.kind != "image_album"
+                or index >= len(manifest.images)
+                or side is not None
+            ):
+                raise ApiError(
+                    HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_RESOURCE_INDEX
+                )
+            return manifest.images[index]
+        if manifest.kind != "live_photo" or index >= len(manifest.live_photos):
+            raise ApiError(HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_RESOURCE_INDEX)
+        if side == "image":
+            return manifest.live_photos[index].image
+        if side == "motion":
+            motion = manifest.live_photos[index].motion
+            if motion is None:
+                raise ApiError(
+                    HTTP_404_NOT_FOUND,
+                    HTTP_404_NOT_FOUND,
+                    _MESSAGE_RESOURCE_MISSING,
+                )
+            return motion
+        raise ApiError(
+            HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_RESOURCE_SIDE
+        )
 
     def stream_video(self, task_id: str, range_header: str | None) -> MediaStream:
         """Proxy the task's recorded video URL with Range passthrough.
@@ -327,7 +536,7 @@ def _build_preview(task: ParseTask) -> dict:
         streams = [{"bitrate": bitrate, "format": task.format} for bitrate in bitrates]
     # Images have no stream ladder in v1.
 
-    return {
+    payload = {
         "task_id": task.task_id,
         "preview_type": task.media_type.value,
         "url": task.url,
@@ -343,3 +552,11 @@ def _build_preview(task: ParseTask) -> dict:
         "available_bitrates": bitrates,
         "streams": streams,
     }
+    if isinstance(metadata, dict) and metadata.get("manifest") is not None:
+        try:
+            payload["manifest"] = public_manifest(task.task_id, load_manifest(task))
+        except ManifestError:
+            # Keep metadata preview available for old rows, while resource
+            # routes return a typed stable error when strict loading is needed.
+            payload["manifest"] = None
+    return payload

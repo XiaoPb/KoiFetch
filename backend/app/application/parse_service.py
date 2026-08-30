@@ -72,6 +72,7 @@ from app.api.responses import (
     ApiError,
 )
 from app.domain import ParseCommand, ParseResult, parse_duration
+from app.application.media_manifest import serialize_manifest
 from app.infrastructure.database import session_scope
 from app.infrastructure.models import ParseTask
 
@@ -198,6 +199,9 @@ def _failure_error(exc: Exception) -> str:
 def _task_row(result: ParseResult) -> ParseTask:
     """Map a :class:`ParseResult` to an ORM row (enriched metadata, secs)."""
     metadata: dict[str, Any] = dict(result.metadata)
+    # Keep the compatibility URL fields private in persisted metadata while
+    # normalizing the strict manifest to JSON arrays for SQLAlchemy JSON.
+    metadata = serialize_manifest(metadata)
     metadata["file_size_mb"] = result.file_size_mb
     metadata["available_qualities"] = list(result.available_qualities)
     metadata["available_bitrates"] = list(result.available_bitrates)

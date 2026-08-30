@@ -253,6 +253,7 @@ class SafeUpstreamClient:
         self,
         url: str,
         *,
+        method: str = "GET",
         headers: dict[str, str] | None = None,
     ) -> tuple[httpx.Response, httpx.Client]:
         current_url = url
@@ -260,7 +261,7 @@ class SafeUpstreamClient:
             target = self._revalidate(self.validate(current_url))
             client = self._client(target)
             try:
-                request = client.build_request("GET", current_url, headers=headers)
+                request = client.build_request(method, current_url, headers=headers)
                 # Always defer body consumption.  ``open`` applies its cap
                 # itself, and redirects are discarded without being read.
                 response = client.send(request, stream=True)
@@ -277,10 +278,18 @@ class SafeUpstreamClient:
             return response, client
         raise UnsafeUpstreamUrl("too many upstream redirects")
 
-    def open(self, url: str, *, headers: dict[str, str] | None = None) -> httpx.Response:
+    def open(
+        self,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        max_bytes: int | None = None,
+    ) -> httpx.Response:
         response, client = self._send(url, headers=headers)
         try:
-            body = _read_body_limited(response, self._max_bytes)
+            body = _read_body_limited(
+                response, self._max_bytes if max_bytes is None else max_bytes
+            )
         except BaseException:
             _close_resources(response, client, suppress=True)
             raise
@@ -292,6 +301,36 @@ class SafeUpstreamClient:
             request=response.request,
             extensions=response.extensions,
         )
+
+    def head(
+        self,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        max_bytes: int | None = None,
+    ) -> httpx.Response:
+        """Fetch response headers only through the same SSRF-safe pipeline."""
+        response, client = self._send(url, method="HEAD", headers=headers)
+        try:
+            # A HEAD response has no body to consume, but an invalid declared
+            # size must still be rejected before it reaches the API boundary.
+            declared_size = _content_length(response.headers)
+            if (
+                declared_size is not None
+                and max_bytes is not None
+                and declared_size > max_bytes
+            ):
+                raise UpstreamTooLarge("upstream response exceeds byte limit")
+            safe = httpx.Response(
+                response.status_code,
+                headers=response.headers,
+                content=b"",
+                request=response.request,
+                extensions=response.extensions,
+            )
+        finally:
+            _close_resources(response, client, suppress=True)
+        return safe
 
     def stream(
         self,
