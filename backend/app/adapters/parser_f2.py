@@ -78,10 +78,12 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import unicodedata
 import uuid
 from urllib.parse import urlsplit
 
 import httpx
+from pydantic import AnyUrl, ValidationError
 
 from app.adapters.engine_errors import (
     CookieInvalidError,
@@ -122,6 +124,19 @@ _MESSAGE_NO_MEDIA = (
 )
 _MESSAGE_TIMEOUT = "解析超时 / Parse timeout"
 _MESSAGE_NETWORK = "网络错误 / Network error"
+
+_URL_FIELDS = (
+    "url",
+    "src",
+    "uri",
+    "download_url",
+    "play_url",
+    "play_addr",
+    "video_url",
+    "image_url",
+)
+_MAX_URL_CANDIDATES = 256
+_MAX_URL_DEPTH = 3
 _MESSAGE_BLOCKED = (
     "平台风控，请求被拦截 / Platform anti-scraping blocked the request"
 )
@@ -354,23 +369,81 @@ class F2ParserAdapter:
 
     @staticmethod
     def _usable_urls(values) -> list[str]:
-        """Return ordered, trimmed absolute HTTP(S) URLs from an f2 list."""
-        if not values or isinstance(values, (str, bytes)):
-            return []
+        """Return bounded, ordered, validated URLs from f2-shaped values."""
+        candidates: list[str] = []
+        F2ParserAdapter._collect_url_candidates(values, candidates, set(), 0)
         usable: list[str] = []
-        for value in values:
-            if not isinstance(value, str):
-                continue
-            cleaned = value.strip()
-            parts = urlsplit(cleaned)
-            if (
-                cleaned
-                and not any(character.isspace() for character in cleaned)
-                and parts.scheme in ("http", "https")
-                and parts.netloc
-            ):
+        seen: set[str] = set()
+        for candidate in candidates:
+            cleaned = F2ParserAdapter._validated_url(candidate)
+            if cleaned is not None and cleaned not in seen:
+                seen.add(cleaned)
                 usable.append(cleaned)
         return usable
+
+    @classmethod
+    def _collect_url_candidates(
+        cls, value, output: list[str], seen: set[int], depth: int
+    ) -> None:
+        """Flatten only known f2 containers/fields, with strict bounds."""
+        if len(output) >= _MAX_URL_CANDIDATES or value is None:
+            return
+        if isinstance(value, (str, AnyUrl)):
+            output.append(str(value))
+            return
+        if depth >= _MAX_URL_DEPTH:
+            return
+        if isinstance(value, (list, tuple)):
+            identity = id(value)
+            if identity in seen:
+                return
+            seen.add(identity)
+            for item in value:
+                cls._collect_url_candidates(item, output, seen, depth + 1)
+            return
+        if isinstance(value, dict):
+            identity = id(value)
+            if identity in seen:
+                return
+            seen.add(identity)
+            for field in _URL_FIELDS:
+                if field in value:
+                    cls._collect_url_candidates(value[field], output, seen, depth + 1)
+            return
+        identity = id(value)
+        if identity in seen:
+            return
+        seen.add(identity)
+        for field in _URL_FIELDS:
+            try:
+                child = getattr(value, field)
+            except Exception:
+                continue
+            cls._collect_url_candidates(child, output, seen, depth + 1)
+
+    @staticmethod
+    def _validated_url(value: str) -> str | None:
+        """Validate one candidate without allowing malformed peers to abort."""
+        cleaned = value.strip()
+        if not cleaned or any(
+            character.isspace() or unicodedata.category(character) == "Cc"
+            for character in cleaned
+        ):
+            return None
+        try:
+            parts = urlsplit(cleaned)
+            if parts.scheme.lower() not in ("http", "https"):
+                return None
+            if not parts.hostname:
+                return None
+            # Accessing .port forces urllib to validate malformed ports.
+            _ = parts.port
+            # Validate each resource with the same strict contract used by the
+            # manifest; the format token is only a temporary validation value.
+            MediaResource(url=cleaned, format="url")
+        except (TypeError, ValueError, UnicodeError, ValidationError):
+            return None
+        return cleaned
 
     @staticmethod
     def _resource(url: str, default_format: str) -> MediaResource:
@@ -383,7 +456,7 @@ class F2ParserAdapter:
         play_urls = self._usable_urls(getattr(data, "video_play_addr", []) or [])
         try:
             aweme_type = int(getattr(data, "aweme_type", 0) or 0)
-        except (TypeError, ValueError):
+        except (OverflowError, TypeError, ValueError):
             aweme_type = 0
 
         if aweme_type == 68 or motions:
