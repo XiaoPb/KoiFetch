@@ -22,14 +22,16 @@ def resource(**overrides) -> MediaResource:
 def test_video_manifest_round_trips_with_stable_json_serialization():
     manifest = MediaManifest(
         kind="video",
-        videos=[resource(url="https://cdn.example/a.mp4", format="mp4")],
-        warnings=["quality metadata unavailable"],
+        videos=(resource(url="https://cdn.example/a.mp4", format="mp4"),),
+        warnings=("quality metadata unavailable",),
     )
 
     dumped = manifest.model_dump(mode="json")
-    loaded = MediaManifest.model_validate(dumped)
+    loaded = MediaManifest.model_validate_json(manifest.model_dump_json())
 
     assert loaded == manifest
+    assert isinstance(dumped["videos"], list)
+    assert isinstance(dumped["warnings"], list)
     assert dumped == {
         "version": 1,
         "kind": "video",
@@ -52,7 +54,10 @@ def test_video_manifest_round_trips_with_stable_json_serialization():
 def test_image_album_manifest_round_trips():
     manifest = MediaManifest(
         kind="image_album",
-        images=[resource(), resource(url="https://cdn.example/b.png", format="png")],
+        images=(
+            resource(),
+            resource(url="https://cdn.example/b.png", format="png"),
+        ),
     )
 
     assert MediaManifest.model_validate(manifest.model_dump()) == manifest
@@ -61,21 +66,22 @@ def test_image_album_manifest_round_trips():
 def test_live_photo_manifest_round_trips_with_optional_motion():
     manifest = MediaManifest(
         kind="live_photo",
-        live_photos=[
+        live_photos=(
             LivePhotoPair(
                 image=resource(),
                 motion=resource(url="https://cdn.example/a.mp4", format="mp4"),
             ),
             LivePhotoPair(image=resource(url="https://cdn.example/b.webp")),
-        ],
-        warnings=["1 张实况照片缺少动态视频"],
+        ),
+        warnings=("1 张实况照片缺少动态视频",),
     )
 
-    loaded = MediaManifest.model_validate(manifest.model_dump(mode="json"))
+    loaded = MediaManifest.model_validate_json(manifest.model_dump_json())
 
     assert loaded == manifest
     assert loaded.live_photos[1].motion is None
-    assert loaded.warnings == ["1 张实况照片缺少动态视频"]
+    assert loaded.warnings == ("1 张实况照片缺少动态视频",)
+    assert isinstance(manifest.model_dump(mode="json")["live_photos"], list)
 
 
 def test_resource_rejects_non_http_resource_url():
@@ -91,6 +97,15 @@ def test_resource_format_is_non_empty_and_at_most_16_characters():
         resource(format=" " * 16)
     with pytest.raises(ValidationError):
         resource(format="x" * 17)
+    for invalid in (
+        " mp4",
+        "mp 4",
+        "mp4/part",
+        "mp4\\part",
+        "mp4\n",
+    ):
+        with pytest.raises(ValidationError):
+            resource(format=invalid)
 
     assert resource(format="x" * 16).format == "x" * 16
 
@@ -110,6 +125,40 @@ def test_resource_size_bytes_must_be_non_negative():
     assert resource(size_bytes=0).size_bytes == 0
 
 
+def test_resource_quality_has_a_bounded_clean_value():
+    with pytest.raises(ValidationError):
+        resource(quality="")
+    with pytest.raises(ValidationError):
+        resource(quality="x" * 65)
+    for invalid in ("1080p\n", "1080p\t", "1080p\x00"):
+        with pytest.raises(ValidationError):
+            resource(quality=invalid)
+
+    assert resource(quality="x" * 64).quality == "x" * 64
+
+
+def test_manifest_warnings_are_bounded_and_clean():
+    with pytest.raises(ValidationError):
+        MediaManifest(
+            kind="video", videos=(resource(),), warnings=("x" * 257,)
+        )
+    with pytest.raises(ValidationError):
+        MediaManifest(kind="video", videos=(resource(),), warnings=("warning\n",))
+    with pytest.raises(ValidationError):
+        MediaManifest(
+            kind="video",
+            videos=(resource(),),
+            warnings=tuple("warning" for _ in range(33)),
+        )
+
+    manifest = MediaManifest(
+        kind="video",
+        videos=(resource(),),
+        warnings=tuple("warning" for _ in range(32)),
+    )
+    assert len(manifest.warnings) == 32
+
+
 @pytest.mark.parametrize("field", ["width", "height", "size_bytes"])
 @pytest.mark.parametrize("value", ["1", 1.0, True])
 def test_resource_numeric_fields_reject_coercion(field, value):
@@ -127,14 +176,28 @@ def test_resource_and_manifest_reject_extra_fields_and_are_frozen():
     with pytest.raises(ValidationError):
         resource(unexpected="field")
     with pytest.raises(ValidationError):
-        MediaManifest(kind="video", videos=[resource()], unexpected="field")
+        MediaManifest(kind="video", videos=(resource(),), unexpected="field")
 
     item = resource()
     with pytest.raises(ValidationError):
         item.format = "mp4"
-    manifest = MediaManifest(kind="video", videos=[item])
+    manifest = MediaManifest(kind="video", videos=(item,))
     with pytest.raises(ValidationError):
         manifest.kind = "image_album"
+
+
+def test_manifest_collections_and_live_photo_pairs_are_deeply_frozen():
+    pair = LivePhotoPair(image=resource())
+    manifest = MediaManifest(kind="live_photo", live_photos=(pair,))
+
+    with pytest.raises(AttributeError):
+        manifest.live_photos.append(pair)
+    with pytest.raises(TypeError):
+        manifest.live_photos[0] = pair
+    with pytest.raises(ValidationError):
+        pair.image = resource(format="jpg")
+    with pytest.raises(ValidationError):
+        LivePhotoPair(image=resource(), unexpected="field")
 
 
 def test_manifest_requires_exactly_one_non_empty_payload_matching_kind():
@@ -142,10 +205,14 @@ def test_manifest_requires_exactly_one_non_empty_payload_matching_kind():
         {"kind": "video"},
         {"kind": "image_album"},
         {"kind": "live_photo"},
-        {"kind": "video", "videos": [resource()], "images": [resource()]},
-        {"kind": "image_album", "images": [resource()], "videos": [resource()]},
-        {"kind": "live_photo", "live_photos": [LivePhotoPair(image=resource())], "images": [resource()]},
-        {"kind": "video", "live_photos": [LivePhotoPair(image=resource())]},
+        {"kind": "video", "videos": (resource(),), "images": (resource(),)},
+        {"kind": "image_album", "images": (resource(),), "videos": (resource(),)},
+        {
+            "kind": "live_photo",
+            "live_photos": (LivePhotoPair(image=resource()),),
+            "images": (resource(),),
+        },
+        {"kind": "video", "live_photos": (LivePhotoPair(image=resource()),)},
     ]
 
     for values in cases:
@@ -155,6 +222,6 @@ def test_manifest_requires_exactly_one_non_empty_payload_matching_kind():
 
 def test_manifest_accepts_only_supported_kinds_and_version():
     with pytest.raises(ValidationError):
-        MediaManifest(kind="audio", videos=[resource()])
+        MediaManifest(kind="audio", videos=(resource(),))
     with pytest.raises(ValidationError):
-        MediaManifest(kind="video", version=2, videos=[resource()])
+        MediaManifest(kind="video", version=2, videos=(resource(),))
