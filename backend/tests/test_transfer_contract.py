@@ -61,11 +61,17 @@ def test_direct_transfer_requires_a_bounded_same_origin_api_path():
     assert transfer.mode == "direct"
 
     invalid_urls = (
+        "/api",
         "https://example.test/api/download/direct/task-1/asset",
         "//example.test/api/download/direct/task-1/asset",
         "/api/download/direct/../secret",
         "/api/download/direct/%2e%2e/secret",
+        "/api/download/direct/%2fsecret",
+        "/api/download/direct/%5csecret",
+        "/api/download/direct/%252e%252e/secret",
         "/api/download/direct/task-1\x00/asset",
+        "/api/download/direct/task-1/%2500/asset",
+        "/api/download/direct/task-1/%ZZ/asset",
         "/download/direct/task-1/asset",
         "/api/download/direct/task-1/asset#fragment",
     )
@@ -73,9 +79,27 @@ def test_direct_transfer_requires_a_bounded_same_origin_api_path():
         with pytest.raises(ValidationError):
             DirectTransfer(url=url, filename="clip.mp4")
 
+    invalid_query_urls = (
+        "/api/download/direct/task-1/asset?path=%2fsecret",
+        "/api/download/direct/task-1/asset?path=%5csecret",
+        "/api/download/direct/task-1/asset?path=%252e%252e%252fsecret",
+        "/api/download/direct/task-1/asset?path=%00",
+        "/api/download/direct/task-1/asset?path=%0d%0a",
+        "/api/download/direct/task-1/asset?path=%ZZ",
+    )
+    for url in invalid_query_urls:
+        with pytest.raises(ValidationError):
+            DirectTransfer(url=url, filename="clip.mp4")
+
 
 def test_direct_transfer_rejects_unsafe_or_unbounded_filenames():
-    for filename in ("", " ", ".", "..", "../clip.mp4", r"..\clip.mp4", "a/b.mp4", "a\\b.mp4", "bad\nname.mp4", "x" * 256):
+    for filename in (
+        "", " ", ".", "..", "../clip.mp4", r"..\clip.mp4", "a/b.mp4",
+        "a\\b.mp4", "bad\nname.mp4", "x" * 256,
+        "clip.", "clip ", "<clip>.mp4", "clip:name.mp4", "clip|name.mp4",
+        "clip?name.mp4", "clip*name.mp4", "CON", "con.txt", "PRN.jpeg",
+        "AUX.tar", "NUL.bin", "CLOCK$.txt", "COM1.mp4", "com9.zip", "LPT1.txt",
+    ):
         with pytest.raises(ValidationError):
             DirectTransfer(
                 url="/api/download/direct/task-1/asset",
@@ -112,6 +136,19 @@ def test_staged_transfer_requires_a_safe_bounded_id_and_forbids_extras():
             StagedTransfer(download_id=download_id, status="pending")
     with pytest.raises(ValidationError):
         StagedTransfer(download_id="download-1", status="pending", extra="x")
+
+
+def test_staged_transfer_status_accepts_only_enum_or_exact_values():
+    class StringLike(str):
+        pass
+
+    for status in ("pending", "downloading", "completed"):
+        assert StagedTransfer(download_id="download-1", status=status).status is getattr(
+            DownloadStatus, status.upper()
+        )
+    for status in (b"pending", 1, True, StringLike("pending"), " PENDING"):
+        with pytest.raises(ValidationError):
+            StagedTransfer(download_id="download-1", status=status)
 
 
 def test_prepare_request_is_strict_frozen_and_round_trips_json_stably():

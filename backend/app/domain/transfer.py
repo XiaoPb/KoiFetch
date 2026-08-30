@@ -50,9 +50,52 @@ SafeId = Annotated[
     ),
 ]
 
-_CONTROL_OR_SEPARATOR = re.compile(r"[\x00-\x1f\x7f\\/]")
+_MALFORMED_PERCENT_ESCAPE = re.compile(r"%(?![0-9A-Fa-f]{2})")
+_PERCENT_SEPARATOR = re.compile(r"%(?:2f|5c)", re.IGNORECASE)
 _MAX_URL_LENGTH = 2048
 _MAX_FILENAME_LENGTH = 255
+_WINDOWS_INVALID_FILENAME = re.compile(r'[\x00-\x1f\x7f<>:"/\\|?*]')
+_RESERVED_DEVICE_BASENAMES = {
+    "con",
+    "prn",
+    "aux",
+    "nul",
+    "clock$",
+    *(f"com{index}" for index in range(1, 10)),
+    *(f"lpt{index}" for index in range(1, 10)),
+}
+
+
+def _decode_url_component(value: str) -> str:
+    """Decode a URL component while rejecting malformed/hidden escapes."""
+    current = value
+    for _ in range(8):
+        if _MALFORMED_PERCENT_ESCAPE.search(current):
+            raise ValueError("URL contains a malformed percent escape")
+        if "%" not in current:
+            return current
+        decoded = unquote(current)
+        if decoded == current:
+            return current
+        current = decoded
+    # Generated routes are ASCII, so an escape chain that survives this bound
+    # is not a useful URL and should not be allowed to hide path semantics.
+    raise ValueError("URL contains too many nested percent escapes")
+
+
+def _has_encoded_separator(value: str) -> bool:
+    """Detect slash/backslash escapes at any bounded decoding depth."""
+    current = value
+    for _ in range(8):
+        if _PERCENT_SEPARATOR.search(current):
+            return True
+        if _MALFORMED_PERCENT_ESCAPE.search(current) or "%" not in current:
+            return False
+        decoded = unquote(current)
+        if decoded == current:
+            return False
+        current = decoded
+    return True
 
 
 class AssetSelector(BaseModel):
@@ -107,16 +150,25 @@ class DirectTransfer(BaseModel):
         # fragments are client-only and are not part of an API route.
         if parts.scheme or parts.netloc or parts.fragment:
             raise ValueError("direct transfer URL must be a same-origin API path")
-        if not (value == "/api" or value.startswith("/api/")):
+        if not parts.path.startswith("/api/"):
             raise ValueError("direct transfer URL must start with /api/")
 
-        decoded_path = unquote(parts.path)
+        if _has_encoded_separator(parts.path) or _has_encoded_separator(parts.query):
+            raise ValueError("direct transfer URL must not contain encoded separators")
+        decoded_path = _decode_url_component(parts.path)
+        decoded_query = _decode_url_component(parts.query)
         if any(ord(ch) < 32 or ord(ch) == 127 for ch in decoded_path):
+            raise ValueError("direct transfer URL must not contain encoded controls")
+        if any(ord(ch) < 32 or ord(ch) == 127 for ch in decoded_query):
             raise ValueError("direct transfer URL must not contain encoded controls")
         if any(segment in {".", ".."} for segment in decoded_path.split("/")):
             raise ValueError("direct transfer URL must not contain traversal segments")
         if "\\" in decoded_path:
             raise ValueError("direct transfer URL must not contain backslashes")
+        if "/" in decoded_query or "\\" in decoded_query:
+            raise ValueError("direct transfer URL query must not contain separators")
+        if any(token in {".", ".."} for token in re.split(r"[&=/?#]", decoded_query)):
+            raise ValueError("direct transfer URL query must not contain traversal segments")
         return value
 
     @field_validator("filename")
@@ -124,8 +176,15 @@ class DirectTransfer(BaseModel):
     def _validate_filename(cls, value: str) -> str:
         if value.strip() in {"", ".", ".."}:
             raise ValueError("attachment filename must be a non-empty name")
-        if _CONTROL_OR_SEPARATOR.search(value):
-            raise ValueError("attachment filename must not contain path separators or controls")
+        if _WINDOWS_INVALID_FILENAME.search(value):
+            raise ValueError(
+                "attachment filename must not contain Windows-invalid characters"
+            )
+        if value.endswith((".", " ")):
+            raise ValueError("attachment filename must not end with a dot or space")
+        basename = value.split(".", 1)[0].rstrip(" .").casefold()
+        if basename in _RESERVED_DEVICE_BASENAMES:
+            raise ValueError("attachment filename uses a reserved device basename")
         return value
 
 
@@ -138,9 +197,20 @@ class StagedTransfer(BaseModel):
     download_id: SafeId
     status: DownloadStatus
 
-    @field_validator("status")
+    @field_validator("status", mode="before")
     @classmethod
-    def _validate_status(cls, value: DownloadStatus) -> DownloadStatus:
+    def _validate_status(cls, value: object) -> DownloadStatus:
+        if isinstance(value, DownloadStatus):
+            status = value
+        elif type(value) is str:
+            try:
+                status = DownloadStatus(value)
+            except ValueError as exc:
+                raise ValueError("status must be a DownloadStatus value") from exc
+        else:
+            raise ValueError("status must be a DownloadStatus or exact string value")
+
+        value = status
         if value in {DownloadStatus.FAILED, DownloadStatus.EXPIRED}:
             raise ValueError("staged transfer status must be active or completed")
         return value
