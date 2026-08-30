@@ -143,3 +143,44 @@ describe('ResultCard legacy URL isolation', () => {
     expect(document.body).not.toHaveTextContent('private-cover-token');
   });
 });
+
+describe('ResultCard public route isolation', () => {
+  it('does not render manifest resources or covers belonging to another task', () => {
+    const props = {
+      downloading: false,
+      onPreview: vi.fn(),
+      onDownload: vi.fn(),
+      onDownloadImage: vi.fn(),
+      onDownloadAlbum: vi.fn(),
+    };
+    const crossTaskVideo: ParseResult = {
+      task_id: 'task-video', url: 'https://example.com/video', type: 'video', platform: 'douyin',
+      title: 'Video', cover: '/api/preview/other-task/resources/image/0', duration: null,
+      file_size_mb: null, format: 'mp4', available_qualities: [], available_bitrates: [],
+      manifest: { kind: 'video', videos: [{ url: '/api/preview/other-task/resources/video/0', format: 'mp4', quality: null }] },
+    };
+    const crossTaskImage: ParseResult = {
+      task_id: 'task-image', url: 'https://example.com/image', type: 'image', platform: 'douyin',
+      title: 'Image', cover: '/api/preview/other-task/resources/image/0', duration: null,
+      file_size_mb: null, format: 'jpg', available_qualities: [], available_bitrates: [],
+      manifest: { kind: 'image_album', images: [{ url: '/api/preview/other-task/resources/image/0', format: 'jpg' }] },
+    };
+    const crossTaskLive: ParseResult = {
+      task_id: 'task-live', url: 'https://example.com/live', type: 'live_photo', platform: 'douyin',
+      title: 'Live', cover: '/api/preview/other-task/resources/live/0/image', duration: null,
+      file_size_mb: null, format: 'heic', available_qualities: [], available_bitrates: [],
+      manifest: {
+        kind: 'live_photo',
+        live_photos: [{ image_url: '/api/preview/other-task/resources/live/0/image', motion_url: '/api/preview/other-task/resources/live/0/motion' }],
+        warnings: [],
+      },
+    };
+
+    const { rerender } = renderWithProviders(<ResultCard result={crossTaskVideo} {...props} />);
+    expect(screen.queryByTestId('mock-video-player')).not.toBeInTheDocument();
+    rerender(<ResultCard result={crossTaskImage} {...props} />);
+    expect(screen.queryByTestId('mock-image-carousel')).not.toBeInTheDocument();
+    rerender(<ResultCard result={crossTaskLive} {...props} />);
+    expect(screen.queryByTestId('live-photo-task-live')).not.toBeInTheDocument();
+  });
+});

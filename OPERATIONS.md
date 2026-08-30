@@ -466,7 +466,7 @@ carries its one-line rationale:
 | Deferred item | Rationale |
 | --- | --- |
 | Multi-image browsing | Parse returns a single item per URL; gallery flows are not modeled |
-| Live Photo preview | No live-photo media type or preview stream in v1 |
+| Extended live-photo workflows | Parse-time live-photo metadata and same-origin card previews are supported; broader playback/download workflows remain future scope |
 | Music audition | Preview is metadata/still-based; no audio playback endpoint |
 | ZIP batch downloads | v1 serves exactly one file per tokenized link |
 | Full NAS file browser (list / delete / rename / move / search) | v1 has exactly `POST /api/nas/save`; no `/api/nas/list` or destructive operations |

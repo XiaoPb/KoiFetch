@@ -88,6 +88,8 @@ export interface ParserState {
   reset: () => void;
 }
 
+let parseGeneration = 0;
+
 export const useParserStore = create<ParserState>()((set, get) => ({
   input: '',
   results: [],
@@ -98,24 +100,34 @@ export const useParserStore = create<ParserState>()((set, get) => ({
   setInput: (input) => set({ input }),
 
   parse: async () => {
+    const generation = ++parseGeneration;
     const urls = extractUrls(get().input);
     if (urls.length === 0) {
-      set({ status: 'error', error: PARSER_EMPTY_INPUT_MESSAGE, results: [], failed: [] });
+      if (generation === parseGeneration) {
+        set({ status: 'error', error: PARSER_EMPTY_INPUT_MESSAGE, results: [], failed: [] });
+      }
       return;
     }
     if (urls.length > MAX_PARSE_URLS) {
-      set({ status: 'error', error: PARSER_TOO_MANY_URLS_MESSAGE, results: [], failed: [] });
+      if (generation === parseGeneration) {
+        set({ status: 'error', error: PARSER_TOO_MANY_URLS_MESSAGE, results: [], failed: [] });
+      }
       return;
     }
     // A new attempt clears the previous output so stale cards never linger.
     set({ status: 'loading', error: null, results: [], failed: [] });
     try {
       const data = await parseApi.parse(urls);
+      if (generation !== parseGeneration) return;
       set({ status: 'success', results: data.results, failed: data.failed });
     } catch (err) {
+      if (generation !== parseGeneration) return;
       set({ status: 'error', error: getErrorMessage(err) });
     }
   },
 
-  reset: () => set({ input: '', results: [], failed: [], status: 'idle', error: null }),
+  reset: () => {
+    parseGeneration += 1;
+    set({ input: '', results: [], failed: [], status: 'idle', error: null });
+  },
 }));

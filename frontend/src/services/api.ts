@@ -109,18 +109,24 @@ function isSafeTaskId(value: unknown): value is string {
   );
 }
 
-function isPublicResourceUrl(
+export type PublicPreviewResourceKind = 'video' | 'image' | 'live';
+export type PublicPreviewResourceSuffix = 'image' | 'motion';
+
+/** Validate one canonical same-origin preview route and bind it to a task. */
+export function isSafePublicPreviewRoute(
   value: unknown,
-  taskId: string,
-  resourceKind: 'video' | 'image' | 'live',
-  suffix?: 'image' | 'motion',
+  taskId: unknown,
+  resourceKind?: PublicPreviewResourceKind,
+  suffix?: PublicPreviewResourceSuffix,
 ): value is string {
-  if (typeof value !== 'string') return false;
+  if (!isSafeTaskId(taskId) || typeof value !== 'string') return false;
   const prefix = `/api/preview/${taskId}/resources/`;
   if (!value.startsWith(prefix)) return false;
   const path = value.slice(prefix.length).split('/');
   if (path.length !== (suffix === undefined ? 2 : 3)) return false;
-  if (path[0] !== resourceKind || !/^(0|[1-9]\d*)$/.test(path[1])) return false;
+  if (resourceKind !== undefined && path[0] !== resourceKind) return false;
+  if (!['video', 'image', 'live'].includes(path[0])) return false;
+  if (!/^(0|[1-9]\d*)$/.test(path[1])) return false;
   return suffix === undefined || path[2] === suffix;
 }
 
@@ -163,7 +169,7 @@ function normalizePublicManifest(
       const quality = item.quality === null ? null : stringValue(item.quality);
       return (
         url !== null &&
-        isPublicResourceUrl(url, taskId, 'video') &&
+        isSafePublicPreviewRoute(url, taskId, 'video') &&
         isSafeString(format, MAX_FORMAT_LENGTH) &&
         (item.quality === null || (quality !== null && isSafePublicText(quality)))
       )
@@ -184,7 +190,7 @@ function normalizePublicManifest(
       if (!isRecord(item)) return null;
       const url = stringValue(item.url);
       const format = stringValue(item.format);
-      return url !== null && isPublicResourceUrl(url, taskId, 'image') && isSafeString(format, MAX_FORMAT_LENGTH)
+      return url !== null && isSafePublicPreviewRoute(url, taskId, 'image') && isSafeString(format, MAX_FORMAT_LENGTH)
         ? { url, format }
         : null;
     });
@@ -205,9 +211,9 @@ function normalizePublicManifest(
       const motionUrl = item.motion_url === null ? null : stringValue(item.motion_url);
       return (
         imageUrl !== null &&
-        isPublicResourceUrl(imageUrl, taskId, 'live', 'image') &&
+        isSafePublicPreviewRoute(imageUrl, taskId, 'live', 'image') &&
         (item.motion_url === null ||
-          (motionUrl !== null && isPublicResourceUrl(motionUrl, taskId, 'live', 'motion')))
+          (motionUrl !== null && isSafePublicPreviewRoute(motionUrl, taskId, 'live', 'motion')))
       )
         ? { image_url: imageUrl, motion_url: motionUrl }
         : null;
@@ -251,8 +257,8 @@ export function normalizePreviewData(value: unknown, taskId: string): PreviewDat
     const candidate = stringValue(value.cover);
     const isValid =
       candidate !== null &&
-      ((previewType === 'image' && isPublicResourceUrl(candidate, taskId, 'image')) ||
-        (previewType === 'live_photo' && isPublicResourceUrl(candidate, taskId, 'live', 'image')));
+      ((previewType === 'image' && isSafePublicPreviewRoute(candidate, taskId, 'image')) ||
+        (previewType === 'live_photo' && isSafePublicPreviewRoute(candidate, taskId, 'live', 'image')));
     if (isValid) cover = candidate;
   }
 
@@ -333,8 +339,8 @@ export function normalizeParseResult(result: unknown): ParseResult | null {
   if (
     cover !== null &&
     !(
-      (normalizedType === 'image' && isPublicResourceUrl(cover, taskId, 'image')) ||
-      (normalizedType === 'live_photo' && isPublicResourceUrl(cover, taskId, 'live', 'image'))
+      (normalizedType === 'image' && isSafePublicPreviewRoute(cover, taskId, 'image')) ||
+      (normalizedType === 'live_photo' && isSafePublicPreviewRoute(cover, taskId, 'live', 'image'))
     )
   ) {
     return null;

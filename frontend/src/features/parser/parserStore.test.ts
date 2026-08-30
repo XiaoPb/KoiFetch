@@ -13,6 +13,7 @@ import {
 
 vi.mock('../../services/api', () => ({
   parseApi: { parse: vi.fn() },
+  isSafePublicPreviewRoute: vi.fn(() => true),
 }));
 
 const videoResult: ParseResult = {
@@ -179,6 +180,55 @@ describe('parserStore', () => {
     resolveParse(okParse({ results: [musicResult] }));
     await pending;
     expect(useParserStore.getState().results).toEqual([musicResult]);
+  });
+
+  it('keeps only the latest parse response when requests resolve out of order', async () => {
+    let resolveOld!: (value: unknown) => void;
+    let resolveNew!: (value: unknown) => void;
+    (parseApi.parse as Mock)
+      .mockReturnValueOnce(new Promise((resolve) => { resolveOld = resolve; }))
+      .mockReturnValueOnce(new Promise((resolve) => { resolveNew = resolve; }));
+
+    useParserStore.setState({ input: 'https://example.com/old' });
+    const oldRequest = useParserStore.getState().parse();
+    useParserStore.setState({ input: 'https://example.com/new' });
+    const newRequest = useParserStore.getState().parse();
+
+    resolveNew(okParse({ results: [musicResult] }));
+    await newRequest;
+    resolveOld(okParse({ results: [videoResult] }));
+    await oldRequest;
+
+    expect(useParserStore.getState()).toMatchObject({ status: 'success', results: [musicResult], failed: [] });
+  });
+
+  it('keeps reset state when an in-flight parse resolves afterward', async () => {
+    let resolveParse!: (value: unknown) => void;
+    (parseApi.parse as Mock).mockReturnValue(new Promise((resolve) => { resolveParse = resolve; }));
+    useParserStore.setState({ input: 'https://example.com/old' });
+    const pending = useParserStore.getState().parse();
+
+    useParserStore.getState().reset();
+    resolveParse(okParse());
+    await pending;
+
+    expect(useParserStore.getState()).toMatchObject({
+      input: '', results: [], failed: [], status: 'idle', error: null,
+    });
+  });
+
+  it('invalidates an in-flight parse when a newer validation attempt fails', async () => {
+    let resolveParse!: (value: unknown) => void;
+    (parseApi.parse as Mock).mockReturnValue(new Promise((resolve) => { resolveParse = resolve; }));
+    useParserStore.setState({ input: 'https://example.com/old' });
+    const pending = useParserStore.getState().parse();
+
+    useParserStore.setState({ input: '   ' });
+    await useParserStore.getState().parse();
+    resolveParse(okParse());
+    await pending;
+
+    expect(useParserStore.getState()).toMatchObject({ status: 'error', error: PARSER_EMPTY_INPUT_MESSAGE, results: [] });
   });
 
   it('rejects an empty input without calling the API', async () => {

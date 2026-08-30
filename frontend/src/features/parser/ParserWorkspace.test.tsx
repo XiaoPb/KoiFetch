@@ -14,6 +14,14 @@ import { useCookieStore } from '../cookies/cookieStore';
 
 vi.mock('../../services/api', () => ({
   parseApi: { parse: vi.fn() },
+  isSafePublicPreviewRoute: (value: unknown, taskId: unknown, kind?: string, suffix?: string) => {
+    if (typeof value !== 'string' || typeof taskId !== 'string') return false;
+    const prefix = `/api/preview/${taskId}/resources/`;
+    const parts = value.startsWith(prefix) ? value.slice(prefix.length).split('/') : [];
+    return parts.length === (suffix ? 3 : 2) && (!kind || parts[0] === kind) &&
+      ['video', 'image', 'live'].includes(parts[0]) && /^(0|[1-9]\d*)$/.test(parts[1]) &&
+      (!suffix || parts[2] === suffix);
+  },
   downloadApi: { submit: vi.fn(), getProgress: vi.fn(), getFileUrl: (url: string) => url },
   mediaApi: {
     streamUrl: (taskId: string) => `/api/preview/${taskId}/stream`,
@@ -513,6 +521,67 @@ describe('ParserWorkspace', () => {
     expect(await screen.findByTestId('card-player-t1')).toBeInTheDocument();
     // The cover/duration badge are replaced while the player is active.
     expect(screen.queryByTestId('duration-t1')).not.toBeInTheDocument();
+  });
+
+  it('reuses a completed download only when its selected variant matches', async () => {
+    (parseApi.parse as Mock).mockResolvedValue({ results: [videoResult], failed: [] });
+    useDownloadsStore.setState({
+      items: [
+        {
+          download_id: 'd1', task_id: 't1', status: 'completed', title: 'Video A',
+          format: 'mp4', quality: '1080p', created_at: '2026-01-01T00:00:00Z',
+          progress: 1, speed: null, downloaded_bytes: 100, total_bytes: 100,
+          remaining_time: null, error_code: null, error_message: null,
+          download_url: '/api/download/file/d1?token=t',
+          token_expire_at: '2099-01-01T00:00:00Z',
+        },
+      ],
+    });
+    const open = vi.spyOn(window, 'open').mockImplementation(() => null);
+    const user = userEvent.setup();
+    try {
+      renderWithProviders(<ParserWorkspace />);
+      await submitUrl('https://example.com/v/a');
+      await user.click(await screen.findByTestId('download-t1'));
+
+      expect(open).toHaveBeenCalledWith('/api/download/file/d1?token=t', '_blank', 'noopener');
+      expect(downloadApi.submit).not.toHaveBeenCalled();
+    } finally {
+      open.mockRestore();
+    }
+  });
+
+  it('submits a new download when the selected variant differs from a completed one', async () => {
+    (parseApi.parse as Mock).mockResolvedValue({ results: [videoResult], failed: [] });
+    (downloadApi.submit as Mock).mockResolvedValue({
+      download_id: 'd2', task_id: 't1', status: 'pending', created_at: '2026-01-01T00:00:00Z',
+    });
+    useDownloadsStore.setState({
+      items: [
+        {
+          download_id: 'd1', task_id: 't1', status: 'completed', title: 'Video A',
+          format: 'mp4', quality: '720p', created_at: '2026-01-01T00:00:00Z',
+          progress: 1, speed: null, downloaded_bytes: 100, total_bytes: 100,
+          remaining_time: null, error_code: null, error_message: null,
+          download_url: '/api/download/file/d1?token=t',
+          token_expire_at: '2099-01-01T00:00:00Z',
+        },
+      ],
+    });
+    const open = vi.spyOn(window, 'open').mockImplementation(() => null);
+    const user = userEvent.setup();
+    try {
+      renderWithProviders(<ParserWorkspace />);
+      await submitUrl('https://example.com/v/a');
+      await user.click(screen.getByTestId('download-t1'));
+
+      expect(open).not.toHaveBeenCalled();
+      expect(downloadApi.submit).toHaveBeenCalledWith('t1', {
+        format: 'mp4', quality: '1080p',
+      });
+    } finally {
+      open.mockRestore();
+    }
   });
 
   it('plays a manifest video inline through its same-origin resource route', async () => {

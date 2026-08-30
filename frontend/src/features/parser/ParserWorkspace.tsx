@@ -30,6 +30,10 @@ export function readTxtFile(file: File): Promise<string> {
 /** TXT import size guard — a huge file would freeze the tab on decode. */
 export const MAX_TXT_IMPORT_BYTES = 1024 * 1024; // 1 MB
 
+function normalizeVariant(value: string | null | undefined): string | null {
+  return value ?? null;
+}
+
 /**
  * Parser workspace (PRD §4.2) — redesigned around a one-line search input.
  *
@@ -117,7 +121,12 @@ export function ParserWorkspace(): JSX.Element {
     const item = useDownloadsStore
       .getState()
       .items.find(
-        (i) => i.task_id === result.task_id && i.status === 'completed' && i.download_url != null,
+        (i) =>
+          i.task_id === result.task_id &&
+          i.status === 'completed' &&
+          i.download_url != null &&
+          normalizeVariant(i.format) === normalizeVariant(options.format) &&
+          normalizeVariant(i.quality) === normalizeVariant(options.quality),
       );
     if (item) {
       const url = item.download_url;

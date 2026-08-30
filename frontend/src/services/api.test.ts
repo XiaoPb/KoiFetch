@@ -1,6 +1,12 @@
 import { describe, expect, it, vi, type Mock } from 'vitest';
 import { apiClient } from './apiClient';
-import { normalizeParseResult, normalizePreviewData, parseApi, previewApi } from './api';
+import {
+  isSafePublicPreviewRoute,
+  normalizeParseResult,
+  normalizePreviewData,
+  parseApi,
+  previewApi,
+} from './api';
 
 vi.mock('./apiClient', () => ({
   apiClient: { post: vi.fn(), get: vi.fn() },
@@ -26,6 +32,20 @@ const videoManifest = {
   kind: 'video',
   videos: [{ url: '/api/preview/video-1/resources/video/0', format: 'mp4', quality: null }],
 };
+
+describe('isSafePublicPreviewRoute', () => {
+  it('accepts canonical routes bound to the requested task', () => {
+    expect(isSafePublicPreviewRoute('/api/preview/task-1/resources/video/0', 'task-1', 'video')).toBe(true);
+    expect(isSafePublicPreviewRoute('/api/preview/task-1/resources/live/0/motion', 'task-1', 'live', 'motion')).toBe(true);
+  });
+
+  it('rejects cross-task, wrong-kind, and malformed routes', () => {
+    expect(isSafePublicPreviewRoute('/api/preview/other/resources/video/0', 'task-1', 'video')).toBe(false);
+    expect(isSafePublicPreviewRoute('/api/preview/task-1/resources/image/0', 'task-1', 'video')).toBe(false);
+    expect(isSafePublicPreviewRoute('/api/preview/task-1/resources/live/0/motion', 'task-1', 'live', 'image')).toBe(false);
+    expect(isSafePublicPreviewRoute('/api/preview/task-1/resources/video/0?token=secret', 'task-1', 'video')).toBe(false);
+  });
+});
 
 describe('normalizeParseResult', () => {
   it('retains a valid public live-photo manifest', () => {

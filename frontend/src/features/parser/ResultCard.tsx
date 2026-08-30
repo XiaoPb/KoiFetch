@@ -2,18 +2,12 @@ import { useMemo, useState } from 'react';
 import { Button, Card, Image, Select, Space, Tag, Typography } from 'antd';
 import { AudioOutlined, DownloadOutlined, EyeOutlined, PictureOutlined, VideoCameraOutlined } from '@ant-design/icons';
 import { useTranslation } from '../../services/i18n';
-import { downloadApi } from '../../services/api';
+import { downloadApi, isSafePublicPreviewRoute } from '../../services/api';
 import { useDownloadsStore } from '../../stores/downloadsStore';
 import type { ParseResult } from '../../types/api';
 import { VideoPlayer, type PlayableSource } from './VideoPlayer';
 import { ImageCarousel, COVER_FALLBACK } from './ImageCarousel';
 import { LivePhotoViewer } from './LivePhotoViewer';
-
-const PUBLIC_PREVIEW_ROUTE = /^\/api\/preview\/[A-Za-z0-9_-]+\/resources\/(?:video|image)\/(?:0|[1-9]\d*)$|^\/api\/preview\/[A-Za-z0-9_-]+\/resources\/live\/(?:0|[1-9]\d*)\/(?:image|motion)$/;
-
-function isPublicPreviewRoute(value: string | null | undefined): value is string {
-  return typeof value === 'string' && PUBLIC_PREVIEW_ROUTE.test(value);
-}
 
 /** Small translucent badge on the cover corner identifying the media type. */
 const TYPE_BADGE: Record<string, JSX.Element> = {
@@ -62,22 +56,33 @@ export function ResultCard({
   const [quality, setQuality] = useState<string | null>(result.available_qualities[0] ?? null);
   const [bitrate, setBitrate] = useState<string | null>(result.available_bitrates[0] ?? null);
   const [activeImage, setActiveImage] = useState(0);
+  const hasQuality = result.available_qualities.length > 0;
+  const hasBitrate = result.available_bitrates.length > 0;
+  const selectedQuality = result.type === 'video' && hasQuality ? quality : null;
 
   // A completed download's still-valid file link for this task — the final
   // playback fallback for videos after manifest sources.
   const completedUrl = useDownloadsStore((state) => {
     const item = state.items.find(
-      (i) => i.task_id === result.task_id && i.status === 'completed' && i.download_url != null,
+      (i) =>
+        i.task_id === result.task_id &&
+        i.status === 'completed' &&
+        i.download_url != null &&
+        (i.format ?? null) === (result.format ?? null) &&
+        (i.quality ?? null) === (selectedQuality ?? null),
     );
     if (!item) return null;
     if (item.token_expire_at && Date.parse(item.token_expire_at) <= Date.now()) return null;
     return item.download_url;
   });
 
-  const hasQuality = result.available_qualities.length > 0;
-  const hasBitrate = result.available_bitrates.length > 0;
   const sizeText = result.file_size_mb != null ? `${result.file_size_mb} MB` : '—';
-  const publicCover = isPublicPreviewRoute(result.cover) ? result.cover : null;
+  const publicCover =
+    (result.type === 'image' && isSafePublicPreviewRoute(result.cover, result.task_id, 'image')) ||
+    (result.type === 'live_photo' &&
+      isSafePublicPreviewRoute(result.cover, result.task_id, 'live', 'image'))
+      ? result.cover
+      : null;
 
   // Ordered playback candidates: public manifest routes first, then a
   // completed local file. Legacy upstream URLs are intentionally ignored.
@@ -86,14 +91,16 @@ export function ResultCard({
     const sources: PlayableSource[] = [];
     if (result.manifest?.kind === 'video') {
       for (const item of result.manifest.videos) {
-        sources.push({ url: item.url, format: item.format });
+        if (isSafePublicPreviewRoute(item.url, result.task_id, 'video')) {
+          sources.push({ url: item.url, format: item.format });
+        }
       }
     }
     if (completedUrl) {
       sources.push({ url: downloadApi.getFileUrl(completedUrl), format: result.format });
     }
     return sources;
-  }, [result, completedUrl]);
+  }, [result, completedUrl, selectedQuality]);
 
   const showPlayer = result.type === 'video' && playableSources.length > 0;
 
@@ -102,7 +109,9 @@ export function ResultCard({
   const albumImages: string[] = useMemo(() => {
     if (result.type !== 'image') return [];
     if (result.manifest?.kind === 'image_album') {
-      return result.manifest.images.map((item) => item.url);
+      return result.manifest.images.flatMap((item) =>
+        isSafePublicPreviewRoute(item.url, result.task_id, 'image') ? [item.url] : [],
+      );
     }
     return publicCover ? [publicCover] : [];
   }, [publicCover, result]);
@@ -114,8 +123,22 @@ export function ResultCard({
     onDownload(result, { format: result.format ?? null, quality: chosen });
   };
 
-  const livePhotoManifest =
-    result.type === 'live_photo' && result.manifest?.kind === 'live_photo' ? result.manifest : null;
+  const livePhotoManifest = (() => {
+    if (result.type !== 'live_photo' || result.manifest?.kind !== 'live_photo') return null;
+    const livePhotos = result.manifest.live_photos.flatMap((pair) => {
+      if (!isSafePublicPreviewRoute(pair.image_url, result.task_id, 'live', 'image')) return [];
+      return [
+        {
+          image_url: pair.image_url,
+          motion_url:
+            pair.motion_url && isSafePublicPreviewRoute(pair.motion_url, result.task_id, 'live', 'motion')
+              ? pair.motion_url
+              : null,
+        },
+      ];
+    });
+    return livePhotos.length > 0 ? { ...result.manifest, live_photos: livePhotos } : null;
+  })();
 
   const cover = showPlayer ? (
     <VideoPlayer
