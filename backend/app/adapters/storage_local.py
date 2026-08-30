@@ -56,7 +56,16 @@ from app.adapters.protocols import StorageAdapter
 from app.domain import MediaType
 from app.domain.paths import PathOutsideRootError, build_path, is_within
 
-__all__ = ["LocalStorageAdapter", "resolve_storage_root"]
+__all__ = ["LocalStorageAdapter", "STORAGE_MEDIA_TYPES", "resolve_storage_root"]
+
+# Only these media types have configured filesystem buckets. Parsed media
+# kinds such as Live Photo remain manifest-backed until explicit download
+# packaging support is implemented.
+STORAGE_MEDIA_TYPES: tuple[MediaType, ...] = (
+    MediaType.VIDEO,
+    MediaType.IMAGE,
+    MediaType.MUSIC,
+)
 
 
 def resolve_storage_root(root: Path | str) -> Path:
