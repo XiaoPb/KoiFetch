@@ -45,13 +45,22 @@ from app.domain.transitions import (
     IllegalTransitionError,
     transition,
 )
+from app.domain.transfer import (
+    AssetSelector,
+    DirectTransfer,
+    PrepareRequest,
+    PreparedTransfer,
+    StagedTransfer,
+)
 
 __all__ = [
     "ALLOWED_TRANSITIONS",
+    "AssetSelector",
     "DownloadCommand",
     "DownloadProgress",
     "DownloadResult",
     "DownloadStatus",
+    "DirectTransfer",
     "IllegalTransitionError",
     "MediaType",
     "LivePhotoPair",
@@ -66,6 +75,8 @@ __all__ = [
     "MusicSong",
     "ParseCommand",
     "ParseResult",
+    "PrepareRequest",
+    "PreparedTransfer",
     "PathOutsideRootError",
     "build_path",
     "format_duration",
@@ -73,5 +84,6 @@ __all__ = [
     "parse_duration",
     "safe_media_filename",
     "slugify",
+    "StagedTransfer",
     "transition",
 ]
