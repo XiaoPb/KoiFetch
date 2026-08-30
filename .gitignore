@@ -44,3 +44,6 @@ frontend/.npm-cache/
 
 # f2 engine runtime logs (f2 writes logs/f2-*.log in the process CWD)
 /logs/
+
+# Local CodeGraph index
+/.codegraph/
