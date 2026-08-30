@@ -32,6 +32,7 @@ from app.domain.music import (
     MusicSearchResult,
     MusicSong,
 )
+from app.domain.media_manifest import LivePhotoPair, MediaManifest, MediaResource
 from app.domain.paths import (
     PathOutsideRootError,
     build_path,
@@ -53,6 +54,9 @@ __all__ = [
     "DownloadStatus",
     "IllegalTransitionError",
     "MediaType",
+    "LivePhotoPair",
+    "MediaManifest",
+    "MediaResource",
     "MusicAlbum",
     "MusicArtist",
     "MusicCategory",
