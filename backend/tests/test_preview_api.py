@@ -37,7 +37,7 @@ MUSIC_TASK_ID = "33333333-3333-3333-3333-333333333333"
 
 
 def make_settings(**overrides) -> Settings:
-    return Settings(admin_password=PASSWORD, secret_key=SECRET, **overrides)
+    return Settings(admin_password=PASSWORD, secret_key=SECRET, cookie_encryption_key="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", **overrides)
 
 
 def _seed_task(engine, *, task_id, url, media_type, format, title="t", duration=323,
@@ -103,7 +103,7 @@ class TestPreviewMetadata:
         assert data["url"] == VIDEO_URL
         assert data["platform"] == "bilibili"
         assert data["title"] == "av123"
-        assert data["cover"] == "https://cdn.example.com/cover.jpg"
+        assert data["cover"] is None  # private legacy cover is never public
         assert data["duration"] == "05:23"  # 323s formatted back to MM:SS
         assert data["format"] == "mp4"
         assert data["file_size_mb"] == 12.5

@@ -16,10 +16,17 @@ import {
 //   response: HTTP 200 + code 1 + data.status "degraded"). The wire shape is
 //   preserved — the container readiness probe depends on code=1 — only the
 //   client-side rejection is lifted so the UI can render the degraded panel.
+// - `authToken`: an explicit bearer token for requests such as refresh, which
+//   must use the token captured when the operation started rather than the
+//   current store token.
+// - `skipUnauthorized`: requests whose 401 must be handled by their caller
+//   instead of the global session-expiry callback (startup refresh).
 declare module 'axios' {
   export interface AxiosRequestConfig {
     skipGlobalLoading?: boolean;
     tolerateErrorEnvelope?: boolean;
+    authToken?: string | null;
+    skipUnauthorized?: boolean;
   }
 }
 
@@ -79,8 +86,8 @@ function isSessionAuthFailure(code: number): boolean {
 }
 
 /** Notify the registered handler when a session-level auth error is seen. */
-function maybeNotifyUnauthorized(apiError: ApiError): void {
-  if (apiError.httpStatus === 401 && isSessionAuthFailure(apiError.code)) {
+function maybeNotifyUnauthorized(apiError: ApiError, skipUnauthorized = false): void {
+  if (!skipUnauthorized && apiError.httpStatus === 401 && isSessionAuthFailure(apiError.code)) {
     unauthorizedHandler?.();
   }
 }
@@ -91,7 +98,7 @@ export const apiClient = axios.create({
 });
 
 apiClient.interceptors.request.use((config) => {
-  const token = tokenGetter();
+  const token = config.authToken !== undefined ? config.authToken : tokenGetter();
   if (token) {
     config.headers.set('Authorization', `Bearer ${token}`);
   }
@@ -119,7 +126,7 @@ apiClient.interceptors.response.use(
         // Defensive: a 2xx carrying an error envelope (the backend maps
         // errors to proper HTTP statuses, but be robust either way).
         const apiError = new ApiError(envelope.message, envelope.code, response.status, envelope.data);
-        maybeNotifyUnauthorized(apiError);
+        maybeNotifyUnauthorized(apiError, response.config.skipUnauthorized);
         throw apiError;
       }
       // Success: resolve with the unwrapped payload.
@@ -133,7 +140,8 @@ apiClient.interceptors.response.use(
       useAppStore.getState().endRequest();
     }
     const apiError = toApiError(error);
-    maybeNotifyUnauthorized(apiError);
+    const config = axios.isAxiosError(error) ? error.config : undefined;
+    maybeNotifyUnauthorized(apiError, config?.skipUnauthorized);
     return Promise.reject(apiError);
   },
 );

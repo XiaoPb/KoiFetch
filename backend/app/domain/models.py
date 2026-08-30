@@ -55,6 +55,7 @@ from pydantic import (
 )
 
 from app.domain.enums import DownloadStatus, MediaType
+from app.domain.transfer import AssetSelector
 
 __all__ = [
     "DownloadCommand",
@@ -198,6 +199,7 @@ class DownloadCommand(BaseModel):
     task_id: UuidStr
     format: str | None = None
     quality: str | None = None
+    asset_selector: AssetSelector | None = None
     bitrate: str | None = None
     save_to_nas: bool = False
     nas_path: str | None = None

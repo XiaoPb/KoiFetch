@@ -20,9 +20,9 @@ export interface VideoPlayerModalProps {
  * `<video>`).
  *
  * The source is the tokenized same-origin URL captured from the WS `complete`
- * event (one-time token, ~5-minute validity). `destroyOnHidden` unmounts the
- * player when the modal closes, which stops the media stream — so the token
- * is never consumed by a backgrounded player.
+ * event (short-lived reusable token, ~5-minute validity). `destroyOnHidden`
+ * unmounts the player when the modal closes, which stops the media stream;
+ * repeated GET/Range requests remain valid until the token expires.
  */
 export function VideoPlayerModal({ title, src, open, onClose }: VideoPlayerModalProps): JSX.Element {
   const { t } = useTranslation();

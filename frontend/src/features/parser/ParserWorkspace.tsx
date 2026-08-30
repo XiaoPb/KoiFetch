@@ -30,6 +30,10 @@ export function readTxtFile(file: File): Promise<string> {
 /** TXT import size guard — a huge file would freeze the tab on decode. */
 export const MAX_TXT_IMPORT_BYTES = 1024 * 1024; // 1 MB
 
+function normalizeVariant(value: string | null | undefined): string | null {
+  return value ?? null;
+}
+
 /**
  * Parser workspace (PRD §4.2) — redesigned around a one-line search input.
  *
@@ -77,21 +81,6 @@ export function ParserWorkspace(): JSX.Element {
 
   const handleParse = async () => {
     await parse();
-    // 解析结束后默认自动下载视频（fire-and-forget）：下载完成后预览可直接
-    // 播放，下载中心/角标同步展示进度。重复/已完成等冲突静默忽略。
-    const parsed = useParserStore.getState().results;
-    for (const result of parsed) {
-      if (result.type !== 'video') continue;
-      void submitDownload(result.task_id, {
-        format: result.format ?? undefined,
-        quality: result.available_qualities[0] ?? undefined,
-        title: result.title,
-      }).catch(() => {
-        // 3002 (already downloading) / 3003 (identical variant completed) and
-        // transient errors are expected — the drawer and the explicit
-        // download button remain the recovery path.
-      });
-    }
   };
 
   const handleReset = () => {
@@ -125,44 +114,53 @@ export function ParserWorkspace(): JSX.Element {
     openPreview(result);
   };
 
-  const handleDownload = async (result: ParseResult, options: DownloadOptions) => {
-    // 下载 = 前端下载到本地: if the file is already downloaded server-side
-    // with a valid link, open it directly (the browser saves it locally) —
-    // the auto-download after parse usually makes this the instant path.
-    const item = useDownloadsStore
-      .getState()
-      .items.find(
-        (i) => i.task_id === result.task_id && i.status === 'completed' && i.download_url != null,
-      );
-    if (item) {
-      const url = item.download_url;
-      if (url && item.token_expire_at && Date.parse(item.token_expire_at) > Date.now()) {
-        window.open(downloadApi.getFileUrl(url), '_blank', 'noopener');
+  const prepareTransfer = async (taskId: string, asset: { kind: 'video' | 'image' | 'live_image' | 'live_motion'; index?: number; package?: 'album_zip' | 'live_zip' }, title: string | null, legacyOptions?: DownloadOptions) => {
+    try {
+      // Keep an explicit compatibility path for older embedded clients while
+      // they roll out the prepare endpoint; production clients always expose it.
+      if (typeof downloadApi.prepare !== 'function') {
+        await submitDownload(taskId, { ...legacyOptions, title });
         return;
       }
-      // 5-minute token expired: refresh the link in the background, then let
-      // the user click again (or use the drawer's refresh action).
-      useDownloadsStore.getState().refreshFileLink(item.download_id);
-      void message.info(t('downloads.linkExpired'));
-      return;
-    }
-    try {
-      await submitDownload(result.task_id, { ...options, title: result.title });
+      const prepared = await downloadApi.prepare(taskId, asset);
+      if (prepared.mode === 'direct') {
+        window.open(downloadApi.getFileUrl(prepared.url), '_blank', 'noopener');
+      } else {
+        const store = useDownloadsStore.getState();
+        store.upsertSnapshot({ download_id: prepared.download_id, status: prepared.status, progress: 0, speed: null, downloaded_bytes: null, total_bytes: null, remaining_time: null }, { taskId, title });
+        store.connectWs(prepared.download_id);
+      }
       void message.success(t('parser.downloadStarted'));
     } catch (err) {
       void message.error(getErrorMessage(err));
     }
   };
 
+  const handleDownload = (result: ParseResult, options: DownloadOptions) => {
+    if (typeof downloadApi.prepare !== 'function') {
+      const item = useDownloadsStore.getState().items.find((entry) => entry.task_id === result.task_id && entry.status === 'completed' && entry.download_url && normalizeVariant(entry.format) === normalizeVariant(options.format) && normalizeVariant(entry.quality) === normalizeVariant(options.quality));
+      if (item?.download_url) {
+        window.open(downloadApi.getFileUrl(item.download_url), '_blank', 'noopener');
+        return;
+      }
+    }
+    void prepareTransfer(result.task_id, { kind: result.type === 'live_photo' ? 'live_image' : 'video' }, result.title, options);
+  };
+
   const handleDownloadImage = (result: ParseResult, index: number) => {
-    // 下载当前: the backend proxies the image as an attachment — same-origin,
-    // no CDN referer issues; the browser saves the file directly.
-    window.open(mediaApi.imageUrl(result.task_id, index), '_blank', 'noopener');
+    if (typeof downloadApi.prepare !== 'function') {
+      window.open(mediaApi.imageUrl(result.task_id, index), '_blank', 'noopener');
+      return;
+    }
+    void prepareTransfer(result.task_id, { kind: 'image', index }, result.title);
   };
 
   const handleDownloadAlbum = (result: ParseResult) => {
-    // 下载全部: the backend bundles the album into a ZIP attachment.
-    window.open(mediaApi.albumZipUrl(result.task_id), '_blank', 'noopener');
+    if (typeof downloadApi.prepare !== 'function') {
+      window.open(mediaApi.albumZipUrl(result.task_id), '_blank', 'noopener');
+      return;
+    }
+    void prepareTransfer(result.task_id, { kind: 'image', index: 0, package: 'album_zip' }, result.title);
   };
 
   const hasOutput = status === 'success';

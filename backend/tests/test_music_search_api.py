@@ -5,12 +5,18 @@ temp database, so the whole contract is exercised offline.
 """
 
 import pytest
+import httpx
+import importlib
 from fastapi.testclient import TestClient
 
+from app.adapters.safe_upstream import SafeUpstreamClient
+from app.api.music import get_music_service
 from app.api.responses import CODE_OK
+from app.application.music_service import MusicService
 from app.infrastructure import seed
 from app.infrastructure.config import Settings
-from app.infrastructure.database import Base, build_engine
+from app.infrastructure.database import Base, build_engine, session_scope
+from app.infrastructure.models import MusicSongRow
 from app.main import create_app
 
 SECRET = "test-secret-key-0123456789abcdef"
@@ -18,7 +24,7 @@ PASSWORD = "admin-s3cret-pass"
 
 
 def make_settings(**overrides) -> Settings:
-    return Settings(admin_password=PASSWORD, secret_key=SECRET, **overrides)
+    return Settings(admin_password=PASSWORD, secret_key=SECRET, cookie_encryption_key="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", **overrides)
 
 
 @pytest.fixture
@@ -103,12 +109,125 @@ def test_import_unknown_song_returns_400(client):
     assert response.json()["code"] == 400
 
 
-def test_stream_proxies_an_upstream_url(client):
-    # The upstream is fetched server-side; a malformed src is a 400 envelope,
-    # proving the guard (a real fetch would need network — not exercised here).
-    response = client.get("/api/music/stream", params={"src": "not-a-url"})
+def test_legacy_src_stream_route_is_not_available(client):
+    response = client.get("/api/music/stream", params={"src": "http://127.0.0.1/secret"})
+    assert response.status_code == 404
+    assert response.json()["code"] == 404
+
+
+def test_song_stream_loads_persisted_url_and_forwards_range(env):
+    settings, engine, app = env
+    song_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    with session_scope(engine) as session:
+        session.add(
+            MusicSongRow(
+                song_id=song_id,
+                song_key="a" * 32,
+                source="NeteaseMusicClient",
+                song_name="晴天",
+                singers="周杰伦",
+                song_info={"download_url": "https://cdn.example/song.mp3"},
+            )
+        )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["user-agent"] == "Mozilla/5.0 (KoiFetch/0.1)"
+        assert request.headers["range"] == "bytes=0-2"
+        return httpx.Response(
+            206,
+            headers={"content-type": "audio/mpeg", "content-range": "bytes 0-2/3"},
+            content=b"abc",
+        )
+
+    upstream = SafeUpstreamClient(
+        resolver=lambda host, port: ["93.184.216.34"],
+        transport=httpx.MockTransport(handler),
+    )
+    app.dependency_overrides[get_music_service] = lambda: MusicService(
+        engine=engine, upstream=upstream
+    )
+    response = TestClient(app).get(
+        f"/api/music/{song_id}/stream", headers={"Range": "bytes=0-2"}
+    )
+    assert response.status_code == 206
+    assert response.content == b"abc"
+
+
+def test_song_stream_unknown_id_returns_api_error_without_fetch(env):
+    settings, engine, app = env
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url)
+        return httpx.Response(200, content=b"should-not-fetch")
+
+    upstream = SafeUpstreamClient(
+        resolver=lambda host, port: ["93.184.216.34"],
+        transport=httpx.MockTransport(handler),
+    )
+    app.dependency_overrides[get_music_service] = lambda: MusicService(
+        engine=engine, upstream=upstream
+    )
+    response = TestClient(app).get("/api/music/not-a-song/stream")
     assert response.status_code == 400
     assert response.json()["code"] == 400
+    assert calls == []
+
+
+def test_song_stream_rejects_non_playable_persisted_row_without_fetch(env):
+    settings, engine, app = env
+    song_id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    with session_scope(engine) as session:
+        session.add(
+            MusicSongRow(
+                song_id=song_id,
+                song_key="b" * 32,
+                source="NeteaseMusicClient",
+                song_name="playlist",
+                singers="artist",
+                song_info={
+                    "protocol": "HLS",
+                    "download_url": "https://cdn.example/playlist.m3u8",
+                },
+            )
+        )
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url)
+        return httpx.Response(200, content=b"must-not-fetch")
+
+    upstream = SafeUpstreamClient(
+        resolver=lambda host, port: ["93.184.216.34"],
+        transport=httpx.MockTransport(handler),
+    )
+    app.dependency_overrides[get_music_service] = lambda: MusicService(
+        engine=engine, upstream=upstream
+    )
+    response = TestClient(app).get(f"/api/music/{song_id}/stream")
+    assert response.status_code == 400
+    assert response.json()["code"] == 400
+    assert calls == []
+
+
+def test_create_app_shares_configured_upstream_client(env, monkeypatch):
+    main_module = importlib.import_module("app.main")
+    created = []
+
+    class FakeSafeUpstreamClient:
+        def __init__(self, **kwargs):
+            created.append(self)
+            self.kwargs = kwargs
+
+    monkeypatch.setattr(main_module, "SafeUpstreamClient", FakeSafeUpstreamClient)
+    settings, _, _ = env
+    settings.engine_proxy = "http://proxy.example:8080"
+    app = main_module.create_app(settings=settings)
+
+    assert len(created) == 1
+    assert created[0].kwargs["proxy"] == "http://proxy.example:8080"
+    assert app.state.music_service._upstream is created[0]
+    assert app.state.preview_service._upstream is created[0]
 
 
 def test_hot_keywords_endpoint(client):

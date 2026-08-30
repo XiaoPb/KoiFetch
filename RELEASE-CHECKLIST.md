@@ -9,11 +9,9 @@ the checks in order; any unexpected failure blocks the release.
 - All commands run from the **repository root** unless a CWD is given.
 - Backend commands assume the project venv is activated (`python` on PATH).
 - Two rows — the live `docker compose config` and `docker compose up --build`
-  — **require a Docker-enabled machine**. Docker is not installed in the
-  development/CI environment, so those rows are verified there by a static
-  PyYAML contract (`backend/tests/test_compose.py`, which parses
-  `docker-compose.yml` and asserts the service model) and must be executed on a
-  Docker host for final sign-off.
+  — require Docker. When Docker is unavailable, the static PyYAML contract
+  (`backend/tests/test_compose.py`) provides an offline check; run the live
+  rows on a provisioned Docker host for final sign-off.
 - The frontend rows (`npm test`, `npm run build`) are ordinary commands on a
   normal machine. Inside the DSH sandbox they were executed through a
   temporary, uncommitted shim (in-process WebAssembly esbuild + a vite
@@ -25,8 +23,8 @@ the checks in order; any unexpected failure blocks the release.
 
 | # | Check | Command | Expected result | Result (last run) |
 | --- | --- | --- | --- | --- |
-| 1 | Backend test suite | `python -m pytest backend/tests -q` | `637 passed` | ✅ `637 passed, 1 warning in 55.32s` |
-| 2 | Frontend test suite | `npm test --prefix frontend` | `15 passed` test files / `147 passed` tests | ✅ `Test Files 15 passed (15) / Tests 147 passed (147)` |
+| 1 | Backend test suite | `python -m pytest backend/tests -q` | Exit 0; no test failures | ✅ latest run passed; warning output is informational |
+| 2 | Frontend test suite | `npm test --prefix frontend` | Exit 0; no test failures | ✅ latest run passed |
 | 3 | Frontend typecheck + build | `npm run build --prefix frontend` (runs `tsc --noEmit && vite build`) | `tsc` exits 0; Vite writes `frontend/dist/`; `npm` exits 0 | ✅ `tsc` clean; Vite `✓ 3149 modules transformed ... ✓ built in 9.32s`, 10 files in `frontend/dist/` (only an informational >500 kB chunk-size warning) |
 | 4 | Compose config (static contract) | `python -m pytest backend/tests/test_compose.py -q` | `18 passed` | ✅ `18 passed in 0.03s` |
 | 5 | Compose config (live) | `docker compose config` | Resolved two-service model (`koi-fetch`: backend + worker, `env_file: .env`, `8000:8000`, bind mounts, healthchecks) | ⏳ **requires Docker host** — statically verified by #4; PyYAML parse prints the identical model (services, build context, ports, env_file, healthchecks) |
@@ -36,14 +34,20 @@ the checks in order; any unexpected failure blocks the release.
 | 9 | Hygiene — no secrets/runtime files tracked | `git ls-files` (inspect) | No `.env` (only `.env.example`, `frontend/.env.example`), no `*.db`/`*.sqlite`, no `data/` paths, no `node_modules/`, no `frontend/dist/`, no `.venv`, no `__pycache__`/`*.pyc`, no `.npm-cache` | ✅ none tracked; `.gitignore` covers all of the above |
 | 10 | Hygiene — no real secrets in tracked content | `git grep` for credential patterns | Only synthetic placeholders (`.env.example` `change-me-*`, test fixtures) | ✅ only test fixtures (`admin-s3cret-pass`, `super-secret-pw-123456`) — no real credentials, keys, or tokens |
 | 11 | Working tree clean | `git status --short` | Clean (no modified/untracked files) after the run | ✅ clean; the only tracked addition of this run is this checklist (commit `1d10043`) — all shim artifacts removed post-run |
+| 12 | Python dependency audit | `python backend/scripts/audit_backend_dependencies.py` (after `python backend/scripts/install_backend_dependencies.py` and installing pinned `pip-audit`) | No known vulnerabilities; only the documented fixed-SHA Git `parse-video-py` skip; no broad ignores | ⏳ run on the release environment |
+| 13 | High-severity JavaScript audit | `npm audit --prefix frontend --audit-level=high` | No high/critical vulnerabilities after `npm ci` | ⏳ run on the release environment |
+| 14 | Existing cookie migration and backup | First backup DB and COOKIE_ENCRYPTION_KEY; run `python backend/scripts/encrypt_platform_cookies.py` twice from the repo root | First count equals legacy rows, second run must report 0; restore the backup if verification fails | ⏳ operator execution required for databases containing legacy cookies |
+| 15 | weak/default secret rejection | `python -m pytest backend/tests/test_config.py backend/tests/test_cookie_encryption.py -q` | Missing, blank, weak/default, malformed, or wrong cookie keys are rejected/fail closed | ⏳ run on the release environment |
+| 16 | Login limiter and trusted proxy verification | `python -m pytest backend/tests/test_login_limiter.py backend/tests/test_auth_api.py -q` with only immediate proxy CIDRs in `TRUSTED_PROXY_CIDRS` | Process-local limits and direct-peer/X-Forwarded-For handling are verified | ⏳ run on the release environment |
+| 17 | SSRF regression tests | `python -m pytest backend/tests/test_safe_upstream.py -q` | Unsafe schemes/addresses, redirect re-resolution, pinned IP Host/SNI, and body/redirect bounds remain blocked | ⏳ run on the release environment |
+| 18 | Session and file-token contract | `python -m pytest backend/tests/test_config.py backend/tests/test_tokens.py backend/tests/test_auth_service.py backend/tests/test_auth_api.py -q` and the focused frontend auth/router tests | Default access TTL is 7 days (configurable); each page startup performs at most one refresh of a still-valid token; expired access tokens have no grace refresh; hydration failures and stale login/refresh races fail closed; stateless multi-tab overlap is expected until each access token expires; 5-minute file tokens are reusable, bound to task+filename, and support repeated GET/Range requests | ⏳ run on the release environment |
 
 ## Verification evidence (most recent run)
 
-- **Backend (637):**
-  `637 passed, 1 warning in 55.32s` (warning: upstream StarletteDeprecationWarning
-  about `httpx` in `fastapi/testclient` — informational, no behavioral impact).
-- **Frontend tests (147):**
-  `Test Files 15 passed (15) / Tests 147 passed (147)`, `npm test` exit 0.
+- **Backend:** latest `python -m pytest backend/tests -q` run exited 0; the
+  StarletteDeprecationWarning about `httpx` in `fastapi/testclient` is
+  informational and has no behavioral impact.
+- **Frontend tests:** latest `npm test --prefix frontend` run exited 0.
 - **Compose static (18):**
   `18 passed in 0.03s` — two services, no frontend service, no `nginx.conf`,
   `env_file: .env`, repo-root build context, `FRONTEND_DIST_PATH=/app/static`,

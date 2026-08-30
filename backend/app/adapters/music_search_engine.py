@@ -125,6 +125,7 @@ class MusicdlMusicSearchAdapter:
             cover=info.cover_url or None,
             duration=duration,
             play_url=None,  # the service builds the same-origin proxy path
+            lyric=(info.todict().get("lyric") or None),
             bitrate=info.bitrate if isinstance(info.bitrate, int) else None,
             ext=(info.ext or "").removeprefix(".") or None,
             source=info.source or None,

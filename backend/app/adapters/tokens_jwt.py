@@ -1,4 +1,5 @@
-"""JWT token providers: access tokens (24h) and one-time download tokens (5 min).
+"""JWT token providers: configured-lifetime access tokens (7d default) and
+reusable download tokens (5 min).
 
 Implements :class:`app.adapters.protocols.AccessTokenProvider` and
 :class:`app.adapters.protocols.OneTimeTokenProvider` with PyJWT (HS256, shared
@@ -8,27 +9,30 @@ so any number of app instances can validate tokens.
 Claim layout (documented contract — the auth service of Task 7 and the
 download-file API of Task 9 consume these):
 
-* Access token: ``sub`` = user id as a string, ``username``, ``iat``, ``exp``
-  (issued-at + 24h).
-* One-time token: ``tid`` = a fresh ``uuid4`` *token id*, ``dl`` = the
+* Access token: ``sub`` = user id as a string, ``username``, ``jti``, ``iat``,
+  ``exp`` (issued-at + the configured lifetime, 7d by default).
+* Download token: ``tid`` = a fresh ``uuid4`` *token id*, ``dl`` = the
   download id the token authorizes, ``iat``, ``exp`` (issued-at + 5 min).
+  The download-file service binds that task id to its stored filename before
+  serving the file; the filename is not a free-form client-controlled target.
 
-**Design decision — single use is the caller's job.** ``validate`` is pure:
-it never marks a token consumed, and calling it repeatedly returns the same
-claims. The download-file API (Task 9) enforces single-use semantics by
-recording the returned ``token_id`` (atomically, before serving the file) and
-rejecting any later request carrying an already-recorded id. Keeping the
-adapter stateless lets the same provider scale freely; an in-memory/DB
-consumption registry is a Task 9 concern, not a token-format concern.
+**Design decision — validation is stateless and reusable.** ``validate`` is
+pure: it never consumes a token, and calling it repeatedly returns the same
+claims. The download-file API validates the ``dl``/``exp`` claims, binds the
+task to its stored filename, and may associate the JWT-only ``tid`` with logs
+when correlating a request; the ``tid``/``exp`` claims do not imply a database
+write. It does not
+reject later requests carrying the same id.
+Keeping the adapter stateless lets the same provider scale freely; expiry is
+the security boundary and repeated GET/Range playback requests are allowed.
 
 Errors: :meth:`validate` raises only :class:`app.adapters.protocols.TokenError`
 subclasses (``TokenExpiredError`` / ``InvalidTokenError``) so callers never
 catch PyJWT exceptions directly.
 
-**Secret strength:** ``Settings.secret_key`` has no strength floor (Task 2
-settings contract — do not add validation there). HS256 keys should be at
-least 32 random bytes; deployments must set a strong ``SECRET_KEY`` and local
-examples should keep their placeholder ≥32 characters.
+**Secret strength:** ``Settings.secret_key`` enforces at least 32 UTF-8 bytes
+and rejects known placeholders. Deployments must still use a high-entropy,
+deployment-specific ``SECRET_KEY``.
 """
 
 from __future__ import annotations
@@ -50,7 +54,7 @@ from app.adapters.protocols import (
 __all__ = ["JwtAccessTokenProvider", "JwtOneTimeTokenProvider"]
 
 _ALGORITHM = "HS256"
-_ACCESS_TTL = timedelta(hours=24)
+_ACCESS_TTL = timedelta(days=7)
 _ONE_TIME_TTL = timedelta(minutes=5)
 
 
@@ -103,7 +107,7 @@ class _JwtProviderBase:
 
 
 class JwtAccessTokenProvider(_JwtProviderBase, AccessTokenProvider):
-    """HS256 access tokens valid for 24 hours."""
+    """HS256 access tokens with a configured lifetime (seven-day default)."""
 
     def __init__(
         self, secret_key: str, *, ttl: timedelta = _ACCESS_TTL
@@ -126,18 +130,21 @@ class JwtAccessTokenProvider(_JwtProviderBase, AccessTokenProvider):
             {
                 "sub": str(user_id),
                 "username": username,
+                "jti": str(uuid.uuid4()),
                 "iat": now,
                 "exp": now + self._ttl,
             }
         )
 
     def validate(self, token: str) -> AccessTokenClaims:
-        payload = self._decode(token, require=("exp", "iat"))
+        payload = self._decode(token, require=("exp", "iat", "jti"))
         user_id = self._parse_user_id(payload.get("sub"))
         username = _require_non_blank(payload.get("username"), "username")
+        token_id = _require_non_blank(payload.get("jti"), "jti")
         return AccessTokenClaims(
             user_id=user_id,
             username=username,
+            token_id=token_id,
             issued_at=_require_datetime(payload.get("iat"), "iat"),
             expires_at=_require_datetime(payload.get("exp"), "exp"),
         )
@@ -154,7 +161,7 @@ class JwtAccessTokenProvider(_JwtProviderBase, AccessTokenProvider):
 
 
 class JwtOneTimeTokenProvider(_JwtProviderBase, OneTimeTokenProvider):
-    """HS256 one-time download tokens valid for 5 minutes."""
+    """HS256 download tokens reusable for 5 minutes."""
 
     def __init__(
         self, secret_key: str, *, ttl: timedelta = _ONE_TIME_TTL

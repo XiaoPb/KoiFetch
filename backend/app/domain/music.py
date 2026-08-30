@@ -65,6 +65,7 @@ class MusicSong(BaseModel):
     cover: str | None = None
     duration: str | None = Field(default=None, min_length=1)  # "MM:SS"
     play_url: str | None = None  # same-origin proxy path (service-built)
+    lyric: str | None = None  # raw LRC/plain lyrics from musicdl, never an upstream URL
     bitrate: int | None = None  # kbps; sorting proxy for 热度 (P2)
     ext: str | None = None
     source: str | None = None  # musicdl source client name

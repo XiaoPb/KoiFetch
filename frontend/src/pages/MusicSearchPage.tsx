@@ -18,6 +18,7 @@ import { MiniPlayer } from '../features/music/MiniPlayer';
 import { SongActionSheet } from '../features/music/SongActionSheet';
 import { MusicEmptyState } from '../features/music/MusicEmptyState';
 import { MyPlaylistsDrawer } from '../features/music/MyPlaylistsDrawer';
+import { LyricsPanel } from '../features/music/LyricsPanel';
 import type { MusicCategory, MusicEntity } from '../types/music';
 import '../styles/music.css';
 
@@ -218,6 +219,7 @@ export default function MusicSearchPage(): JSX.Element {
       </div>
 
       <MiniPlayer />
+      <LyricsPanel />
       <SongActionSheet />
       <MyPlaylistsDrawer open={playlistsOpen} onClose={() => setPlaylistsOpen(false)} />
     </div>

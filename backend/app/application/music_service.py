@@ -14,9 +14,9 @@ and the music-search adapter / persistence:
   — the exact contract the engine downloader's music branch consumes
   (``app.adapters.downloader_engine``), so the existing submit/progress/
   download-center/NAS pipeline works for music unchanged.
-* **stream** proxies an upstream media URL server-side (engine UA, ``Range``
-  passthrough) reusing :class:`~app.application.preview_service.MediaStream`,
-  so playback is same-origin and hotlink protection never blocks the browser.
+* **stream_song** loads a persisted song and proxies its upstream media URL
+  server-side (``Range`` passthrough), so callers cannot choose an arbitrary
+  upstream URL.
 
 Design decisions (stable contract for Tasks 4-16):
 
@@ -33,9 +33,9 @@ Design decisions (stable contract for Tasks 4-16):
 * **Import is a fresh task per call.** No dedup across imports (a user may
   legitimately import twice); the download service's 3002/3003 rules apply
   per task as usual.
-* **DI over globals.** The constructor takes an optional adapter (defaults to
-  :func:`app.adapters.factory.get_music_search`) and an optional ``engine``;
-  ``create_app`` wires the production instance, tests inject a fake adapter.
+* **DI over globals.** The constructor takes optional adapter/upstream/engine
+  dependencies; ``create_app`` wires one shared safe upstream client into the
+  music and preview services, while tests can inject deterministic adapters.
 """
 
 from __future__ import annotations
@@ -44,14 +44,19 @@ import hashlib
 import uuid
 from urllib.parse import quote
 
-import httpx
 from sqlalchemy import Engine, select
 from starlette.status import HTTP_400_BAD_REQUEST
 
 from app.adapters.factory import get_music_search
 from app.adapters.protocols import MusicSearchAdapter
+from app.adapters.safe_upstream import (
+    SafeUpstreamClient,
+    UnsafeUpstreamUrl,
+    UpstreamProtocolError,
+    UpstreamTooLarge,
+    UpstreamStream,
+)
 from app.api.responses import CODE_BAD_REQUEST, ApiError
-from app.application.preview_service import MediaStream
 from app.domain import MediaType, MusicAlbum, MusicArtist, MusicCategory, MusicSearchParams, MusicSearchResult, MusicSong
 from app.infrastructure.database import session_scope
 from app.infrastructure.models import MusicSongRow, ParseTask
@@ -63,10 +68,6 @@ _MESSAGE_SONG_NOT_FOUND = "歌曲不存在 / Song not found"
 _MESSAGE_INVALID_STREAM_URL = "播放地址无效 / Invalid stream URL"
 _MESSAGE_UPSTREAM = "上游媒体获取失败 / Upstream media fetch failed"
 
-_UA = {"User-Agent": "Mozilla/5.0 (KoiFetch/0.1)"}
-_STREAM_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
-_CHUNK_SIZE = 64 * 1024
-
 
 class MusicService:
     """Search/import/stream use cases for the music feature."""
@@ -76,9 +77,11 @@ class MusicService:
         adapter: MusicSearchAdapter | None = None,
         *,
         engine: Engine | None = None,
+        upstream: SafeUpstreamClient | None = None,
     ) -> None:
         self._adapter = adapter if adapter is not None else get_music_search()
         self._engine = engine
+        self._upstream = upstream or SafeUpstreamClient()
 
     # -- search ----------------------------------------------------------
 
@@ -150,7 +153,9 @@ class MusicService:
                 row.ext = song.ext
                 row.song_info = song_info
             song_id = row.song_id
-        return song.model_copy(update={"id": song_id, "play_url": _play_proxy_url(song_info)})
+        return song.model_copy(
+            update={"id": song_id, "play_url": _play_proxy_url(song_id, song_info)}
+        )
 
     # -- import (download closure) ---------------------------------------
 
@@ -182,52 +187,63 @@ class MusicService:
 
     # -- stream proxy ----------------------------------------------------
 
-    def stream(self, src: str, range_header: str | None) -> MediaStream:
-        """Proxy an upstream music URL (engine UA, Range passthrough)."""
-        if not src or not src.startswith(("http://", "https://")):
-            raise ApiError(HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_INVALID_STREAM_URL)
-        headers = dict(_UA)
-        if range_header:
-            headers["Range"] = range_header
-        client = httpx.Client(timeout=_STREAM_TIMEOUT, follow_redirects=True)
+    def stream_song(self, song_id: str, range_header: str | None) -> UpstreamStream:
+        """Proxy the persisted playable URL for ``song_id``.
+
+        The URL is always loaded from the database row. A caller-provided URL
+        is not accepted anywhere in this use case.
+        """
+        with session_scope(self._engine) as session:
+            row = session.get(MusicSongRow, song_id)
+            if row is None:
+                raise ApiError(
+                    HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_SONG_NOT_FOUND
+                )
+            song_info = row.song_info or {}
+            url = song_info.get("download_url")
+        if _playable_url(song_info) is None:
+            raise ApiError(
+                HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_INVALID_STREAM_URL
+            )
         try:
-            response = client.stream("GET", src, headers=headers)
-            response.raise_for_status()
+            stream = self._upstream.stream(url, range_header=range_header)
+            if stream.status_code >= 400:
+                stream.close()
+                raise ApiError(
+                    HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_UPSTREAM
+                )
+            return stream
+        except ApiError:
+            raise
+        except (UnsafeUpstreamUrl, UpstreamTooLarge, UpstreamProtocolError) as exc:
+            raise ApiError(
+                HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_UPSTREAM
+            ) from exc
         except Exception as exc:
-            client.close()
-            raise ApiError(HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_UPSTREAM) from exc
-
-        def iterator():
-            try:
-                for chunk in response.iter_bytes(chunk_size=_CHUNK_SIZE):
-                    yield chunk
-            finally:
-                response.close()
-                client.close()
-
-        content_type = response.headers.get("content-type") or "application/octet-stream"
-        headers_out = {k: v for k, v in response.headers.items() if k.lower() in ("content-type", "content-length", "accept-ranges", "content-range")}
-        return MediaStream(
-            status_code=response.status_code,
-            content_type=content_type,
-            headers=headers_out,
-            chunks=iterator(),
-            close=lambda: (response.close(), client.close()),
-        )
+            raise ApiError(
+                HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_UPSTREAM
+            ) from exc
 
 
-def _play_proxy_url(song_info: dict) -> str | None:
+def _play_proxy_url(song_id: str, song_info: dict) -> str | None:
     """Same-origin proxy path for a playable song, else ``None``.
 
     Playable = plain-HTTP protocol with a string http(s) ``download_url``.
     ``download_url_status.ok`` is deliberately NOT required here (some musicdl
     sources leave it empty on search); the player surfaces real failures.
     """
+    if _playable_url(song_info) is None:
+        return None
+    return f"/api/music/{quote(song_id, safe='')}/stream"
+
+
+def _playable_url(song_info: dict) -> str | None:
+    """Return a persisted HTTP playable URL, otherwise ``None``."""
     protocol = str(song_info.get("protocol") or "HTTP").upper()
     url = song_info.get("download_url")
     if protocol != "HTTP" or not isinstance(url, str) or not url.startswith(("http://", "https://")):
         return None
-    return f"/api/music/stream?src={quote(url, safe='')}"
+    return url
 
 
 def _parse_duration_seconds(duration: str | None) -> int | None:

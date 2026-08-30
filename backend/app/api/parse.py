@@ -18,14 +18,15 @@ mounted on an app built by ``create_app`` (or one that sets the same state).
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 
 from app.api.responses import ok
 from app.application.parse_service import ParseService
-from app.domain import ParseResult
+from app.application.media_manifest import public_cover, public_manifest
+from app.domain import MediaManifest, ParseResult
 
 __all__ = [
     "ParseData",
@@ -82,8 +83,7 @@ class ParseResultData(BaseModel):
     format: str | None = None
     available_qualities: list[str] = Field(default_factory=list)
     available_bitrates: list[str] = Field(default_factory=list)
-    video_url: str | None = None
-    images: list[str] = Field(default_factory=list)
+    manifest: dict[str, Any] | None = None
 
 
 class ParseData(BaseModel):
@@ -107,34 +107,40 @@ def get_parse_service(request: Request) -> ParseService:
 
 
 def _serialize_result(result: ParseResult) -> dict:
-    """Map a domain :class:`ParseResult` to the PRD ParseResult keys.
+    """Map a domain result to PRD fields and a safe public manifest.
 
-    ``video_url``/``images`` come from the engine's persisted metadata
-    (stub-mode rows carry neither, so both are None/[]). ``images`` flattens
-    the album's ``[{url, live_photo_url}, ...]`` list to plain URLs; entries
-    without a string ``url`` are dropped defensively.
+    Private upstream URLs remain in the persisted compatibility metadata only;
+    any validated manifest resources become same-origin index routes.
     """
     metadata = result.metadata or {}
-    video_url = metadata.get("video_url")
-    images = [
-        img["url"]
-        for img in metadata.get("images") or []
-        if isinstance(img, dict) and isinstance(img.get("url"), str)
-    ]
+    manifest = None
+    cover = None
+    if metadata.get("manifest") is not None:
+        try:
+            validated_manifest = MediaManifest.model_validate(metadata["manifest"])
+            manifest = public_manifest(
+                result.task_id,
+                validated_manifest,
+            )
+            cover = public_cover(result.task_id, validated_manifest)
+        except (TypeError, ValueError):
+            # A parser failure should normally prevent persistence; retain a
+            # defensive omission here so a malformed legacy payload cannot
+            # leak private fields through a response.
+            manifest = None
     return {
         "task_id": result.task_id,
         "url": result.url,
         "type": result.media_type.value,
         "platform": result.platform,
         "title": result.title,
-        "cover": result.cover,
+        "cover": cover,
         "duration": result.duration,
         "file_size_mb": result.file_size_mb,
         "format": result.format,
         "available_qualities": list(result.available_qualities),
         "available_bitrates": list(result.available_bitrates),
-        "video_url": video_url if isinstance(video_url, str) else None,
-        "images": images,
+        "manifest": manifest,
     }
 
 

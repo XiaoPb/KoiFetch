@@ -45,7 +45,8 @@ import type {
  *     `download_url === null`; the drawer shows an honest "链接不可用" state
  *     with a [刷新链接] action that briefly reconnects the socket to capture a
  *     fresh `complete` event.
- *   - The one-time token expires after 5 minutes (`token_expire_at`); the
+ *   - The short-lived reusable file token expires after 5 minutes
+ *     (`token_expire_at`); the
  *     drawer checks it before opening the file and offers the same refresh.
  * - **Retry = re-submit.** The backend's state graph allows `failed -> pending`
  *   and `expired -> pending`, modeled as a NEW download row (fresh
@@ -106,7 +107,7 @@ export interface DownloadItem {
    * arrives, including when the terminal state was learned via polling.
    */
   download_url: string | null;
-  /** ISO-8601 with timezone; the one-time token expires after ~5 minutes. */
+  /** ISO-8601 with timezone; the reusable file token expires after ~5 minutes. */
   token_expire_at: string | null;
 }
 
@@ -133,7 +134,7 @@ export interface DownloadsState {
   retry: (downloadId: string) => Promise<void>;
   /**
    * Reconnect the socket for a completed download to capture a fresh
-   * `complete` event (new one-time `download_url`). Used when the link was
+   * `complete` event (new short-lived reusable `download_url`). Used when the link was
    * missed (polling-only path) or its token expired.
    */
   refreshFileLink: (downloadId: string) => void;

@@ -18,19 +18,23 @@ Where a behavior is a documented v1 limitation it is called out as such.
 ### 1.1 Prerequisites
 
 - Python 3.12+ (the runtime image is `python:3.12-slim`).
-- Node.js 18+ and npm (`frontend/package.json` declares `"node": ">=18"`; the
-  Docker build stage uses `node:22-alpine`).
+- Node.js `^20.19.0 || ^22.13.0 || >=24.0.0` and npm. This matches the
+  frontend's Vite 8/jsdom 29 toolchain: Node 20.19+ and 22.13+ are supported
+  LTS lines, as are newer Node 24+ releases. The Docker build stage uses
+  `node:22-alpine`.
 
 ### 1.2 One-time setup
 
 ```bash
 # Repo root
-python -m venv .venv                                   # create the virtualenv (once)
-.venv/Scripts/python.exe -m pip install -r backend/requirements.txt   # backend deps (Windows)
-#   or: source .venv/bin/activate && pip install -r backend/requirements.txt   (POSIX)
+# POSIX
+python3 -m venv .venv                                  # create the virtualenv (once)
+.venv/bin/python backend/scripts/install_backend_dependencies.py --cache .venv/pip-cache
+# Windows PowerShell (explicit venv interpreter)
+py -3.12 -m venv .venv                                  # create the virtualenv (once)
+.\.venv\Scripts\python.exe backend/scripts/install_backend_dependencies.py --cache .venv\pip-cache
 
-npm install --prefix frontend                          # frontend deps (once)
-#   or, since package-lock.json is committed: npm ci --prefix frontend
+npm ci --prefix frontend                               # frontend deps (once)
 ```
 
 Activating the venv (`.venv\Scripts\Activate.ps1` in PowerShell on Windows,
@@ -102,12 +106,33 @@ exists. In the `backend/` layout the default resolves to
 `FRONTEND_DIST_PATH` is served verbatim at `/` — never point it at `.` or the
 repo root, which would expose the whole tree as static files.
 
+### 1.6 Parse and preview media contract
+
+`POST /api/parse` fetches and persists metadata only. A successful parse creates
+one `ParseTask` row, but does not create a `DownloadTask`, enqueue work, or
+write a Bubble file. Bubble storage and downloads begin only after an explicit
+download submission from the client.
+
+The f2 parser currently accepts Douyin, Weibo, and TikTok URLs. Douyin and
+TikTok require a configured cookie; Weibo public posts can parse without one,
+though a post that reports a cookie-required error still fails. Live Photos are
+currently recognized only from Douyin's still/motion fields (`aweme_type == 68`
+or paired motion resources). Weibo and TikTok are video/image parsers and do
+not synthesize live-photo pairs.
+
+Parser responses expose media through same-origin manifest routes such as
+`/api/preview/{task_id}/resources/video/0` and
+`/api/preview/{task_id}/resources/live/0/image`. The legacy `video_url` and
+`images` fields, when present in persisted metadata, are compatibility-only
+private upstream values; public clients must use `manifest` routes and must not
+render or log those upstream URLs.
+
 ---
 
 ## 2. Compose commands
 
-The stack is two services sharing one image (`koi-fetch-backend:local`, built
-from the repo root via `backend/Dockerfile`):
+The stack is two services sharing the published GHCR image
+(`ghcr.io/xiaopb/koifetch:latest`, configurable via `KOIFETCH_IMAGE`):
 
 | Service | Startup command | Role |
 | --- | --- | --- |
@@ -125,7 +150,7 @@ reverse proxy (production deployments sit behind their own external proxy).
 | `docker compose logs -f backend` / `docker compose logs -f worker` | Follow one service's logs (both log to stdout) |
 | `docker compose ps` | Show container status |
 | `docker compose down` | Stop the stack. The bind-mounted `./data` tree (SQLite DB, bubble, pond) persists |
-| `docker compose config` | Validate and print the resolved configuration (needs Docker with Compose). When Docker is absent, `python -m pytest backend/tests/test_compose.py -v` statically validates the same YAML contract |
+| `docker compose config` | Validate and print the resolved configuration (needs Docker with Compose). When Docker is unavailable, `python -m pytest backend/tests/test_compose.py -v` statically validates the same YAML contract |
 | `docker compose restart backend` | Restart one service without rebuilding |
 
 ### 2.1 The frontend build is embedded
@@ -161,7 +186,8 @@ services via `env_file: .env`.
 | Variable | Required / default | Purpose |
 | --- | --- | --- |
 | `ADMIN_PASSWORD` | **required** | Password used to seed the single admin (`admin`) at seed time (bcrypt). Fails fast when missing/blank or longer than 72 bytes (bcrypt truncates). Never log or commit the real value; changing it after the first seed does **not** update the stored hash — see §5.3 |
-| `SECRET_KEY` | **required** | JWT HS256 signing key for the 24-hour access tokens and the 5-minute one-time file tokens. No strength floor is enforced, but use ≥ 32 random bytes; changing it invalidates every issued token (stateless JWT, no refresh in v1) |
+| `SECRET_KEY` | **required** | JWT HS256 signing key for configured access sessions (seven-day default) and 5-minute reusable file tokens. Settings rejects known placeholders and requires at least 32 UTF-8 bytes; use high-entropy random bytes. Changing it invalidates every issued token |
+| `ACCESS_TOKEN_TTL_DAYS` | `7` (`1-30`) | Lifetime of admin JWT access sessions in days. The frontend rotates one still-valid token once per page startup; this is not a file-token lifetime |
 | `VIDEO_STORAGE_PATH` / `IMAGE_STORAGE_PATH` / `MUSIC_STORAGE_PATH` | `data/pond/{video,image,music}` | Permanent **Pond** storage roots per media type (the NAS target). Relative → resolved against the process CWD; absolute (e.g. a NAS mount) passes through unchanged |
 | `TEMP_VIDEO_PATH` / `TEMP_IMAGE_PATH` / `TEMP_MUSIC_PATH` | `data/bubble/{video,image,music}` | Temporary **Bubble** staging roots for in-flight downloads; swept by cleanup |
 | `MAX_CONCURRENT` | `3` (`>= 1`) | Per-process in-flight download cap — `N` worker processes can have up to `N × MAX_CONCURRENT` tasks downloading at once |
@@ -176,6 +202,31 @@ services via `env_file: .env`.
 | `DATABASE_URL` | `sqlite:///./data/db/koifetch.db` | SQLAlchemy database URL. Relative paths resolve against the process CWD; the DB file's parent directory is created automatically |
 | `FRONTEND_DIST_PATH` | `frontend/dist` | Directory of the built frontend (Vite `dist`) the backend serves at `/`. CWD-relative; `/app/static` in the image. Never point it at `.` or the repo root (served verbatim — whole-tree exposure) |
 
+### 3.1.1 Admin session lifecycle
+
+The login endpoint issues a stateless HS256 access token with the configured
+lifetime (seven-day default, `ACCESS_TOKEN_TTL_DAYS`) and returns its `expires_at`. Once
+the persisted auth state has finished hydrating, the frontend attempts exactly
+one refresh per page startup for a token that is still valid. Concurrent startup
+calls share one in-flight request, including React StrictMode re-renders, so a
+page does not rotate the same session more than once. Successful login and
+logout supersede any older startup operation.
+
+`POST /api/auth/refresh` validates the presented token before minting a
+replacement. Expired, malformed, or otherwise invalid tokens are rejected;
+there is no refresh grace window and no refresh-token store. The old stateless
+access token is not revoked by rotation and remains usable until its own `exp`
+time. Consequently, separate browser tabs may each rotate independently, and
+their older tokens can overlap until expiry. Rotating `SECRET_KEY` invalidates
+all issued access and file tokens immediately.
+
+The frontend handles startup edge cases as follows: a hydration failure clears
+the auth/download session and routes to `/login`; a refresh failure logs out
+only when the same session is still current; a stale refresh response or
+rejection is ignored after a newer login, logout, or token replacement wins the
+race. Successful login and refresh responses are marked `Cache-Control:
+no-store`.
+
 ### 3.2 Frontend variables (build-time, `frontend/.env.example` → `.env.local`)
 
 | Variable | Default | Purpose |
@@ -188,6 +239,87 @@ services via `env_file: .env`.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `HEALTHCHECK_URL` | `http://127.0.0.1:8000/api/health` | Override for the readiness probe (`app/health.py`) |
+
+### 3.4 Security operations
+
+#### Cookie encryption key and migration
+
+Generate `COOKIE_ENCRYPTION_KEY` with a cryptographically secure source:
+
+```bash
+python -c "import base64,secrets; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())"
+```
+
+The generated value is URL-safe base64 encoding of exactly 32 bytes (a
+32-byte key). Store it
+in the deployment secret manager and keep a protected backup beside the DB
+backup. **never log this key; never commit this key.** Key loss makes cookies unreadable; a
+wrong or unknown key fails closed rather than returning plaintext.
+
+For an existing database, stop writes, back up both the database (including
+SQLite WAL/SHM files) and `COOKIE_ENCRYPTION_KEY`, then run this from the
+repository root with the deployment `.env` present:
+
+```bash
+python backend/scripts/encrypt_platform_cookies.py
+```
+
+The script loads `.env` from the current working directory and prints the
+number of legacy rows encrypted. Verify that count against the backup, then
+run the same command a second time: the second run must report 0. Already
+encrypted rows with an unknown key never fall back to plaintext; only legacy
+plaintext rows are compatibility-read until this migration completes. The
+migration is transactional, so a failure rolls back all rows. In Compose use
+`docker compose exec backend python backend/scripts/encrypt_platform_cookies.py`
+with the service's `.env` already loaded. Do not rotate the key without a
+decrypt/re-encrypt procedure using the old key and a separately backed-up new
+key; do not rotate the key without that procedure, because changing it makes
+existing cookies unreadable.
+
+#### Login limiter and proxy identity
+
+The login limiter is process-local. Its capacity and attempts multiply/isolate
+per worker, so each replica has a separate budget; use external shared rate
+limiting at the ingress for a public multi-worker or multi-replica deployment.
+`TRUSTED_PROXY_CIDRS` must include only the immediate controlled proxy CIDRs.
+By default the application ignores X-Forwarded-For and uses the direct peer
+address; never trust a caller-controlled proxy range.
+
+#### SSRF and upstream fetches
+
+The shared music/preview client accepts **http(s) only** and rejects
+credentials plus private, loopback, link-local, reserved, unspecified, and
+multicast addresses. It re-resolves each redirect/connect, uses a pinned IP
+while preserving the original Host/SNI, and enforces bounded redirects and a
+bounded body. Configured proxy behavior is applied by that same client; do
+not bypass it with a second HTTP client. Music playback URLs are resolved from
+server-side persisted engine metadata: there is no caller-supplied music URL.
+
+The correct Node engine range remains
+`^20.19.0 || ^22.13.0 || >=24.0.0`; keep `check:engines` in CI and before
+frontend builds.
+
+CI runs both dependency audits after lock/requirements installation:
+
+```bash
+python backend/scripts/audit_backend_dependencies.py
+npm audit --prefix frontend --audit-level=high
+```
+
+These commands fail the gate on findings; do not mask failures or add broad
+vulnerability ignores. Audit tooling is CI-only and is not part of the
+production runtime image. The installed-environment audit may print one
+explicit skip for `parse-video-py`: it is a fixed-SHA Git dependency with no
+PyPI project for pip-audit to query. This is documented handling, not a
+vulnerability ignore; every PyPI-resolvable package must still report clean.
+All native, CI, and Docker installs use
+`python backend/scripts/install_backend_dependencies.py`, which verifies the
+upstream musicdl 2.13.6 and f2 0.0.1.7 wheel hashes before rebuilding their
+metadata. The compatibility rewrite is required because upstream musicdl
+declares `cryptography<47`, while the secure runtime floor is
+`cryptography>=50.0.1,<51`; f2's incompatible hard pins are removed in favor
+of this project's explicit dependencies. The installer ends with
+`python -m pip check` and a network-free import smoke test.
 
 ---
 
@@ -239,9 +371,10 @@ Applies the two migration revisions:
 
 1. `56320d63278e` — initial schema: `users`, `parse_tasks`, `download_tasks`
    (+ indexes).
-2. `019c53b40390` — adds `download_tasks.token_id`, storing the one-time token
-   `tid` claim that first served the bubble file so the file endpoint can
-   enforce single use atomically.
+2. `019c53b40390` — adds nullable legacy/reserved `download_tasks.token_id`
+   metadata for a possible `tid` claim association. The current token issuance
+   flow does not populate it: `tid`/`exp` remain JWT claims, and the file
+   endpoint binds the task to its stored filename without atomic consumption.
 
 `backend/alembic/env.py` resolves the database URL from the `DATABASE_URL`
 environment variable when set, otherwise from the typed settings; it creates
@@ -314,11 +447,11 @@ poll round.
 | Worker exits immediately: `worker database ... missing required tables ... run migrations first` | Same — the `schema_ready` fail-fast fired | Run migrations, restart the worker |
 | Placeholder "Koi Fetch frontend not built" at `/` (API still works) | `FRONTEND_DIST_PATH` is missing, empty, or wrong — or the frontend was never built | Build it: `npm run build --prefix frontend`; check the startup log line (`serving frontend build from ...` vs `frontend build not found at ...`); in Docker, rebuild with `docker compose up --build` (the dist is baked at build time) |
 | Download progress "freezes" in the UI; percentages jump in ticks | v1's WS event hub is process-local and the worker is a separate process, so live progress events never cross processes | Expected behavior: the WS sends a DB-backed snapshot on connect and the client reconciles via 3-second HTTP polling. Verify with `curl http://127.0.0.1:8000/api/download/progress/<download_id>` |
-| `5003` (Token无效或已过期) when fetching a file link | One-time file tokens are valid 5 minutes and single-use; the link was consumed, expired, or the token parameter is missing (a missing token is also `5003`) | Re-fetch the link: in the UI use 刷新链接 (reconnects the WS for a fresh `complete` event); for curl, reconnect `ws://127.0.0.1:8000/ws/download/<download_id>` and read the new `complete` event |
+| `5003` (Token无效或已过期) when fetching a file link | Short-lived file tokens are valid for 5 minutes and reusable for playback, including repeated GET/Range requests; the link expired or the token parameter is missing (a missing token is also `5003`) | Re-fetch the link: in the UI use 刷新链接 (reconnects the WS for a fresh `complete` event); for curl, reconnect `ws://127.0.0.1:8000/ws/download/<download_id>` and read the new `complete` event |
 | Storage panel shows degraded; `/api/health` returns `code == 1` with a root in `"error"` | A storage root could not be created (permissions, read-only NAS mount, missing parent) | Check `storage_roots` in the health body and the six storage-root env vars; fix permissions/paths and restart. The app still boots; save/file endpoints fail with a clean storage error |
 | `database is locked` errors | Should be prevented by WAL + a 5-second busy timeout, so this points at something unusual: several processes opening the same DB file, or another tool holding a write lock | Confirm the server/worker/migrations share one CWD (mismatched CWDs use *different* DB files — a different failure); close SQLite browsers / other writers; retry |
 | Admin cannot log in after changing `ADMIN_PASSWORD` | The seed never re-hashes an existing admin row (idempotent upsert) | Reset the admin row (or the database) and re-seed, then use the new password. Note `ADMIN_PASSWORD` over 72 bytes is rejected at seed time |
-| Every session is invalidated at once | `SECRET_KEY` changed — JWT access tokens are stateless, signed with it, and v1 has no refresh | Expected; users re-login (access tokens last 24 hours) |
+| Every session is invalidated at once | `SECRET_KEY` changed — JWT access tokens are stateless and signed with it | Expected; users re-login (the default access-session lifetime is seven days) |
 | 404 on a hashed `/assets/*` file | `index.html` references a hash the served dist does not have (partial/stale build, or a reverse proxy cached the page but not the asset) | Rebuild the frontend and rebuild/restart the backend; invalidate any proxy cache (static files carry no `Cache-Control`, only ETag/304 revalidation) |
 | Where are the logs? | — | Native: the terminal of each process (uvicorn / worker). Docker: `docker compose logs -f backend` / `-f worker`. Unhandled errors are logged server-side with a `request_id`, which the client's generic `9001` envelope echoes for correlation |
 | Ports 8000 / 5173 already in use | Another instance or application | Stop the other process, or change ports (`uvicorn ... --port 8001`; the Vite port in `frontend/vite.config.ts`) |
@@ -333,21 +466,21 @@ carries its one-line rationale:
 | Deferred item | Rationale |
 | --- | --- |
 | Multi-image browsing | Parse returns a single item per URL; gallery flows are not modeled |
-| Live Photo preview | No live-photo media type or preview stream in v1 |
+| Extended live-photo workflows | Parse-time live-photo metadata and same-origin card previews are supported; broader playback/download workflows remain future scope |
 | Music audition | Preview is metadata/still-based; no audio playback endpoint |
 | ZIP batch downloads | v1 serves exactly one file per tokenized link |
 | Full NAS file browser (list / delete / rename / move / search) | v1 has exactly `POST /api/nas/save`; no `/api/nas/list` or destructive operations |
 | Multi-user accounts | v1 has exactly one admin; the `2002` role-forbidden code is reserved for a future role system |
 | Browser extensions | Outside the web-app scope |
 | PWA (service worker / manifest) | Not part of the v1 web app |
-| JWT refresh tokens | Access tokens are 24-hour and stateless; re-login is the v1 path |
-| Rate limiting (PRD `1005`) | Deliberately absent; the login handler is thin so a limiter can be added without changing the endpoint |
+| Server-side JWT refresh-token store or revocation list | Access sessions are stateless; valid access tokens can be rotated through `POST /api/auth/refresh`, while expired tokens require login again |
+| Shared rate limiting across replicas | The login limiter is implemented per process; an external shared limiter remains recommended for public multi-replica deployments |
 | `GET /api/downloads` download-list endpoint | The frontend's download list is session-only and cannot be rehydrated after a refresh (recovery item) |
 | Cancel endpoint | The state graph has no cancelling transition; retry = re-submit |
-| Real platform engines | The parser/downloader are deterministic stubs behind the adapter protocols (`app/adapters/protocols.py`) |
+| Additional platform engine coverage | Engine adapters for the currently supported platforms are implemented; expanding coverage remains future work |
 | Streaming previews | The storage adapter loads whole files into memory for previews; no streaming method on the protocol yet |
 | Heartbeat column for worker staleness | `STALE_DOWNLOAD_MINUTES` anchors on `created_at` (no heartbeat); a long download can be expired by design |
-| Full `docker compose config` validation on a Docker machine | `backend/tests/test_compose.py` statically validates the YAML today; Docker is absent in CI |
+| Full `docker compose config` validation on a Docker machine | `backend/tests/test_compose.py` statically validates the YAML when Docker is unavailable; run the live command where Docker is provisioned |
 
 ---
 
@@ -379,7 +512,7 @@ carries its one-line rationale:
   prefixed paths as frontend paths — v1 targets root-path deployments.
 - **WS endpoint is unauthenticated.** A random `download_id` UUID is the only
   gate (it only leaks progress for an id the caller already knows); the file
-  endpoint remains one-time-token-gated.
+  endpoint remains short-lived-file-token-gated.
 - **`MAX_CONCURRENT` is per-process.** `N` worker processes ⇒ up to
   `N × MAX_CONCURRENT` tasks in flight; batches are processed sequentially
   (SQLite single-writer, no thread pool).
@@ -390,5 +523,8 @@ carries its one-line rationale:
 - **Cleanup CLI daemon mode duplicates the pass** if run alongside the worker
   (idempotent, so harmless) — prefer `--once` or the worker's built-in
   scheduler.
-- **File tokens are 5-minute and single-use** (the `token_id` is recorded on
-  the row); reuse or expiry surfaces as `5003`.
+- **File tokens are short-lived and reusable for 5 minutes** (bound to the
+  download task and its stored filename; `tid`/`exp` live in the JWT, while
+  legacy `token_id`/`token_expires_at` columns are currently unpopulated and
+  do not gate serving); repeated GET/Range playback requests are allowed and
+  expiry surfaces as `5003`.

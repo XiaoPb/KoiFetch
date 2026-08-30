@@ -8,6 +8,7 @@ fixture is a fresh temp SQLite database with the schema created directly.
 
 import json
 import logging
+import base64
 from datetime import datetime, timezone
 
 import pytest
@@ -16,11 +17,14 @@ from sqlalchemy import text
 from app.adapters.protocols import CookieProvider
 from app.application.cookie_service import (
     CookieStorageError,
+    CookieCipher,
     PlatformCookieService,
     _MESSAGE_STORAGE_ERROR,
 )
 from app.infrastructure.database import Base, build_engine, session_scope
 from app.infrastructure.models import PlatformCookie
+
+COOKIE_KEY = base64.urlsafe_b64encode(bytes(range(32))).decode()
 
 
 @pytest.fixture
@@ -32,7 +36,7 @@ def engine(tmp_path):
 
 @pytest.fixture
 def service(engine):
-    return PlatformCookieService(engine=engine)
+    return PlatformCookieService(engine=engine, cipher=CookieCipher(COOKIE_KEY))
 
 
 class TestRead:
@@ -162,4 +166,5 @@ def test_rows_are_persisted_in_the_table(engine, service):
     with session_scope(engine) as session:
         row = session.get(PlatformCookie, "douyin")
         assert row is not None
-        assert row.cookie == "a=1"
+        assert row.cookie.startswith("enc:v1:")
+        assert row.cookie != "a=1"

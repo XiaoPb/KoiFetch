@@ -27,6 +27,7 @@ module docstring for why the worker processes one batch sequentially).
 import asyncio
 import sqlite3
 import threading
+import zipfile
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -36,7 +37,16 @@ from app.adapters.downloader_stub import StubDownloaderAdapter
 from app.api.responses import CODE_FILE_TOKEN_INVALID
 from app.application.download_events import DownloadEventHub
 from app.application.download_service import DownloadService
-from app.domain import DownloadProgress, DownloadResult, DownloadStatus
+from app.domain import (
+    AssetSelector,
+    DownloadProgress,
+    DownloadResult,
+    DownloadStatus,
+    LivePhotoPair,
+    MediaManifest,
+    MediaResource,
+    MediaType,
+)
 from app.infrastructure.database import Base, build_engine, session_scope
 from app.infrastructure.models import DownloadTask
 from app.workers import worker as worker_module
@@ -196,6 +206,240 @@ class TestClaiming:
 
 
 class TestRunOnce:
+    def test_package_member_limit_fails_before_network(self, engine, storage, token_provider, monkeypatch):
+        manifest = MediaManifest(
+            kind="image_album",
+            images=tuple(
+                MediaResource(url=f"https://cdn.example/{i}.jpg", format="jpg")
+                for i in range(2)
+            ),
+        )
+        task_id = seed_parse_task(
+            engine, media_type=MediaType.IMAGE,
+            metadata={"manifest": manifest.model_dump(mode="json")},
+        )
+        service = DownloadService(token_provider=token_provider, storage=storage, engine=engine)
+        download = service.submit(task_id, format="zip", selector=AssetSelector(kind="image", package="album_zip"))
+        monkeypatch.setattr(worker_module, "_MAX_PACKAGE_MEMBERS", 1)
+        calls = []
+
+        class NeverDownloader:
+            def download(self, request):
+                calls.append(request)
+                raise AssertionError("network must not be called")
+
+        run_once(engine, NeverDownloader(), storage, FakeHub(), token_provider=token_provider,
+                 download_service=service, max_retries=1)
+        assert calls == []
+        assert load_download(engine, download.download_id).status is DownloadStatus.FAILED
+
+    def test_package_callback_overflow_cleans_target(self, engine, storage, token_provider, monkeypatch):
+        manifest = MediaManifest(
+            kind="image_album",
+            images=(MediaResource(url="https://cdn.example/a.jpg", format="jpg"),),
+        )
+        task_id = seed_parse_task(engine, media_type=MediaType.IMAGE,
+                                  metadata={"manifest": manifest.model_dump(mode="json")})
+        service = DownloadService(token_provider=token_provider, storage=storage, engine=engine)
+        download = service.submit(task_id, format="zip", selector=AssetSelector(kind="image", package="album_zip"))
+        monkeypatch.setattr(worker_module, "_MAX_PACKAGE_MEMBER_BYTES", 8)
+
+        class CallbackOverflow:
+            def download(self, request):
+                request.target_path.parent.mkdir(parents=True, exist_ok=True)
+                if request.progress_callback:
+                    request.progress_callback(DownloadProgress(
+                        download_id=request.download_id, status=DownloadStatus.DOWNLOADING,
+                        progress=100.0, speed=1.0, downloaded_bytes=9, total_bytes=9,
+                    ))
+                request.target_path.write_bytes(b"overflow")
+                raise AssertionError("guard should interrupt the member")
+
+        run_once(engine, CallbackOverflow(), storage, FakeHub(), token_provider=token_provider,
+                 download_service=service, max_retries=1)
+        row = load_download(engine, download.download_id)
+        assert row.status is DownloadStatus.FAILED
+        assert row.bubble_path is None
+
+    def test_package_stat_and_cumulative_limits_clean_partial_output(
+        self, engine, storage, token_provider, monkeypatch
+    ):
+        manifest = MediaManifest(
+            kind="image_album",
+            images=tuple(
+                MediaResource(url=f"https://cdn.example/{i}.jpg", format="jpg")
+                for i in range(2)
+            ),
+        )
+        task_id = seed_parse_task(engine, media_type=MediaType.IMAGE,
+                                  metadata={"manifest": manifest.model_dump(mode="json")})
+        service = DownloadService(token_provider=token_provider, storage=storage, engine=engine)
+        download = service.submit(task_id, format="zip", selector=AssetSelector(kind="image", package="album_zip"))
+        monkeypatch.setattr(worker_module, "_MAX_PACKAGE_MEMBER_BYTES", 8)
+        monkeypatch.setattr(worker_module, "_MAX_PACKAGE_TOTAL_BYTES", 10)
+
+        class NoProgressWriter:
+            def download(self, request):
+                request.target_path.parent.mkdir(parents=True, exist_ok=True)
+                request.target_path.write_bytes(b"123456")
+                return DownloadResult(
+                    download_id=request.download_id, task_id=request.command.task_id,
+                    title=request.title, media_type=request.media_type,
+                    format=request.command.format, status=DownloadStatus.COMPLETED,
+                    progress=100.0, total_bytes=6, downloaded_bytes=6,
+                )
+
+        run_once(engine, NoProgressWriter(), storage, FakeHub(), token_provider=token_provider,
+                 download_service=service, max_retries=1)
+        row = load_download(engine, download.download_id)
+        assert row.status is DownloadStatus.FAILED
+        assert row.bubble_path is None
+
+    def test_invalid_persisted_selector_fails_without_exposing_metadata(
+        self, engine, storage, token_provider
+    ):
+        task_id = seed_parse_task(engine)
+        download_id = seed_download(engine, task_id=task_id)
+        with session_scope(engine) as session:
+            row = session.get(DownloadTask, download_id)
+            row.asset_selector = {"kind": "not-a-real-kind", "index": 0}
+        run_once(
+            engine,
+            StubDownloaderAdapter(total_bytes=64, chunk_size=64),
+            storage,
+            FakeHub(),
+            token_provider=token_provider,
+            max_retries=1,
+        )
+        row = load_download(engine, download_id)
+        assert row.status is DownloadStatus.FAILED
+        assert "not-a-real-kind" not in (row.error_message or "")
+
+    def test_selected_resource_rewrites_exact_url_for_downloader(
+        self, engine, storage, token_provider
+    ):
+        manifest = MediaManifest(
+            kind="video",
+            videos=(
+                MediaResource(url="https://cdn.example/first.mp4", format="mp4"),
+                MediaResource(url="https://cdn.example/second.mp4", format="mp4"),
+            ),
+        )
+        task_id = seed_parse_task(
+            engine,
+            metadata={"manifest": manifest.model_dump(mode="json")},
+        )
+        service = DownloadService(
+            token_provider=token_provider, storage=storage, engine=engine
+        )
+        download = service.submit(
+            task_id,
+            format="mp4",
+            selector=AssetSelector(kind="video", index=1),
+        )
+        seen = {}
+
+        class CapturingDownloader(StubDownloaderAdapter):
+            def download(self, request):
+                seen["url"] = request.metadata.get("video_url")
+                seen["media_type"] = request.media_type
+                return super().download(request)
+
+        run_once(
+            engine,
+            CapturingDownloader(total_bytes=64, chunk_size=64),
+            storage,
+            FakeHub(),
+            token_provider=token_provider,
+            download_service=service,
+        )
+        assert seen == {
+            "url": "https://cdn.example/second.mp4",
+            "media_type": MediaType.VIDEO,
+        }
+        assert load_download(engine, download.download_id).status is DownloadStatus.COMPLETED
+
+    def test_album_package_is_a_valid_zip_with_stable_entries(
+        self, engine, storage, token_provider
+    ):
+        manifest = MediaManifest(
+            kind="image_album",
+            images=(
+                MediaResource(url="https://cdn.example/a.jpg", format="jpg"),
+                MediaResource(url="https://cdn.example/b.webp", format="webp"),
+            ),
+        )
+        task_id = seed_parse_task(
+            engine,
+            media_type=MediaType.IMAGE,
+            metadata={"manifest": manifest.model_dump(mode="json")},
+        )
+        service = DownloadService(
+            token_provider=token_provider, storage=storage, engine=engine
+        )
+        download = service.submit(
+            task_id,
+            format="zip",
+            selector=AssetSelector(kind="image", package="album_zip"),
+        )
+        run_once(
+            engine,
+            StubDownloaderAdapter(total_bytes=64, chunk_size=64),
+            storage,
+            FakeHub(),
+            token_provider=token_provider,
+            download_service=service,
+        )
+        row = load_download(engine, download.download_id)
+        assert row.status is DownloadStatus.COMPLETED
+        with zipfile.ZipFile(row.bubble_path) as archive:
+            assert archive.namelist() == ["image-0001.jpg", "image-0002.webp"]
+
+    def test_live_package_contains_stills_and_available_motion(
+        self, engine, storage, token_provider
+    ):
+        manifest = MediaManifest(
+            kind="live_photo",
+            live_photos=(
+                LivePhotoPair(
+                    image=MediaResource(url="https://cdn.example/one.jpg", format="jpg"),
+                    motion=MediaResource(url="https://cdn.example/one.mov", format="mov"),
+                ),
+                LivePhotoPair(
+                    image=MediaResource(url="https://cdn.example/two.png", format="png"),
+                    motion=None,
+                ),
+            ),
+        )
+        task_id = seed_parse_task(
+            engine,
+            media_type=MediaType.LIVE_PHOTO,
+            metadata={"manifest": manifest.model_dump(mode="json")},
+        )
+        service = DownloadService(
+            token_provider=token_provider, storage=storage, engine=engine
+        )
+        download = service.submit(
+            task_id,
+            format="zip",
+            selector=AssetSelector(kind="live_image", package="live_zip"),
+        )
+        run_once(
+            engine,
+            StubDownloaderAdapter(total_bytes=64, chunk_size=64),
+            storage,
+            FakeHub(),
+            token_provider=token_provider,
+            download_service=service,
+        )
+        row = load_download(engine, download.download_id)
+        with zipfile.ZipFile(row.bubble_path) as archive:
+            assert archive.namelist() == [
+                "live-0001-image.jpg",
+                "live-0001-motion.mov",
+                "live-0002-image.png",
+            ]
+
     def test_happy_path_downloads_and_completes(self, engine, storage, token_provider):
         task_id = seed_parse_task(engine, title="示例视频")
         download_id = seed_download(engine, task_id=task_id)
@@ -258,7 +502,7 @@ class TestRunOnce:
         assert downloaded.path.read_bytes() == expected_stub_bytes(
             download_id, "示例视频", STUB_TOTAL
         )
-        # Short-lived, not single-use: playback issues repeated requests.
+        # Short-lived and reusable: playback issues repeated requests.
         again = service.get_file(download_id, token)
         assert again.path.read_bytes() == expected_stub_bytes(
             download_id, "示例视频", STUB_TOTAL

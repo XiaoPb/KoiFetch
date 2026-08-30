@@ -29,9 +29,9 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     setupFiles: ['./src/test/setup.ts'],
+    include: ['src/**/*.{test,spec}.{js,ts,jsx,tsx}'],
     css: false,
-    // Run tests in worker threads (vitest 2 defaults to the `forks` pool,
-    // which spawns child processes).
+    // Keep test execution in worker threads for deterministic parallelism.
     pool: 'threads',
   },
 });

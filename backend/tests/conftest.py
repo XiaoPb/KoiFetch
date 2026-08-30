@@ -28,7 +28,8 @@ from app.infrastructure.models import DownloadTask, ParseTask
 # test module). Tests that care about a hermetic environment delete these via
 # ``clean_env`` in test_config.py.
 os.environ.setdefault("ADMIN_PASSWORD", "pw")
-os.environ.setdefault("SECRET_KEY", "sk")
+os.environ.setdefault("SECRET_KEY", "test-secret-key-0123456789abcdef")
+os.environ.setdefault("COOKIE_ENCRYPTION_KEY", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
 
 
 @pytest.fixture(autouse=True)
@@ -55,7 +56,12 @@ VIDEO_URL = "https://www.bilibili.com/video/av123"
 
 def make_settings(**overrides) -> Settings:
     """Build a ``Settings`` with the test secrets plus any overrides."""
-    return Settings(admin_password=PASSWORD, secret_key=SECRET, **overrides)
+    return Settings(
+        admin_password=PASSWORD,
+        secret_key=SECRET,
+        cookie_encryption_key="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        **overrides,
+    )
 
 
 class FakeHub:

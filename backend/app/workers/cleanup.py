@@ -92,6 +92,7 @@ from sqlalchemy import Engine, and_, or_, select, update
 
 from app.adapters.factory import get_storage
 from app.adapters.protocols import StorageAdapter
+from app.adapters.storage_local import STORAGE_MEDIA_TYPES
 from app.domain import DownloadStatus, MediaType, is_within, transition
 from app.infrastructure.config import Settings, get_settings
 from app.infrastructure.database import get_engine, session_scope
@@ -192,7 +193,7 @@ def _sweep_bubble_files(
     cutoff = now - timedelta(hours=expire_hours)
     removed = 0
     already_absent = 0
-    for media_type in MediaType:
+    for media_type in STORAGE_MEDIA_TYPES:
         for path in storage.list_files(media_type):
             try:
                 old = path.stat().st_mtime < cutoff.timestamp()
@@ -336,7 +337,8 @@ def _is_bubble_path(storage: StorageAdapter, path: Path) -> bool:
     required to safely remove an actual bubble temp file.
     """
     return any(
-        is_within(storage.bubble_root(media_type), path) for media_type in MediaType
+        is_within(storage.bubble_root(media_type), path)
+        for media_type in STORAGE_MEDIA_TYPES
     )
 
 

@@ -74,16 +74,22 @@ export interface LoginData {
   expires_at: string;
 }
 
+/** The refresh endpoint returns the same rotated session payload as login. */
+export type RefreshData = LoginData;
+
 // ---------------------------------------------------------------------------
 // Parse (POST /api/parse)
 // ---------------------------------------------------------------------------
 
+import type { PublicMediaManifest } from './mediaManifest';
+
 export type MediaType = 'video' | 'music' | 'image';
+export type ParseResultType = 'video' | 'image' | 'live_photo' | 'music';
 
 export interface ParseResult {
   task_id: string;
   url: string;
-  type: string;
+  type: ParseResultType;
   platform: string;
   title: string;
   cover: string | null;
@@ -93,14 +99,12 @@ export interface ParseResult {
   format: string | null;
   available_qualities: string[];
   available_bitrates: string[];
-  /**
-   * Real playable media URL resolved by the engine at parse time (douyin/
-   * bilibili/... CDN). Null in stub mode — the card then shows the cover and
-   * only becomes playable once a download completes.
-   */
-  video_url: string | null;
-  /** Album image URLs (图集/动图). Empty in stub mode — fall back to `cover`. */
-  images: string[];
+  /** Public same-origin media resources; null for legacy rows without one. */
+  manifest: PublicMediaManifest | null;
+  /** @deprecated Private upstream URL retained for server-side compatibility; never render. */
+  video_url?: string | null;
+  /** @deprecated Private upstream image URLs retained for compatibility; never render. */
+  images?: string[];
 }
 
 export interface ParseFailure {
@@ -153,6 +157,8 @@ export interface PreviewData {
   available_qualities: string[];
   available_bitrates: string[];
   streams: PreviewStream[];
+  /** Public same-origin media resources when the task has a manifest. */
+  manifest?: PublicMediaManifest | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -173,6 +179,12 @@ export interface SubmitData {
   /** ISO-8601 (UTC). */
   created_at: string;
 }
+
+export type AssetKind = 'video' | 'image' | 'live_image' | 'live_motion' | 'music';
+export interface AssetSelector { kind: AssetKind; index?: number; package?: 'album_zip' | 'live_zip'; }
+export type PreparedTransfer =
+  | { mode: 'direct'; url: string; filename: string }
+  | { mode: 'staged'; download_id: string; status: DownloadStatus };
 
 export interface DownloadProgress {
   download_id: string;

@@ -7,7 +7,7 @@ import type { MusicSearchSource } from './musicSource';
  * shape (`MusicSearchResult`) — the backend domain models mirror
  * `frontend/src/types/music.ts` field-for-field, so there is no mapping layer
  * to drift. Play URLs arrive as same-origin proxy paths
- * (`/api/music/stream?src=...`) and play directly in the mini player.
+ * (`/api/music/{song_id}/stream`) and play directly in the mini player.
  */
 export function createHttpMusicSource(): MusicSearchSource {
   return {

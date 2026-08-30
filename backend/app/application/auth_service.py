@@ -2,14 +2,16 @@
 
 Sits in the application layer between the API transport (``app.api``) and the
 persistence/adapters: it authenticates the admin against the ``users`` table
-with bcrypt and issues 24-hour access tokens through the
+with bcrypt and issues access tokens with the configured lifetime (seven-day
+default) through the
 :class:`app.adapters.protocols.AccessTokenProvider` port — never touching
 PyJWT or bcrypt specifics in the handlers.
 
 Design decisions (stable contract for Tasks 8-12):
 
 * **One account, no registration.** v1 seeds exactly one administrator (see
-  ``app.infrastructure.seed``); there is no signup and no refresh-token flow.
+  ``app.infrastructure.seed``); there is no signup. Refresh rotates a still-
+  valid stateless access token after checking that its user still exists.
 * **Failures are indistinguishable — in result *and* timing.** A nonexistent
   username and a wrong password return the same result (``None``), and the
   missing-user path runs a bcrypt comparison against a fixed dummy hash so the
@@ -42,9 +44,10 @@ from datetime import datetime
 import bcrypt
 from sqlalchemy import Engine, select
 
-from app.adapters.protocols import AccessTokenProvider
+from app.adapters.protocols import AccessTokenProvider, InvalidTokenError
 from app.infrastructure.database import session_scope
 from app.infrastructure.models import User
+from app.application.login_limiter import normalize_username
 
 __all__ = ["AuthService", "LoginResult"]
 
@@ -65,7 +68,8 @@ _DUMMY_HASH = (
 class LoginResult:
     """A successful login: the issued token plus what the client needs to show.
 
-    ``expires_at`` mirrors the token's ``exp`` claim (issued-at + 24h) so the
+    ``expires_at`` mirrors the token's ``exp`` claim (issued-at + configured
+    lifetime, seven-day default) so the
     API can return it without re-deriving the TTL.
     """
 
@@ -75,7 +79,8 @@ class LoginResult:
 
 
 class AuthService:
-    """Authenticate the admin and issue 24-hour access tokens.
+    """Authenticate the admin and issue a configured lifetime access token
+    (seven-day default).
 
     ``token_provider`` is required (obtain it from
     ``app.adapters.factory.get_access_token_provider``). ``engine`` defaults to
@@ -102,7 +107,7 @@ class AuthService:
         """
         if not isinstance(username, str) or not isinstance(password, str):
             return None
-        username = username.strip()
+        username = normalize_username(username)
         if not username or not password:
             return None
         with session_scope(self._engine) as session:
@@ -118,7 +123,7 @@ class AuthService:
             return user
 
     def issue_access_token(self, user: User) -> str:
-        """Issue a 24-hour access token for ``user`` via the configured provider."""
+        """Issue a configured-lifetime access token (seven-day default) for ``user``."""
         return self._token_provider.issue(
             user_id=user.id, username=user.username
         )
@@ -138,6 +143,26 @@ class AuthService:
             token=token,
             username=user.username,
             expires_at=claims.expires_at,
+        )
+
+    def refresh(self, token: str) -> LoginResult:
+        """Rotate a valid access token for the user it currently identifies.
+
+        Validation happens before issuing anything.  A signed token whose user
+        was removed (or whose username no longer matches) is treated as an
+        invalid token rather than minting a replacement for a stale identity.
+        """
+        claims = self._token_provider.validate(token)
+        with session_scope(self._engine) as session:
+            user = session.get(User, claims.user_id)
+            if user is None or user.username != claims.username:
+                raise InvalidTokenError("token user no longer exists")
+            fresh_token = self.issue_access_token(user)
+        fresh_claims = self._token_provider.validate(fresh_token)
+        return LoginResult(
+            token=fresh_token,
+            username=fresh_claims.username,
+            expires_at=fresh_claims.expires_at,
         )
 
     @staticmethod

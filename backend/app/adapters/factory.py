@@ -17,6 +17,8 @@ at startup and injects it.
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 from app.adapters.downloader_stub import StubDownloaderAdapter
 from app.adapters.parser_stub import StubParserAdapter
 from app.adapters.protocols import (
@@ -134,14 +136,21 @@ def get_storage(settings: Settings | None = None) -> StorageAdapter:
 def get_access_token_provider(
     settings: Settings | None = None,
 ) -> AccessTokenProvider:
-    """Return the 24h JWT access-token provider (auth service, Task 7)."""
+    """Return the configured JWT access-token provider."""
     settings = settings or get_settings()
-    return JwtAccessTokenProvider(settings.secret_key)
+    return JwtAccessTokenProvider(
+        settings.secret_key,
+        ttl=timedelta(days=settings.access_token_ttl_days),
+    )
 
 
 def get_one_time_token_provider(
     settings: Settings | None = None,
 ) -> OneTimeTokenProvider:
-    """Return the 5-minute one-time download-token provider (Task 9)."""
+    """Return the 5-minute reusable download-token provider (Task 9).
+
+    The function/provider name is retained for API compatibility; the issued
+    token is short-lived and reusable for GET/Range playback until expiry.
+    """
     settings = settings or get_settings()
     return JwtOneTimeTokenProvider(settings.secret_key)

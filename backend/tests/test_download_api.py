@@ -50,7 +50,7 @@ BUBBLE_FILENAME = "2026-01-01_api-shipin_av123.mp4"
 
 
 def make_settings(**overrides) -> Settings:
-    return Settings(admin_password=PASSWORD, secret_key=SECRET, **overrides)
+    return Settings(admin_password=PASSWORD, secret_key=SECRET, cookie_encryption_key="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", **overrides)
 
 
 @pytest.fixture
@@ -381,7 +381,8 @@ class TestFileApi:
 
     def test_file_reused_token_serves_again_within_expiry(self, client, engine, app, storage):
         # Playback compatibility: the token is short-lived (5 min), NOT
-        # single-use — a media player's repeated/range requests must all serve.
+        # Reusable for five minutes — a media player's repeated/range requests
+        # must all serve.
         task_id = seed_parse_task(engine)
         download_id = seed_completed_with_file(engine, task_id=task_id, storage=storage)
         token = app.state.download_service.issue_download_token(download_id).token

@@ -17,7 +17,8 @@ mounted on an app built by ``create_app`` (or one that sets the same state).
 
 from __future__ import annotations
 
-from typing import Annotated
+import logging
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import Response, StreamingResponse
@@ -38,6 +39,8 @@ __all__ = [
 router = APIRouter(prefix="/preview", tags=["preview"])
 
 _MESSAGE_PREVIEW_OK = "获取预览成功 / Preview loaded"
+
+logger = logging.getLogger(__name__)
 
 
 class StreamInfo(BaseModel):
@@ -67,6 +70,7 @@ class PreviewData(BaseModel):
     available_qualities: list[str] = Field(default_factory=list)
     available_bitrates: list[str] = Field(default_factory=list)
     streams: list[StreamInfo] = Field(default_factory=list)
+    manifest: dict[str, Any] | None = None
 
 
 class PreviewResponse(BaseModel):
@@ -75,6 +79,30 @@ class PreviewResponse(BaseModel):
     code: int
     message: str
     data: PreviewData | None = None
+
+
+def _stream_iterator(stream):
+    """Yield media chunks while keeping lazy upstream failures private."""
+    try:
+        yield from stream.chunks
+    except Exception as exc:
+        # The response has already started by the time lazy iteration runs.
+        # Log only a stable class name: exception messages may contain signed
+        # upstream URLs or tokens. Base exceptions (including cancellation)
+        # intentionally continue propagating.
+        logger.error(
+            "media proxy stream failed exception_class=%s", type(exc).__name__
+        )
+    finally:
+        try:
+            stream.close()
+        except Exception as exc:
+            # Closing can fail after headers are sent as well, so apply the
+            # same sanitization and do not re-raise the ordinary error.
+            logger.error(
+                "media proxy stream close failed exception_class=%s",
+                type(exc).__name__,
+            )
 
 
 def get_preview_service(request: Request) -> PreviewService:
@@ -112,15 +140,8 @@ def stream_media(
     """
     stream = service.stream_video(task_id, request.headers.get("range"))
 
-    def iterator():
-        try:
-            for chunk in stream.chunks:
-                yield chunk
-        finally:
-            stream.close()
-
     return StreamingResponse(
-        iterator(),
+        _stream_iterator(stream),
         status_code=stream.status_code,
         headers=stream.headers,
         media_type=None,
@@ -158,3 +179,68 @@ def album_zip(
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+def _resource_response(
+    request: Request,
+    service: PreviewService,
+    task_id: str,
+    kind: str,
+    index: int,
+    side: str | None = None,
+) -> Response | StreamingResponse:
+    if request.method == "HEAD":
+        status_code, headers = service.head_resource(
+            task_id,
+            kind,
+            index,
+            side=side,
+            range_header=request.headers.get("range"),
+        )
+        return Response(status_code=status_code, headers=headers)
+    stream = service.stream_resource(
+        task_id,
+        kind,
+        index,
+        side=side,
+        range_header=request.headers.get("range"),
+    )
+
+    return StreamingResponse(
+        _stream_iterator(stream),
+        status_code=stream.status_code,
+        headers=stream.headers,
+        media_type=None,
+    )
+
+
+@router.api_route(
+    "/{task_id}/resources/{kind}/{index}",
+    methods=["GET", "HEAD"],
+    response_model=None,
+)
+def resource(
+    task_id: UuidStr,
+    kind: str,
+    index: int,
+    request: Request,
+    service: Annotated[PreviewService, Depends(get_preview_service)],
+) -> Response:
+    """Proxy one video/image manifest item via a same-origin index route."""
+    return _resource_response(request, service, task_id, kind, index)
+
+
+@router.api_route(
+    "/{task_id}/resources/live/{index}/{side}",
+    methods=["GET", "HEAD"],
+    response_model=None,
+)
+def live_resource(
+    task_id: UuidStr,
+    index: int,
+    side: str,
+    request: Request,
+    service: Annotated[PreviewService, Depends(get_preview_service)],
+) -> Response:
+    """Proxy a Live Photo still or optional motion resource."""
+    return _resource_response(request, service, task_id, "live", index, side)

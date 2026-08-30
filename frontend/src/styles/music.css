@@ -536,3 +536,34 @@
   .music-mini-player { padding: 4px 8px; }
   .music-mini-cover { display: none; }
 }
+.music-lyrics-panel {
+  position: fixed;
+  right: 16px;
+  bottom: 80px;
+  z-index: 20;
+  width: min(360px, calc(100vw - 32px));
+  padding: 12px 16px;
+  border: 1px solid var(--border-color, #e5e7eb);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+
+.music-lyrics-scroll {
+  max-height: 220px;
+  margin-top: 8px;
+  overflow-y: auto;
+  text-align: center;
+}
+
+.music-lyric-line {
+  padding: 4px 0;
+  color: #8c8c8c;
+  transition: color 160ms ease, transform 160ms ease;
+}
+
+.music-lyric-line.active {
+  color: #1677ff;
+  font-weight: 600;
+  transform: scale(1.03);
+}

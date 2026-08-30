@@ -72,6 +72,7 @@ __all__ = [
     "PathOutsideRootError",
     "build_path",
     "is_within",
+    "safe_attachment_filename",
     "safe_media_filename",
     "slugify",
 ]
@@ -168,6 +169,30 @@ def safe_media_filename(
         components.append(slugify(artist))
     components.extend([slugify(title), slugify(source_id)])
     return f"{'_'.join(components)}.{ext}"
+
+
+def safe_attachment_filename(title: str | None, ext: str) -> str:
+    """Build a safe, bounded attachment name from a task title and format.
+
+    Direct-transfer responses use this helper rather than reflecting a title
+    or URL into ``Content-Disposition``.  The title is slugified and the
+    extension is reduced to alphanumeric characters, so the result is one
+    filename component with no path semantics.
+    """
+    cleaned_ext = _clean_extension(ext)
+    stem = slugify(title or "untitled", max_length=120)
+    # Avoid names interpreted as Windows device files by clients and proxies.
+    if stem.casefold() in {
+        "con",
+        "prn",
+        "aux",
+        "nul",
+        "clock$",
+        *(f"com{index}" for index in range(1, 10)),
+        *(f"lpt{index}" for index in range(1, 10)),
+    }:
+        stem = f"download-{stem}"
+    return f"{stem}.{cleaned_ext}"
 
 
 def is_within(root: Path | str, candidate: Path | str) -> bool:

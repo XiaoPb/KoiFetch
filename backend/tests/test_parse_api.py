@@ -63,13 +63,12 @@ PRD_RESULT_KEYS = {
     "format",
     "available_qualities",
     "available_bitrates",
-    "video_url",
-    "images",
+    "manifest",
 }
 
 
 def make_settings(**overrides) -> Settings:
-    return Settings(admin_password=PASSWORD, secret_key=SECRET, **overrides)
+    return Settings(admin_password=PASSWORD, secret_key=SECRET, cookie_encryption_key="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", **overrides)
 
 
 @pytest.fixture
@@ -114,8 +113,7 @@ class TestParseSuccess:
         assert result["file_size_mb"]
         assert result["format"] == "mp4"
         assert result["available_qualities"] == ["1080p", "720p", "480p"]
-        assert result["video_url"] is None  # stub metadata carries no media URL
-        assert result["images"] == []
+        assert result["manifest"] is None  # stub metadata carries no manifest
 
     def test_multiple_urls_return_ordered_results(self, client):
         response = client.post("/api/parse", json={"urls": [VIDEO_URL, MUSIC_URL]})
@@ -307,9 +305,9 @@ class TestParsePersistence:
 
 
 class TestParseMediaUrls:
-    """Engine-style metadata (video_url / images) must survive serialization."""
+    """Engine-style private metadata never crosses the API boundary."""
 
-    def test_video_result_exposes_video_url(self, engine):
+    def test_video_result_does_not_expose_video_url(self, engine):
         from app.domain import MediaType, ParseResult
         import uuid as _uuid
 
@@ -336,10 +334,11 @@ class TestParseMediaUrls:
         )
         assert response.status_code == 200
         result = response.json()["data"]["results"][0]
-        assert result["video_url"] == "https://cdn.example.com/v.mp4"
-        assert result["images"] == []
+        assert "video_url" not in result
+        assert "https://cdn.example.com" not in str(result)
+        assert result["manifest"] is None
 
-    def test_image_result_exposes_album_images(self, engine):
+    def test_image_result_does_not_expose_album_images(self, engine):
         from app.domain import MediaType, ParseResult
         import uuid as _uuid
 
@@ -371,8 +370,6 @@ class TestParseMediaUrls:
         )
         assert response.status_code == 200
         result = response.json()["data"]["results"][0]
-        assert result["images"] == [
-            "https://cdn.example.com/1.jpg",
-            "https://cdn.example.com/2.jpg",
-        ]
-        assert result["video_url"] is None
+        assert "images" not in result
+        assert "https://cdn.example.com" not in str(result)
+        assert result["manifest"] is None

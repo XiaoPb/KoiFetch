@@ -5,6 +5,7 @@ touches the network."""
 
 import asyncio
 import re
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import httpx
@@ -21,7 +22,7 @@ from app.adapters.engine_errors import (
     UnsupportedPlatformError,
 )
 from app.adapters.parser_f2 import F2ParserAdapter
-from app.domain import MediaType, ParseCommand
+from app.domain import MediaResource, MediaType, ParseCommand
 
 _URL_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
@@ -285,6 +286,8 @@ def _fake_post_detail(**overrides):
         duration=83000,
         video_play_addr=["https://cdn.example/v.mp4"],
         images=[],
+        images_video=[],
+        aweme_type=0,
     )
     defaults.update(overrides)
     return type("FakePostDetail", (), defaults)()
@@ -396,6 +399,182 @@ class TestDouyinMapping:
         assert [img["url"] for img in result.metadata["images"]] == [
             "https://cdn.example/a.jpg"
         ]
+
+    def test_aweme_68_maps_ordered_live_photo_pairs(self):
+        data = _fake_post_detail(
+            aweme_type=68,
+            video_play_addr=[],
+            images=["https://cdn.example/a.webp", "https://cdn.example/b.webp"],
+            images_video=["https://cdn.example/a.mp4", "https://cdn.example/b.mp4"],
+        )
+
+        result = self._adapter()._map_douyin(data, "https://douyin.com/video/1")
+
+        assert result.media_type is MediaType.LIVE_PHOTO
+        assert result.metadata["manifest"]["kind"] == "live_photo"
+        assert result.metadata["manifest"]["live_photos"][0]["image"]["url"].endswith(
+            "a.webp"
+        )
+        assert result.metadata["manifest"]["live_photos"][1]["motion"][
+            "url"
+        ].endswith("b.mp4")
+
+    def test_unpaired_image_is_kept_with_warning(self):
+        data = _fake_post_detail(
+            aweme_type=68,
+            video_play_addr=[],
+            images=["https://cdn.example/a.webp", "https://cdn.example/b.webp"],
+            images_video=["https://cdn.example/a.mp4"],
+        )
+
+        result = self._adapter()._map_douyin(data, "https://douyin.com/video/1")
+
+        pairs = result.metadata["manifest"]["live_photos"]
+        assert pairs[1]["motion"] is None
+        assert result.metadata["manifest"]["warnings"] == [
+            "1 张实况照片缺少动态视频"
+        ]
+
+    def test_non_live_video_stays_video(self):
+        data = _fake_post_detail(
+            aweme_type=0,
+            images=[],
+            images_video=[],
+            video_play_addr=["https://cdn.example/video.mp4"],
+        )
+
+        assert self._adapter()._map_douyin(
+            data, "https://douyin.com/video/1"
+        ).media_type is MediaType.VIDEO
+
+    def test_images_video_without_images_falls_back_to_video_or_errors(self):
+        data = _fake_post_detail(
+            aweme_type=0,
+            images=[],
+            images_video=["https://cdn.example/orphan.mp4"],
+            video_play_addr=[],
+        )
+
+        with pytest.raises(EngineParseError):
+            self._adapter()._map_douyin(data, "https://douyin.com/video/1")
+
+    def test_extra_motion_is_ignored_with_deterministic_warning(self):
+        data = _fake_post_detail(
+            aweme_type=68,
+            video_play_addr=[],
+            images=["https://cdn.example/a.webp"],
+            images_video=[
+                "https://cdn.example/a.mp4",
+                "https://cdn.example/orphan.mp4",
+            ],
+        )
+
+        result = self._adapter()._map_douyin(data, "https://douyin.com/video/1")
+
+        manifest = result.metadata["manifest"]
+        assert len(manifest["live_photos"]) == 1
+        assert manifest["warnings"] == ["1 个动态视频没有对应静态图片"]
+
+    def test_live_photo_legacy_fields_and_resource_extensions_are_derived(self):
+        data = _fake_post_detail(
+            aweme_type=68,
+            video_play_addr=[],
+            cover=None,
+            images=[" https://cdn.example/A.WEBP?token=1 "],
+            images_video=["https://cdn.example/A.MP4?token=2"],
+        )
+
+        result = self._adapter()._map_douyin(data, "https://douyin.com/video/1")
+
+        manifest = result.metadata["manifest"]
+        assert result.cover == "https://cdn.example/A.WEBP?token=1"
+        assert result.format == "webp"
+        assert manifest["live_photos"][0]["image"]["format"] == "webp"
+        assert manifest["live_photos"][0]["motion"]["format"] == "mp4"
+        assert result.metadata["video_url"] is None
+        assert result.metadata["images"] == [
+            {
+                "url": "https://cdn.example/A.WEBP?token=1",
+                "live_photo_url": "https://cdn.example/A.MP4?token=2",
+            }
+        ]
+
+    def test_scalar_and_url_bearing_objects_are_extracted_in_order(self):
+        data = _fake_post_detail(
+            aweme_type=68,
+            video_play_addr=[],
+            images=(
+                {"url": "https://cdn.example/a.webp"},
+                SimpleNamespace(url="https://cdn.example/b.webp"),
+                MediaResource(url="https://cdn.example/c.webp", format="webp"),
+                "https://cdn.example/b.webp",
+            ),
+            images_video="https://cdn.example/a.mp4",
+        )
+
+        result = self._adapter()._map_douyin(data, "https://douyin.com/video/1")
+
+        assert [
+            pair["image"]["url"] for pair in result.metadata["manifest"]["live_photos"]
+        ] == [
+            "https://cdn.example/a.webp",
+            "https://cdn.example/b.webp",
+            "https://cdn.example/c.webp",
+        ]
+
+    def test_invalid_url_items_are_skipped_without_poisoning_valid_items(self):
+        class BrokenUrl:
+            @property
+            def url(self):
+                raise RuntimeError("broken URL property")
+
+        data = _fake_post_detail(
+            aweme_type=68,
+            video_play_addr=[],
+            images=[
+                "https://cdn.example/a.webp",
+                "http://[broken-ipv6",
+                "http://cdn.example:bad-port/b.webp",
+                "ftp://cdn.example/not-http.webp",
+                "https://cdn.example/\x00bad.webp",
+                "https:///missing-host.webp",
+                BrokenUrl(),
+            ],
+            images_video=[
+                "https://cdn.example/a.mp4",
+                "http://[broken-ipv6",
+            ],
+        )
+
+        result = self._adapter()._map_douyin(data, "https://douyin.com/video/1")
+
+        assert result.media_type is MediaType.LIVE_PHOTO
+        pairs = result.metadata["manifest"]["live_photos"]
+        assert len(pairs) == 1
+        assert pairs[0]["motion"]["url"] == "https://cdn.example/a.mp4"
+
+    def test_uncoercible_aweme_type_falls_back_without_crashing(self):
+        data = _fake_post_detail(
+            aweme_type=float("inf"),
+            images=[],
+            images_video=[],
+            video_play_addr=["https://cdn.example/video.mp4"],
+        )
+
+        assert self._adapter()._map_douyin(
+            data, "https://douyin.com/video/1"
+        ).media_type is MediaType.VIDEO
+
+    def test_url_extraction_ignores_arbitrary_iterables_and_is_bounded(self):
+        adapter = self._adapter()
+
+        assert adapter._usable_urls((url for url in ["https://cdn.example/a.jpg"])) == []
+        assert adapter._usable_urls({"items": ["https://cdn.example/a.jpg"]}) == []
+        assert len(
+            adapter._usable_urls(
+                [f"https://cdn.example/{index}.jpg" for index in range(300)]
+            )
+        ) == 256
 
 
 class TestWeiboMapping:

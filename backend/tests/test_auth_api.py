@@ -15,6 +15,7 @@ not called directly), so no test-only route ships in production code.
 """
 
 from datetime import timedelta
+import threading
 
 import pytest
 from fastapi import Depends
@@ -25,6 +26,7 @@ from app.adapters.factory import get_access_token_provider
 from app.adapters.protocols import AccessTokenClaims
 from app.adapters.tokens_jwt import JwtAccessTokenProvider
 from app.api.auth import (
+    get_client_ip,
     get_auth_service,
     get_token_provider,
     require_admin,
@@ -34,6 +36,7 @@ from app.api.responses import (
     CODE_INTERNAL_ERROR,
     CODE_INVALID_CREDENTIALS,
     CODE_INVALID_TOKEN,
+    CODE_RATE_LIMITED,
     CODE_OK,
     CODE_TOKEN_EXPIRED,
     CODE_UNAUTHORIZED,
@@ -52,7 +55,7 @@ PASSWORD = "admin-s3cret-pass"
 
 
 def make_settings(**overrides) -> Settings:
-    return Settings(admin_password=PASSWORD, secret_key=SECRET, **overrides)
+    return Settings(admin_password=PASSWORD, secret_key=SECRET, cookie_encryption_key="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", **overrides)
 
 
 @pytest.fixture
@@ -119,11 +122,19 @@ class TestLogin:
         claims = provider.validate(data["token"])
         assert claims.user_id == admin_id
         assert claims.username == "admin"
-        assert claims.expires_at - claims.issued_at == timedelta(hours=24)
+        assert claims.expires_at - claims.issued_at == timedelta(days=7)
         # expires_at is ISO-8601 with timezone — parseable by the frontend.
         from datetime import datetime
 
         assert datetime.fromisoformat(data["expires_at"]) == claims.expires_at
+
+    def test_success_is_not_cacheable(self, client):
+        response = client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": PASSWORD},
+        )
+        assert response.status_code == 200
+        assert response.headers["cache-control"] == "no-store"
 
     def test_wrong_password_returns_401_with_stable_code(self, client):
         response = client.post(
@@ -135,6 +146,155 @@ class TestLogin:
         assert set(body) == {"code", "message", "data"}
         assert body["code"] == CODE_INVALID_CREDENTIALS
         assert body["data"] is None
+
+    def test_sixth_failed_login_is_rate_limited_with_retry_after(self, client):
+        for _ in range(5):
+            response = client.post(
+                "/api/auth/login",
+                json={"username": "admin", "password": "wrong-password"},
+            )
+            assert response.status_code == 401
+        response = client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": "wrong-password"},
+        )
+        assert response.status_code == 429
+        assert response.json()["code"] == CODE_RATE_LIMITED
+        assert response.headers["retry-after"].isdigit()
+
+    def test_success_clears_failed_attempt_bucket(self, client):
+        for _ in range(4):
+            client.post(
+                "/api/auth/login",
+                json={"username": "admin", "password": "wrong-password"},
+            )
+        assert client.post(
+            "/api/auth/login", json={"username": "admin", "password": PASSWORD}
+        ).status_code == 200
+        for _ in range(5):
+            assert client.post(
+                "/api/auth/login",
+                json={"username": "admin", "password": "wrong-password"},
+            ).status_code == 401
+
+    def test_forwarded_for_is_ignored_without_trusted_proxy(self, client):
+        for _ in range(5):
+            client.post(
+                "/api/auth/login",
+                json={"username": "admin", "password": "wrong-password"},
+                headers={"X-Forwarded-For": "203.0.113.1"},
+            )
+        assert client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": "wrong-password"},
+            headers={"X-Forwarded-For": "203.0.113.1"},
+        ).status_code == 429
+
+    def test_concurrent_failures_reserve_only_five_auth_calls(self, engine, provider):
+        app = build_app(engine, provider)
+        barrier = threading.Barrier(5)
+        calls = 0
+        calls_lock = threading.Lock()
+
+        class FailingAuth:
+            def login(self, username, password):
+                nonlocal calls
+                with calls_lock:
+                    calls += 1
+                    number = calls
+                if number <= 5:
+                    barrier.wait(timeout=5)
+                return None
+
+        app.dependency_overrides[get_auth_service] = lambda: FailingAuth()
+        concurrent_client = TestClient(app)
+        responses = []
+
+        def send_request():
+            responses.append(
+                concurrent_client.post(
+                    "/api/auth/login",
+                    json={"username": "admin", "password": "wrong-password"},
+                )
+            )
+
+        threads = [threading.Thread(target=send_request) for _ in range(6)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+        assert all(not thread.is_alive() for thread in threads)
+        assert calls == 5
+        assert sorted(response.status_code for response in responses) == [
+            401,
+            401,
+            401,
+            401,
+            401,
+            429,
+        ]
+
+    def test_rate_limit_retry_after_is_positive_when_denial_has_no_bucket(
+        self, engine, provider
+    ):
+        app = build_app(engine, provider)
+
+        class DenyingLimiter:
+            def begin_attempt(self, client_ip, username):
+                return None
+
+            def retry_after(self, client_ip, username):
+                return 0
+
+        app.state.login_limiter = DenyingLimiter()
+        response = TestClient(app).post(
+            "/api/auth/login",
+            json={"username": "admin", "password": "wrong-password"},
+        )
+        assert response.status_code == 429
+        assert int(response.headers["retry-after"]) >= 1
+
+
+class TestClientIp:
+    def test_trusted_proxy_chain_supports_ipv4_and_ipv6(self):
+        class Client:
+            host = "10.0.0.1"
+
+        class App:
+            state = type("State", (), {"settings": type("S", (), {"trusted_proxy_cidrs": ["10.0.0.0/8", "2001:db8::/32"]})()})()
+
+        request = type("Request", (), {"client": Client(), "headers": {"X-Forwarded-For": "198.51.100.1, 2001:db8::1, 10.0.0.1"}, "app": App()})()
+        assert get_client_ip(request) == "198.51.100.1"
+
+    def test_malformed_forwarded_header_falls_back_to_peer(self):
+        class Client:
+            host = "127.0.0.1"
+
+        class App:
+            state = type("State", (), {"settings": type("S", (), {"trusted_proxy_cidrs": ["127.0.0.0/8"]})()})()
+
+        request = type("Request", (), {"client": Client(), "headers": {"X-Forwarded-For": "not-an-ip"}, "app": App()})()
+        assert get_client_ip(request) == "127.0.0.1"
+
+    def test_ipv4_mapped_peer_and_forwarded_ip_are_canonicalized(self):
+        class Client:
+            host = "::ffff:10.0.0.1"
+
+        class App:
+            state = type("State", (), {"settings": type("S", (), {"trusted_proxy_cidrs": ["10.0.0.0/8"]})()})()
+
+        request = type("Request", (), {"client": Client(), "headers": {"X-Forwarded-For": "::ffff:198.51.100.1"}, "app": App()})()
+        assert get_client_ip(request) == "198.51.100.1"
+
+    def test_mapped_trusted_cidr_allows_mapped_proxy_chain(self):
+        class Client:
+            host = "::ffff:10.0.0.1"
+
+        class App:
+            state = type("State", (), {"settings": type("S", (), {"trusted_proxy_cidrs": ["::ffff:10.0.0.0/120"]})()})()
+
+        request = type("Request", (), {"client": Client(), "headers": {"X-Forwarded-For": "::ffff:198.51.100.1"}, "app": App()})()
+        assert get_client_ip(request) == "198.51.100.1"
 
     def test_unknown_user_is_indistinguishable_from_wrong_password(self, client):
         wrong = client.post(
@@ -269,6 +429,70 @@ class TestRequireAdmin:
         assert set(body) == {"code", "message", "data"}
         assert body["message"]
         assert body["data"] is None
+
+
+class TestRefresh:
+    def test_valid_token_is_rotated(self, client, provider):
+        old = client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": PASSWORD},
+        ).json()["data"]["token"]
+
+        response = client.post(
+            "/api/auth/refresh", headers={"Authorization": f"Bearer {old}"}
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["code"] == CODE_OK
+        fresh = body["data"]["token"]
+        assert fresh != old
+        assert provider.validate(fresh).token_id != provider.validate(old).token_id
+        assert response.headers["cache-control"] == "no-store"
+
+    @pytest.mark.parametrize(
+        ("authorization", "expected_code"),
+        [
+            (None, CODE_UNAUTHORIZED),
+            ("Bearer", CODE_UNAUTHORIZED),
+            ("Token abc", CODE_UNAUTHORIZED),
+            ("Bearer not-a-jwt", CODE_INVALID_TOKEN),
+        ],
+    )
+    def test_invalid_or_missing_bearer_has_stable_401_envelope(
+        self, client, authorization, expected_code
+    ):
+        headers = {} if authorization is None else {"Authorization": authorization}
+        response = client.post("/api/auth/refresh", headers=headers)
+        assert response.status_code == 401
+        body = response.json()
+        assert set(body) == {"code", "message", "data"}
+        assert body["code"] == expected_code
+        assert body["data"] is None
+        assert response.headers["cache-control"] == "no-store"
+
+    def test_expired_token_returns_expired_code(self, client):
+        expired = JwtAccessTokenProvider(SECRET, ttl=timedelta(seconds=-5))
+        token = expired.issue(user_id=1, username="admin")
+
+        response = client.post(
+            "/api/auth/refresh", headers={"Authorization": f"Bearer {token}"}
+        )
+
+        assert response.status_code == 401
+        assert response.json()["code"] == CODE_TOKEN_EXPIRED
+        assert response.headers["cache-control"] == "no-store"
+
+    def test_wrong_user_token_returns_invalid_code(self, client, provider):
+        token = provider.issue(user_id=999999, username="admin")
+
+        response = client.post(
+            "/api/auth/refresh", headers={"Authorization": f"Bearer {token}"}
+        )
+
+        assert response.status_code == 401
+        assert response.json()["code"] == CODE_INVALID_TOKEN
+        assert response.headers["cache-control"] == "no-store"
 
 
 class TestEnvelopeEverywhere:

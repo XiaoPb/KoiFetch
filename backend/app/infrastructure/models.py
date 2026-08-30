@@ -227,6 +227,7 @@ class DownloadTask(Base):
     title: Mapped[str | None] = mapped_column(String(512))
     format: Mapped[str | None] = mapped_column(String(64))
     quality: Mapped[str | None] = mapped_column(String(64))
+    asset_selector: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     status: Mapped[DownloadStatus] = mapped_column(
         enum_column(DownloadStatus, 16),
         nullable=False,
@@ -241,10 +242,10 @@ class DownloadTask(Base):
     error_message: Mapped[str | None] = mapped_column(Text)
     bubble_path: Mapped[str | None] = mapped_column(Text)
     pond_path: Mapped[str | None] = mapped_column(Text)
-    # One-time download-link bookkeeping (Task 9): ``token_id`` records the
-    # ``tid`` claim of the first (and only) token that served this file, so
-    # single use is enforced atomically at the row level; ``token_expires_at``
-    # mirrors that token's ``exp`` claim for inspection.
+    # Legacy/reserved download-link metadata (Task 9): the JWT ``tid`` and
+    # ``exp`` claims identify an issuance and its expiry, but the current token
+    # issuance flow does not populate these nullable columns. They do not
+    # atomically consume a token or gate repeated serving.
     token_id: Mapped[str | None] = mapped_column(String(36))
     token_expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     created_at: Mapped[datetime] = mapped_column(
@@ -261,8 +262,8 @@ class PlatformCookie(Base):
     One row per f2 platform (douyin/weibo/tiktok today). The cookie is the raw
     browser cookie string the admin pastes in Settings; it is never echoed
     back to clients (the cookies API returns only configured/updated_at) and
-    never logged. Plaintext at rest is a documented v1 decision (single admin,
-    admin-only API); encrypt-at-rest is a v1.1 hardening.
+    never logged. New writes are encrypted at rest; legacy plaintext rows are
+    readable during the migration window.
     """
 
     __tablename__ = "platform_cookies"

@@ -121,7 +121,7 @@ def test_service_search_is_idempotent_per_song_key(engine):
 def test_service_search_builds_proxy_play_url(engine):
     service = MusicService(adapter=FakeAdapter([make_song()]), engine=engine)
     song = service.search("晴天", MusicCategory.SONG).songs[0]
-    assert song.play_url.startswith("/api/music/stream?src=")
+    assert song.play_url == f"/api/music/{song.id}/stream"
 
 
 def test_service_search_derives_artists_albums_and_totals(engine):

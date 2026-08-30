@@ -25,12 +25,16 @@ Design decisions (documented once, relied on by Tasks 7-12):
   through the domain ``build_path`` helper, re-verifying containment at
   open/write time (TOCTOU note, Task 5). Traversal attempts raise
   :class:`app.domain.paths.PathOutsideRootError`.
-* **Tokens: two protocols, stateless validate.** JWT access tokens (24h) and
-  one-time file tokens (5 min) are separate concerns with separate callers
+* **Tokens: two protocols, stateless validate.** JWT access tokens (seven days
+  by default, configurable) and short-lived reusable file tokens (5 min) are
+  separate concerns with separate callers
   (auth service vs. download-file API), so they are two protocols. ``validate``
-  is *pure*: it never marks a token used. Single-use enforcement for one-time
-  tokens is the caller's job (Task 9 records the returned ``token_id`` before
-  serving the file); the adapter stays stateless so it can be shared and
+  is *pure*: it never consumes a token. The download-file API validates the
+  returned ``tid``/``exp`` claims (which remain JWT-only) and binds
+  ``download_id`` to the task's stored filename; callers may associate ``tid``
+  with logs, but no database write is implied and it does not
+  atomically consume the token; repeated GET/Range playback requests remain
+  valid until expiry. The adapter stays stateless so it can be shared and
   scaled freely.
 """
 
@@ -308,13 +312,14 @@ class AccessTokenClaims:
 
     user_id: int
     username: str
+    token_id: str
     issued_at: datetime
     expires_at: datetime
 
 
 @runtime_checkable
 class AccessTokenProvider(Protocol):
-    """Issue/validate the 24h JWT bearer token used by the auth service."""
+    """Issue/validate the configurable JWT bearer token used by the auth service."""
 
     def issue(self, *, user_id: int, username: str) -> str:
         """Create a signed access token for a user."""
@@ -327,10 +332,12 @@ class AccessTokenProvider(Protocol):
 
 @dataclass(frozen=True)
 class OneTimeTokenClaims:
-    """Decoded, validated one-time download-token claims.
+    """Decoded, validated short-lived download-token claims.
 
-    ``token_id`` uniquely identifies this issuance; the download-file API
-    (Task 9) records it to enforce single use.
+    ``token_id`` is decoded from the JWT's ``tid`` claim and uniquely identifies
+    this issuance. Callers may correlate it with task/filename logs, but it is
+    not an atomic-consumption marker and does not imply database persistence;
+    ``expires_at`` likewise comes only from the JWT's ``exp`` claim.
     """
 
     token_id: str
@@ -341,14 +348,15 @@ class OneTimeTokenClaims:
 
 @runtime_checkable
 class OneTimeTokenProvider(Protocol):
-    """Issue/validate 5-minute single-use download tokens.
+    """Issue/validate 5-minute reusable download tokens.
 
-    ``validate`` is stateless (see module docstring): single-use enforcement
-    is the caller's job via the returned ``token_id``.
+    ``validate`` is stateless (see module docstring): valid tokens serve
+    repeated GET/Range playback requests until expiry. The returned
+    ``token_id`` identifies the issuance for task binding when correlating logs.
     """
 
     def issue(self, *, download_id: str) -> str:
-        """Create a signed one-time token for a download."""
+        """Create a signed short-lived token for a download."""
         ...
 
     def validate(self, token: str) -> OneTimeTokenClaims:

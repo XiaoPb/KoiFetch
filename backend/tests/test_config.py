@@ -18,8 +18,37 @@ ENV_NAMES = tuple(name.upper() for name in Settings.model_fields)
 
 DEFAULTS = {
     "admin_password": "pw",
-    "secret_key": "sk",
+    "secret_key": "test-secret-key-0123456789abcdef",
+    "cookie_encryption_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
 }
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+AUTH_PUBLIC_DOCUMENTATION_FILES = (
+    REPO_ROOT / ".env.example",
+    REPO_ROOT / "README.md",
+    REPO_ROOT / "OPERATIONS.md",
+    REPO_ROOT / "RELEASE-CHECKLIST.md",
+    REPO_ROOT / "docs" / "deployment.md",
+    REPO_ROOT / "backend" / "requirements.txt",
+)
+PUBLIC_FILE_TOKEN_DOCUMENTATION_FILES = (
+    REPO_ROOT / "README.md",
+    REPO_ROOT / "OPERATIONS.md",
+    REPO_ROOT / "RELEASE-CHECKLIST.md",
+    REPO_ROOT / "docs" / "deployment.md",
+    REPO_ROOT / "backend" / "requirements.txt",
+)
+AUTH_SOURCE_DOC_FILES = (
+    REPO_ROOT / "backend" / "app" / "application" / "auth_service.py",
+    REPO_ROOT / "backend" / "app" / "api" / "auth.py",
+)
+FILE_TOKEN_SOURCE_DOC_FILES = (
+    REPO_ROOT / "backend" / "app" / "adapters" / "protocols.py",
+    REPO_ROOT / "backend" / "app" / "adapters" / "tokens_jwt.py",
+    REPO_ROOT / "backend" / "app" / "adapters" / "factory.py",
+    REPO_ROOT / "backend" / "app" / "api" / "download.py",
+    REPO_ROOT / "backend" / "app" / "application" / "download_service.py",
+)
 
 
 @pytest.fixture
@@ -27,6 +56,12 @@ def clean_env(monkeypatch):
     """Remove all settings env vars so tests are hermetic."""
     for name in ENV_NAMES:
         monkeypatch.delenv(name, raising=False)
+    # Keep existing tests focused on the setting under test; the required
+    # cookie key is supplied explicitly by tests that exercise its absence.
+    monkeypatch.setenv(
+        "COOKIE_ENCRYPTION_KEY",
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+    )
 
 
 def build(**overrides) -> Settings:
@@ -40,6 +75,7 @@ class TestDefaults:
         assert settings.max_concurrent == 3
         assert settings.download_speed_limit == 0
         assert settings.bubble_expire_hours == 24
+        assert settings.access_token_ttl_days == 7
         assert settings.worker_poll_interval == 1.0
         assert settings.cleanup_interval_minutes == 60
         assert settings.stale_download_minutes == 60
@@ -68,10 +104,100 @@ class TestDefaults:
         assert build().frontend_dist_path == Path("frontend/dist")
 
 
+class TestSessionDocumentation:
+    def test_env_example_documents_seven_day_access_token_ttl(self):
+        text = (REPO_ROOT / ".env.example").read_text(encoding="utf-8")
+        assert "ACCESS_TOKEN_TTL_DAYS=7" in text
+
+    def test_auth_docs_do_not_describe_access_tokens_as_24_hour(self):
+        stale_phrases = (
+            "24-hour access token",
+            "access tokens are 24-hour",
+            "24-hour admin access token",
+        )
+        for path in AUTH_PUBLIC_DOCUMENTATION_FILES:
+            text = path.read_text(encoding="utf-8").lower()
+            for phrase in stale_phrases:
+                assert phrase not in text, f"stale session wording in {path}"
+
+    def test_file_token_docs_do_not_use_obsolete_consumption_wording(self):
+        stale_phrases = (
+            "one-time file token",
+            "single-use file token",
+            "file tokens are valid 5 minutes and single-use",
+            "file tokens are 5-minute and single-use",
+            "one-time-token-gated",
+        )
+        for path in (*PUBLIC_FILE_TOKEN_DOCUMENTATION_FILES, *FILE_TOKEN_SOURCE_DOC_FILES):
+            text = path.read_text(encoding="utf-8").lower()
+            for phrase in stale_phrases:
+                assert phrase not in text, f"stale file-token wording in {path}"
+
+    def test_public_file_token_contract_documents_binding_and_reuse(self):
+        for path in PUBLIC_FILE_TOKEN_DOCUMENTATION_FILES:
+            text = path.read_text(encoding="utf-8").lower()
+            assert "reusable" in text, f"missing reusable file-token wording in {path}"
+            assert "range" in text, f"missing range file-token wording in {path}"
+            assert "filename" in text, f"missing filename binding wording in {path}"
+
+    def test_file_token_docs_do_not_promise_head_requests(self):
+        stale_phrases = ("range/head", "head requests", "head probes")
+        for path in (*PUBLIC_FILE_TOKEN_DOCUMENTATION_FILES, *FILE_TOKEN_SOURCE_DOC_FILES):
+            text = path.read_text(encoding="utf-8").lower()
+            for phrase in stale_phrases:
+                assert phrase not in text, f"file-token docs promise unsupported HEAD in {path}"
+
+    def test_auth_docstrings_describe_configured_access_token_lifetime(self):
+        for path in AUTH_SOURCE_DOC_FILES:
+            text = path.read_text(encoding="utf-8").lower()
+            assert "configured lifetime" in text, f"missing configured lifetime in {path}"
+            assert "seven-day default" in text, f"missing seven-day default in {path}"
+            assert "seven-day access token" not in text, f"fixed lifetime in {path}"
+
+    def test_secret_key_docs_match_settings_validation(self):
+        operations = (REPO_ROOT / "OPERATIONS.md").read_text(encoding="utf-8").lower()
+        jwt_docs = (
+            REPO_ROOT / "backend" / "app" / "adapters" / "tokens_jwt.py"
+        ).read_text(encoding="utf-8").lower()
+        assert "at least 32 utf-8 bytes" in operations
+        assert "no strength floor" not in operations
+        assert "at least 32 utf-8 bytes" in jwt_docs
+        assert "no strength floor" not in jwt_docs
+
+    def test_docs_do_not_claim_token_metadata_is_persisted(self):
+        misleading_phrases = (
+            "token_id` is recorded on the row",
+            "token_id is recorded on the row",
+            "records the returned ``token_id``",
+            "records it with the task/filename",
+            "stores the unique `tid` claim",
+        )
+        for path in (*PUBLIC_FILE_TOKEN_DOCUMENTATION_FILES, *FILE_TOKEN_SOURCE_DOC_FILES):
+            text = path.read_text(encoding="utf-8").lower()
+            for phrase in misleading_phrases:
+                assert phrase not in text, f"misleading token persistence wording in {path}"
+
+    def test_token_metadata_docs_identify_jwt_only_claims(self):
+        metadata_files = (
+            REPO_ROOT / "README.md",
+            REPO_ROOT / "OPERATIONS.md",
+            REPO_ROOT / "backend" / "app" / "adapters" / "protocols.py",
+            REPO_ROOT / "backend" / "app" / "adapters" / "tokens_jwt.py",
+            REPO_ROOT / "backend" / "app" / "application" / "download_service.py",
+        )
+        for path in metadata_files:
+            text = path.read_text(encoding="utf-8").lower()
+            assert "jwt" in text, f"missing JWT context for token metadata in {path}"
+            assert "tid" in text and "exp" in text, (
+                f"missing tid/exp claim wording in {path}"
+            )
+            assert "database" in text, f"missing database non-persistence wording in {path}"
+
+
 class TestEnvOverrides:
     def test_env_vars_override_defaults(self, clean_env, monkeypatch):
         monkeypatch.setenv("ADMIN_PASSWORD", "env-admin")
-        monkeypatch.setenv("SECRET_KEY", "env-secret")
+        monkeypatch.setenv("SECRET_KEY", "env-secret-key-0123456789abcdef0")
         monkeypatch.setenv("MAX_CONCURRENT", "5")
         monkeypatch.setenv("DOWNLOAD_SPEED_LIMIT", "10")
         monkeypatch.setenv("BUBBLE_EXPIRE_HOURS", "48")
@@ -86,7 +212,7 @@ class TestEnvOverrides:
         settings = Settings.from_env()
 
         assert settings.admin_password == "env-admin"
-        assert settings.secret_key == "env-secret"
+        assert settings.secret_key == "env-secret-key-0123456789abcdef0"
         assert settings.max_concurrent == 5
         assert settings.download_speed_limit == 10
         assert settings.bubble_expire_hours == 48
@@ -100,7 +226,7 @@ class TestEnvOverrides:
 
     def test_unset_optional_vars_fall_back_to_defaults(self, clean_env, monkeypatch):
         monkeypatch.setenv("ADMIN_PASSWORD", "pw")
-        monkeypatch.setenv("SECRET_KEY", "sk")
+        monkeypatch.setenv("SECRET_KEY", "test-secret-key-0123456789abcdef")
         settings = Settings.from_env()
         assert settings.max_concurrent == 3
         assert settings.bubble_expire_hours == 24
@@ -117,20 +243,20 @@ class TestDotenvLoading:
         dotenv_file = tmp_path / ".env"
         dotenv_file.write_text(
             "ADMIN_PASSWORD=dotenv-admin\n"
-            "SECRET_KEY=dotenv-secret\n"
+            "SECRET_KEY=dotenv-secret-key-0123456789abcdef\n"
             "MAX_CONCURRENT=9\n",
             encoding="utf-8",
         )
         settings = Settings.from_env(dotenv_path=dotenv_file)
         assert settings.admin_password == "dotenv-admin"
-        assert settings.secret_key == "dotenv-secret"
+        assert settings.secret_key == "dotenv-secret-key-0123456789abcdef"
         assert settings.max_concurrent == 9
 
     def test_process_env_overrides_dotenv_values(self, clean_env, monkeypatch, tmp_path):
         dotenv_file = tmp_path / ".env"
         dotenv_file.write_text(
             "ADMIN_PASSWORD=dotenv-admin\n"
-            "SECRET_KEY=dotenv-secret\n"
+            "SECRET_KEY=dotenv-secret-key-0123456789abcdef\n"
             "MAX_CONCURRENT=9\n",
             encoding="utf-8",
         )
@@ -139,11 +265,11 @@ class TestDotenvLoading:
         settings = Settings.from_env(dotenv_path=dotenv_file)
         assert settings.admin_password == "real-admin"  # process env wins
         assert settings.max_concurrent == 3
-        assert settings.secret_key == "dotenv-secret"  # dotenv fills the gap
+        assert settings.secret_key == "dotenv-secret-key-0123456789abcdef"  # dotenv fills the gap
 
     def test_missing_dotenv_file_still_uses_defaults(self, clean_env, monkeypatch, tmp_path):
         monkeypatch.setenv("ADMIN_PASSWORD", "pw")
-        monkeypatch.setenv("SECRET_KEY", "sk")
+        monkeypatch.setenv("SECRET_KEY", "test-secret-key-0123456789abcdef")
         settings = Settings.from_env(dotenv_path=tmp_path / ".env")  # does not exist
         assert settings.max_concurrent == 3
         assert settings.bubble_expire_hours == 24
@@ -157,7 +283,7 @@ class TestDotenvLoading:
 class TestCorsParsing:
     def test_comma_separated_env_parsed_into_list(self, clean_env, monkeypatch):
         monkeypatch.setenv("ADMIN_PASSWORD", "pw")
-        monkeypatch.setenv("SECRET_KEY", "sk")
+        monkeypatch.setenv("SECRET_KEY", "test-secret-key-0123456789abcdef")
         monkeypatch.setenv(
             "CORS_ORIGINS",
             "http://localhost:5173, http://localhost:8000 ,https://example.com",
@@ -171,13 +297,13 @@ class TestCorsParsing:
 
     def test_whitespace_only_env_yields_empty_list(self, clean_env, monkeypatch):
         monkeypatch.setenv("ADMIN_PASSWORD", "pw")
-        monkeypatch.setenv("SECRET_KEY", "sk")
+        monkeypatch.setenv("SECRET_KEY", "test-secret-key-0123456789abcdef")
         monkeypatch.setenv("CORS_ORIGINS", "   ")
         assert Settings.from_env().cors_origins == []
 
     def test_single_origin_env(self, clean_env, monkeypatch):
         monkeypatch.setenv("ADMIN_PASSWORD", "pw")
-        monkeypatch.setenv("SECRET_KEY", "sk")
+        monkeypatch.setenv("SECRET_KEY", "test-secret-key-0123456789abcdef")
         monkeypatch.setenv("CORS_ORIGINS", "http://localhost:5173")
         assert Settings.from_env().cors_origins == ["http://localhost:5173"]
 
@@ -186,12 +312,17 @@ class TestCorsParsing:
         # a raw value that happens to look like (broken) JSON must still be
         # treated as a single origin, not rejected.
         monkeypatch.setenv("ADMIN_PASSWORD", "pw")
-        monkeypatch.setenv("SECRET_KEY", "sk")
+        monkeypatch.setenv("SECRET_KEY", "test-secret-key-0123456789abcdef")
         monkeypatch.setenv("CORS_ORIGINS", "[not json")
         assert Settings.from_env().cors_origins == ["[not json"]
 
 
 class TestValidation:
+    @pytest.mark.parametrize("bad", [0, -1, 31, 100])
+    def test_access_token_ttl_days_outside_supported_range_rejected(self, clean_env, bad):
+        with pytest.raises(ValidationError):
+            build(access_token_ttl_days=bad)
+
     @pytest.mark.parametrize("bad", [0, -1, -10])
     def test_max_concurrent_below_minimum_rejected(self, clean_env, bad):
         with pytest.raises(ValidationError):
@@ -239,7 +370,7 @@ class TestValidation:
 
     def test_invalid_env_value_rejected(self, clean_env, monkeypatch):
         monkeypatch.setenv("ADMIN_PASSWORD", "pw")
-        monkeypatch.setenv("SECRET_KEY", "sk")
+        monkeypatch.setenv("SECRET_KEY", "test-secret-key-0123456789abcdef")
         monkeypatch.setenv("MAX_CONCURRENT", "not-a-number")
         with pytest.raises(ValidationError):
             Settings.from_env()
@@ -247,7 +378,7 @@ class TestValidation:
     def test_unknown_field_rejected(self, clean_env):
         # extra="forbid" catches typos in direct construction.
         with pytest.raises(ValidationError):
-            Settings(admin_password="pw", secret_key="sk", admin_pasword="typo")
+            Settings(admin_password="pw", secret_key="test-secret-key-0123456789abcdef", admin_pasword="typo")
 
 
 class TestTimezone:
@@ -263,7 +394,7 @@ class TestTimezone:
 
     def test_invalid_timezone_env_rejected(self, clean_env, monkeypatch):
         monkeypatch.setenv("ADMIN_PASSWORD", "pw")
-        monkeypatch.setenv("SECRET_KEY", "sk")
+        monkeypatch.setenv("SECRET_KEY", "test-secret-key-0123456789abcdef")
         monkeypatch.setenv("TZ", "Not/AZone")
         with pytest.raises(ValidationError):
             Settings.from_env()
@@ -276,7 +407,7 @@ class TestRequiredSecrets:
 
     def test_admin_password_required(self, clean_env):
         with pytest.raises(ValidationError):
-            Settings(secret_key="sk")
+            Settings(secret_key="test-secret-key-0123456789abcdef")
 
     def test_secret_key_required(self, clean_env):
         with pytest.raises(ValidationError):
@@ -284,11 +415,39 @@ class TestRequiredSecrets:
 
     def test_empty_admin_password_rejected(self, clean_env):
         with pytest.raises(ValidationError):
-            Settings(admin_password="", secret_key="sk")
+            Settings(admin_password="", secret_key="test-secret-key-0123456789abcdef")
 
     def test_empty_secret_key_rejected(self, clean_env):
         with pytest.raises(ValidationError):
             Settings(admin_password="pw", secret_key="")
+
+    @pytest.mark.parametrize("secret", ["sk", "change-me", "default-secret-key"])
+    def test_weak_secret_key_rejected_and_not_rendered(self, clean_env, secret):
+        with pytest.raises(ValidationError) as exc_info:
+            Settings(admin_password="pw", secret_key=secret)
+        assert secret not in str(exc_info.value)
+
+    def test_unicode_secret_must_have_32_utf8_bytes(self, clean_env):
+        with pytest.raises(ValidationError):
+            Settings(admin_password="pw", secret_key="密" * 10)
+
+
+class TestTrustedProxySettings:
+    def test_trusted_proxy_cidrs_parse_from_env(self, clean_env, monkeypatch):
+        monkeypatch.setenv("ADMIN_PASSWORD", "pw")
+        monkeypatch.setenv("SECRET_KEY", "test-secret-key-0123456789abcdef")
+        monkeypatch.setenv("TRUSTED_PROXY_CIDRS", "10.0.0.0/8, 2001:db8::/32")
+        assert Settings.from_env().trusted_proxy_cidrs == ["10.0.0.0/8", "2001:db8::/32"]
+
+    def test_invalid_trusted_proxy_cidr_rejected(self, clean_env):
+        with pytest.raises(ValidationError):
+            build(trusted_proxy_cidrs=["not-an-ip-network"])
+
+    def test_mapped_trusted_proxy_cidr_is_normalized_to_ipv4(self, clean_env):
+        settings = build(
+            trusted_proxy_cidrs=["::ffff:10.0.0.0/120", "2001:db8::/32"]
+        )
+        assert settings.trusted_proxy_cidrs == ["10.0.0.0/24", "2001:db8::/32"]
 
     def test_from_env_requires_secrets(self, clean_env):
         with pytest.raises(ValidationError):
@@ -298,7 +457,7 @@ class TestRequiredSecrets:
 class TestSingleton:
     def test_get_settings_returns_cached_instance(self, clean_env, monkeypatch):
         monkeypatch.setenv("ADMIN_PASSWORD", "pw")
-        monkeypatch.setenv("SECRET_KEY", "sk")
+        monkeypatch.setenv("SECRET_KEY", "test-secret-key-0123456789abcdef")
         get_settings.cache_clear()
         try:
             first = get_settings()

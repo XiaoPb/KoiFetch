@@ -9,10 +9,14 @@ import type { ParseResult, PreviewData } from '../../types/api';
 import { usePreviewStore } from '../parser/previewStore';
 import { __resetDownloadStreams, selectActiveCount, useDownloadsStore } from '../../stores/downloadsStore';
 
-vi.mock('../../services/api', () => ({
-  previewApi: { getPreview: vi.fn() },
-  downloadApi: { submit: vi.fn(), getProgress: vi.fn(), getLatestByTask: vi.fn() },
-}));
+vi.mock('../../services/api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/api')>();
+  return {
+    ...actual,
+    previewApi: { getPreview: vi.fn() },
+    downloadApi: { submit: vi.fn(), getProgress: vi.fn(), getLatestByTask: vi.fn() },
+  };
+});
 
 // downloadsStore opens a WS client per download; the submit path in this test
 // is covered by mocking the client so no poll timer interferes.
@@ -48,6 +52,7 @@ const videoTask: ParseResult = {
   format: 'mp4',
   available_qualities: ['1080p', '720p'],
   available_bitrates: [],
+  manifest: null,
   video_url: null,
   images: [],
 };
@@ -64,6 +69,7 @@ const musicTask: ParseResult = {
   format: 'mp3',
   available_qualities: [],
   available_bitrates: ['320kbps', 'FLAC'],
+  manifest: null,
   video_url: null,
   images: [],
 };
@@ -74,12 +80,13 @@ const imageTask: ParseResult = {
   type: 'image',
   platform: 'xiaohongshu',
   title: 'Post C',
-  cover: 'https://example.com/c.jpg',
+  cover: '/api/preview/t3/resources/image/0',
   duration: null,
   file_size_mb: 0.8,
   format: 'jpg',
   available_qualities: [],
   available_bitrates: [],
+  manifest: null,
   video_url: null,
   images: [],
 };
@@ -123,13 +130,62 @@ const imagePreview: PreviewData = {
   url: 'https://example.com/p/c',
   platform: 'xiaohongshu',
   title: 'Post C',
-  cover: 'https://example.com/c.jpg',
+  cover: '/api/preview/t3/resources/image/0',
   duration: null,
   format: 'jpg',
   file_size_mb: 0.8,
   available_qualities: [],
   available_bitrates: [],
   streams: [],
+};
+
+const liveTask: ParseResult = {
+  task_id: 't4',
+  url: 'https://example.com/live/d',
+  type: 'live_photo',
+  platform: 'douyin',
+  title: 'Live D',
+  cover: '/api/preview/t4/resources/live/0/image',
+  duration: null,
+  file_size_mb: 1.2,
+  format: 'heic',
+  available_qualities: [],
+  available_bitrates: [],
+  manifest: {
+    kind: 'live_photo',
+    live_photos: [
+      {
+        image_url: '/api/preview/t4/resources/live/0/image',
+        motion_url: '/api/preview/t4/resources/live/0/motion',
+      },
+    ],
+    warnings: [],
+  },
+};
+
+const livePreview: PreviewData = {
+  task_id: 't4',
+  preview_type: 'live_photo',
+  url: 'https://example.com/live/d',
+  platform: 'douyin',
+  title: 'Live D',
+  cover: '/api/preview/t4/resources/live/0/image',
+  duration: null,
+  format: 'heic',
+  file_size_mb: 1.2,
+  available_qualities: [],
+  available_bitrates: [],
+  streams: [],
+  manifest: {
+    kind: 'live_photo',
+    live_photos: [
+      {
+        image_url: '/api/preview/t4/resources/live/0/image',
+        motion_url: '/api/preview/t4/resources/live/0/motion',
+      },
+    ],
+    warnings: [],
+  },
 };
 
 describe('PreviewModal', () => {
@@ -254,6 +310,50 @@ describe('PreviewModal', () => {
 
     expect(await screen.findByTestId('preview-cover')).toBeInTheDocument();
     expect(screen.queryByTestId('preview-metadata-note')).not.toBeInTheDocument();
+  });
+
+  it('renders a Live Photo viewer from the public preview manifest', async () => {
+    (previewApi.getPreview as Mock).mockResolvedValue(livePreview);
+    usePreviewStore.setState({ activeTask: liveTask });
+    renderWithProviders(<PreviewModal />);
+
+    expect(await screen.findByTestId('preview-live-photo-t4')).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: 'Live D 1' })).toHaveAttribute(
+      'src',
+      '/api/preview/t4/resources/live/0/image',
+    );
+  });
+
+  it('falls back to the preview cover when a Live Photo manifest is unavailable', async () => {
+    (previewApi.getPreview as Mock).mockResolvedValue({ ...livePreview, manifest: null });
+    usePreviewStore.setState({ activeTask: { ...liveTask, manifest: null } });
+    renderWithProviders(<PreviewModal />);
+
+    expect(await screen.findByTestId('preview-cover')).toBeInTheDocument();
+    expect(screen.queryByTestId('preview-live-photo-t4')).not.toBeInTheDocument();
+  });
+
+  it('does not render raw CDN media when a mocked preview response bypasses the API normalizer', async () => {
+    (previewApi.getPreview as Mock).mockResolvedValue({
+      ...livePreview,
+      cover: 'https://cdn.example/live-cover.jpg',
+      manifest: {
+        ...livePreview.manifest,
+        live_photos: [
+          {
+            image_url: 'https://cdn.example/live-image.jpg',
+            motion_url: 'https://cdn.example/live-motion.mov',
+          },
+        ],
+      },
+    });
+    usePreviewStore.setState({ activeTask: { ...liveTask, manifest: null } });
+    renderWithProviders(<PreviewModal />);
+
+    await screen.findByTestId('preview-content');
+    expect(screen.queryByTestId('preview-live-photo-t4')).not.toBeInTheDocument();
+    expect(screen.queryByAltText('Live D 1')).not.toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent('cdn.example');
   });
 
   it('shows the backend error with a working retry', async () => {

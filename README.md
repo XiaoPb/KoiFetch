@@ -33,6 +33,8 @@ real `.env`; the example file contains safe local-development values only.
 | --- | --- | --- |
 | `ADMIN_PASSWORD` | *(required)* | Admin login seed — never log or commit the real value |
 | `SECRET_KEY` | *(required)* | JWT signing key |
+| `COOKIE_ENCRYPTION_KEY` | *(required)* | URL-safe base64 encoding of exactly 32 random bytes for cookie encryption at rest |
+| `ACCESS_TOKEN_TTL_DAYS` | `7` | Admin JWT access-session lifetime in days (`1`–`30`) |
 | `VIDEO_STORAGE_PATH` / `IMAGE_STORAGE_PATH` / `MUSIC_STORAGE_PATH` | `data/pond/{video,image,music}` | Permanent (Pond/NAS) storage roots |
 | `TEMP_VIDEO_PATH` / `TEMP_IMAGE_PATH` / `TEMP_MUSIC_PATH` | `data/bubble/{video,image,music}` | Temporary (Bubble) staging roots |
 | `MAX_CONCURRENT` | `3` | Concurrent downloads (`>= 1`) |
@@ -46,6 +48,29 @@ real `.env`; the example file contains safe local-development values only.
 | `TZ` | `Asia/Shanghai` | Application timezone (validated against the IANA database) |
 | `DATABASE_URL` | `sqlite:///./data/db/koifetch.db` | SQLAlchemy database URL |
 | `FRONTEND_DIST_PATH` | `frontend/dist` | Built frontend (Vite `dist`) the backend serves at `/`; resolved against the process CWD (run uvicorn from the repo root for the default to work), and set to `/app/static` by the Docker image. Never point it at `.` or the repo root — the path is served verbatim, so that would expose the whole tree |
+
+### Admin session lifecycle
+
+Admin access sessions use the configured lifetime (seven-day default). After persisted auth state is
+hydrated, each page startup attempts one refresh for a still-valid token; the
+startup action is deduplicated, so React StrictMode or repeated startup calls do
+not issue extra refreshes. Refresh validates the current token before issuing a
+replacement and accepts no expired token—there is no server-side grace window.
+
+The session is stateless: separate tabs may rotate independently, and an older
+token remains valid until its own `exp` time. Rotating `SECRET_KEY` invalidates
+all existing access tokens. If auth hydration fails, the frontend clears the
+session and returns to login. A stale startup-refresh response or rejection is
+ignored when a newer login/logout has already won the race; a refresh failure
+for the still-current session logs out.
+
+Download file tokens are short-lived (5 minutes) and reusable until expiry;
+media playback may issue repeated GET/Range requests. Each token is bound to
+its download task and the task's stored filename; `tid` (returned as
+`token_id`) is a unique identifier inside the JWT only, and logs may correlate
+it. The `exp` expiry is also a JWT claim only. The legacy
+database `token_id`/`token_expires_at` fields are currently unpopulated and do
+not consume or gate the token.
 
 ## Smoke testing
 
@@ -138,8 +163,9 @@ limitations, and the exact deferred v1.1+ scope.
 
 Quick reference:
 
-- **Native full stack** — create the venv and install `backend/requirements.txt`,
-  then from `backend/`: `alembic upgrade head` → seed → uvicorn → worker. All
+- **Native full stack** — create the venv and run
+  `backend/scripts/install_backend_dependencies.py`, then from `backend/`:
+  `alembic upgrade head` → seed → uvicorn → worker. All
   relative paths (database URL, storage roots) resolve against the process
   working directory, so the server, worker, and migrations must share one CWD
   (see OPERATIONS.md §1). UI development uses the Vite dev server

@@ -3,7 +3,7 @@
 Contract (documented in ``app.api.download``):
 
 * On connect the server sends one structured snapshot event — ``progress``
-  for pending/downloading, ``complete`` for completed (with a one-time
+  for pending/downloading, ``complete`` for completed (with a short-lived
   ``download_url`` and ``token_expire_at``), ``error`` for failed/expired
   (uniform shape: ``code`` + ``message`` + state fields).
 * Unknown download_id → an ``error`` event with ``code 3001`` then close.
@@ -49,7 +49,7 @@ VIDEO_URL = "https://www.bilibili.com/video/av123"
 
 
 def make_settings(**overrides) -> Settings:
-    return Settings(admin_password=PASSWORD, secret_key=SECRET, **overrides)
+    return Settings(admin_password=PASSWORD, secret_key=SECRET, cookie_encryption_key="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", **overrides)
 
 
 @pytest.fixture

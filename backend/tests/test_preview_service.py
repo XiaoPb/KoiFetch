@@ -11,12 +11,14 @@ keys (older rows or future engines that skip the parse-service enrichment).
 """
 
 import io
+import logging
 import uuid
 import zipfile
 
 import httpx
 import pytest
 
+from app.adapters.safe_upstream import SafeUpstreamClient, UpstreamStream
 from app.api.responses import CODE_BAD_REQUEST, CODE_TASK_NOT_FOUND, ApiError
 from app.application.preview_service import PreviewService
 from app.domain import MediaType
@@ -92,7 +94,7 @@ class TestPreviewService:
         assert data["url"] == "https://www.bilibili.com/video/av123"
         assert data["platform"] == "bilibili"
         assert data["title"] == "av123"
-        assert data["cover"] == "https://cdn.example.com/cover.jpg"
+        assert data["cover"] is None  # private legacy cover is never public
         assert data["duration"] == "05:23"  # 323s → MM:SS
         assert data["format"] == "mp4"
         assert data["file_size_mb"] == 12.5
@@ -147,6 +149,24 @@ IMAGE_TASK_ID = "22222222-2222-2222-2222-222222222222"
 
 
 class TestVideoStreamProxy:
+    def test_private_manifest_url_is_translated_to_api_error(self, engine):
+        service = PreviewService(
+            engine=engine,
+            upstream=SafeUpstreamClient(
+                transport=httpx.MockTransport(
+                    lambda request: httpx.Response(200, content=b"must-not-fetch")
+                )
+            ),
+        )
+        _seed_media_task(
+            engine,
+            task_id=VIDEO_TASK_ID,
+            metadata={"video_url": "http://127.0.0.1/manifest.m3u8"},
+        )
+        with pytest.raises(ApiError) as exc_info:
+            service.stream_video(VIDEO_TASK_ID, range_header=None)
+        assert exc_info.value.code == CODE_BAD_REQUEST
+
     def test_stream_video_proxies_bytes_and_passes_range(self, engine):
         def handler(request: httpx.Request) -> httpx.Response:
             assert request.headers.get("user-agent") == "Mozilla/5.0 (KoiFetch/0.1)"
@@ -276,6 +296,111 @@ class TestVideoStreamProxy:
         with pytest.raises(Exception) as exc_info:
             service.stream_video(task_id, range_header=None)
         assert getattr(exc_info.value, "code", None) == CODE_BAD_REQUEST
+
+    def test_stream_video_http_error_suppresses_close_failure(self, engine, caplog):
+        close_calls = []
+
+        def close():
+            close_calls.append(True)
+            raise RuntimeError("bug https://cdn.example/private-token")
+
+        class BrokenUpstream:
+            def stream(self, url, **kwargs):
+                return UpstreamStream(
+                    status_code=404,
+                    content_type="video/mp4",
+                    headers={},
+                    chunks=iter(()),
+                    close=close,
+                )
+
+        _seed_media_task(
+            engine,
+            task_id=VIDEO_TASK_ID,
+            metadata={"video_url": "https://cdn.example.com/v.mp4"},
+        )
+        service = PreviewService(engine=engine, upstream=BrokenUpstream())
+
+        with caplog.at_level(logging.ERROR), pytest.raises(ApiError) as exc_info:
+            service.stream_video(VIDEO_TASK_ID, range_header=None)
+
+        assert exc_info.value.code == CODE_BAD_REQUEST
+        assert close_calls == [True]
+        assert "cdn.example" not in caplog.text
+        assert "private-token" not in caplog.text
+
+    def test_stream_video_hls_suppresses_close_failure(self, engine, caplog):
+        close_calls = []
+
+        def close():
+            close_calls.append(True)
+            raise RuntimeError("bug https://cdn.example/private-token")
+
+        class BrokenUpstream:
+            def stream(self, url, **kwargs):
+                return UpstreamStream(
+                    status_code=200,
+                    content_type="application/vnd.apple.mpegurl",
+                    headers={},
+                    chunks=iter(()),
+                    close=close,
+                )
+
+        _seed_media_task(
+            engine,
+            task_id=VIDEO_TASK_ID,
+            metadata={"video_url": "https://cdn.example.com/playlist.m3u8"},
+        )
+        service = PreviewService(engine=engine, upstream=BrokenUpstream())
+
+        with caplog.at_level(logging.ERROR), pytest.raises(ApiError) as exc_info:
+            service.stream_video(VIDEO_TASK_ID, range_header=None)
+
+        assert exc_info.value.code == CODE_BAD_REQUEST
+        assert close_calls == [True]
+        assert "cdn.example" not in caplog.text
+        assert "private-token" not in caplog.text
+
+    def test_stream_resource_http_error_suppresses_close_failure(self, engine, caplog):
+        close_calls = []
+
+        def close():
+            close_calls.append(True)
+            raise RuntimeError("bug https://cdn.example/private-token")
+
+        class BrokenUpstream:
+            def stream(self, url, **kwargs):
+                return UpstreamStream(
+                    status_code=404,
+                    content_type="image/jpeg",
+                    headers={},
+                    chunks=iter(()),
+                    close=close,
+                )
+
+        task_id = make_task_id()
+        _seed_media_task(
+            engine,
+            task_id=task_id,
+            media_type=MediaType.IMAGE,
+            metadata={
+                "manifest": {
+                    "kind": "image_album",
+                    "images": [
+                        {"url": "https://cdn.example/a.jpg", "format": "jpg"}
+                    ],
+                }
+            },
+        )
+        service = PreviewService(engine=engine, upstream=BrokenUpstream())
+
+        with caplog.at_level(logging.ERROR), pytest.raises(ApiError) as exc_info:
+            service.stream_resource(task_id, "image", 0)
+
+        assert exc_info.value.code == CODE_BAD_REQUEST
+        assert close_calls == [True]
+        assert "cdn.example" not in caplog.text
+        assert "private-token" not in caplog.text
 
 
 class TestImageDownload:

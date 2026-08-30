@@ -63,6 +63,7 @@ DOWNLOAD_TASK_COLUMNS = {
     "token_expires_at",
     "created_at",
     "completed_at",
+    "asset_selector",
 }
 
 PLATFORM_COOKIE_COLUMNS = {

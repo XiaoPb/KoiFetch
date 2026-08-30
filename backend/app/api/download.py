@@ -26,8 +26,8 @@ Structured WS events (PRD §5.5), documented contract:
   (约 2分钟) is the frontend's formatting concern.
 * ``{"type": "complete", "data": {..., "download_url":
   "/api/download/file/{id}?token=...", "token_expire_at": "<ISO-8601>"}}`` —
-  completed; the URL carries a fresh one-time token minted at send time and
-  ``token_expire_at`` its 5-minute validity. The field is named ``download_url``
+  completed; the URL carries a fresh short-lived reusable token minted at send
+  time and ``token_expire_at`` its 5-minute validity. The field is named ``download_url``
   (the plan's wording) — the PRD wavers between ``download_url`` and
   ``file_url``; keep ``download_url``.
 * ``{"type": "error", "data": {code, message, ...state}}`` — one uniform error
@@ -60,6 +60,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from typing import Annotated
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
@@ -75,7 +76,14 @@ from app.api.responses import (
 )
 from app.application.download_events import DownloadEventHub
 from app.application.download_service import DownloadService
-from app.domain import DownloadProgress, DownloadStatus
+from app.application.transfer_service import TransferService
+from app.domain import (
+    DownloadProgress,
+    DownloadStatus,
+    AssetSelector,
+    PrepareRequest,
+    PreparedTransfer,
+)
 from app.domain.models import UuidStr
 
 __all__ = [
@@ -84,7 +92,9 @@ __all__ = [
     "SubmitData",
     "SubmitRequest",
     "SubmitResponse",
+    "PrepareResponse",
     "get_download_service",
+    "get_transfer_service",
     "router",
     "ws_router",
 ]
@@ -155,6 +165,16 @@ class SubmitResponse(BaseModel):
     data: SubmitData | None = None
 
 
+class PrepareResponse(BaseModel):
+    """The unified envelope for ``POST /api/download/prepare``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: int
+    message: str
+    data: PreparedTransfer | None = None
+
+
 class ProgressData(BaseModel):
     """The payload of a progress snapshot (PRD §5.4)."""
 
@@ -207,6 +227,58 @@ class ByTaskResponse(BaseModel):
 def get_download_service(request: Request) -> DownloadService:
     """DI hook: the app-wired download service (override in tests)."""
     return request.app.state.download_service
+
+
+def get_transfer_service(request: Request) -> TransferService:
+    """DI hook for transfer preparation (override in tests)."""
+    return request.app.state.transfer_service
+
+
+@router.post("/prepare", response_model=PrepareResponse)
+def prepare_download(
+    body: PrepareRequest,
+    service: Annotated[TransferService, Depends(get_transfer_service)],
+) -> dict:
+    """Choose a same-origin direct route or create one staged download row."""
+    result = service.prepare(
+        body.task_id,
+        body.asset,
+        force_staged=body.force_staged,
+    )
+    return ok(
+        data=result.model_dump(mode="json"),
+        message="传输准备成功 / Transfer prepared",
+    )
+
+
+@router.get("/direct/{task_id}")
+def direct_download(
+    task_id: str,
+    request: Request,
+    service: Annotated[TransferService, Depends(get_transfer_service)],
+    kind: str = Query(min_length=1),
+    index: int = Query(default=0, ge=0),
+    package: str | None = Query(default=None),
+) -> StreamingResponse:
+    """Stream a prepared single asset directly to the caller's device."""
+    try:
+        selector = AssetSelector(kind=kind, index=index, package=package)
+    except (TypeError, ValueError) as exc:
+        raise ApiError(CODE_BAD_REQUEST, CODE_BAD_REQUEST, "媒体资源无效 / Invalid media asset") from exc
+    stream, filename = service.stream_direct(task_id, selector, request.headers.get("range"))
+
+    def iterator():
+        try:
+            yield from stream.chunks
+        finally:
+            stream.close()
+
+    return StreamingResponse(
+        iterator(),
+        status_code=stream.status_code,
+        headers={**stream.headers, "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+        media_type=stream.content_type,
+    )
 
 
 @router.post("/submit", response_model=SubmitResponse)
@@ -397,7 +469,8 @@ def _event_for(progress: DownloadProgress, service: DownloadService) -> dict:
     """Build the structured snapshot event for a task state (PRD §5.5).
 
     ``progress`` for pending/downloading; ``complete`` for completed (with a
-    fresh one-time ``download_url`` and its ``token_expire_at``); ``error``
+    fresh short-lived reusable ``download_url`` and its ``token_expire_at``);
+    ``error``
     for failed/expired — one uniform error shape carrying ``code``/``message``
     plus the state fields (failed → 5002, expired → 5004).
     """

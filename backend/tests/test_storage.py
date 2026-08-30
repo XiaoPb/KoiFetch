@@ -10,7 +10,11 @@ from pathlib import Path
 
 import pytest
 
-from app.adapters.storage_local import LocalStorageAdapter, resolve_storage_root
+from app.adapters.storage_local import (
+    STORAGE_MEDIA_TYPES,
+    LocalStorageAdapter,
+    resolve_storage_root,
+)
 from app.domain import MediaType
 from app.domain.paths import PathOutsideRootError
 
@@ -62,9 +66,22 @@ class TestRootResolution:
 
     def test_roots_created_at_construction(self, tmp_path):
         adapter = make_adapter(tmp_path)
-        for media_type in MediaType:
+        for media_type in STORAGE_MEDIA_TYPES:
             assert adapter.bubble_root(media_type).is_dir()
             assert adapter.pond_root(media_type).is_dir()
+
+    def test_live_photo_has_no_storage_bucket(self, tmp_path):
+        adapter = make_adapter(tmp_path)
+
+        assert MediaType.LIVE_PHOTO not in STORAGE_MEDIA_TYPES
+        with pytest.raises(KeyError):
+            adapter.bubble_root(MediaType.LIVE_PHOTO)
+        with pytest.raises(KeyError):
+            adapter.resolve_bubble(MediaType.LIVE_PHOTO, "clip.zip")
+        with pytest.raises(KeyError):
+            adapter.pond_root(MediaType.LIVE_PHOTO)
+        with pytest.raises(KeyError):
+            adapter.resolve_pond(MediaType.LIVE_PHOTO, "clip.zip")
 
 
 class TestSaveReadRoundTrip:

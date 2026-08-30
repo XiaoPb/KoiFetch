@@ -37,7 +37,7 @@ NAS save.
 real WebSocket ``complete`` event (snapshot-on-connect for the completed
 download) — the exact ``download_url`` a frontend client would click — and then
 used against ``GET /api/download/file/{id}?token=...``; the token is verified
-short-lived (5 minutes), NOT single-use, by replaying the same token (playback
+short-lived (5 minutes), reusable by replaying the same token (playback
 needs repeated/range requests). The worker's
 ``complete`` event (also carrying ``download_url`` + ``token_expire_at``) is
 asserted from the hub capture and its *own* minted token is fetched too,
@@ -65,8 +65,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.adapters.factory import get_downloader, get_storage
+from app.adapters.parser_stub import StubParserAdapter
 from app.api.responses import CODE_FILE_TOKEN_INVALID, CODE_OK
-from app.domain import DownloadStatus
+from app.application.parse_service import ParseService
+from app.domain import DownloadStatus, MediaManifest, MediaResource
 from app.infrastructure import seed
 from app.infrastructure.database import Base, build_engine, session_scope
 from app.infrastructure.models import DownloadTask
@@ -80,6 +82,33 @@ SMOKE_URL = "https://www.douyin.com/video/123456"
 
 # NAS-style target directory for the save step (PRD §5.7 leading slash).
 SMOKE_TARGET_PATH = "/video/smoke"
+
+
+class SmokeManifestParser(StubParserAdapter):
+    """Stub parser fixture that exercises the public manifest projection."""
+
+    def _parse_url(self, url):
+        result = super()._parse_url(url)
+        if result.media_type.value != "video":
+            return result
+        manifest = MediaManifest(
+            kind="video",
+            videos=(
+                MediaResource(
+                    url="https://cdn.example.com/smoke/video.mp4",
+                    format="mp4",
+                    quality="1080p",
+                ),
+            ),
+        )
+        return result.model_copy(
+            update={
+                "metadata": {
+                    **result.metadata,
+                    "manifest": manifest.model_dump(mode="json"),
+                }
+            }
+        )
 
 
 @pytest.fixture(scope="module")
@@ -114,6 +143,9 @@ def smoke_env(tmp_path_factory):
     Base.metadata.create_all(engine)
     assert seed.seed_admin(settings=settings, engine=engine) is True
     app = create_app(settings=settings)
+    # Keep the real application wiring while supplying a deterministic valid
+    # manifest fixture for the parse/public-projection assertions below.
+    app.state.parse_service = ParseService(parser=SmokeManifestParser(), engine=engine)
     storage = get_storage(settings)
     downloader = get_downloader(settings)
     return settings, engine, app, storage, downloader
@@ -152,7 +184,9 @@ class TestEndToEndSmoke:
             assert deep.status_code == 200
             assert "KOI_SMOKE_SPA" in deep.text
 
-            # -- 2. parse a stub URL: deterministic metadata ------------------
+            # -- 2. parse metadata + public manifest (no download side effect) -
+            with session_scope(engine) as session:
+                assert session.query(DownloadTask).count() == 0
             parse = client.post("/api/parse", json={"urls": [SMOKE_URL]})
             assert parse.status_code == 200
             parse_body = parse.json()
@@ -164,6 +198,19 @@ class TestEndToEndSmoke:
             assert result["type"] == "video"
             assert result["platform"] == "douyin"
             assert result["title"]
+            assert result["manifest"] == {
+                "kind": "video",
+                "videos": [
+                    {
+                        "url": f"/api/preview/{task_id}/resources/video/0",
+                        "format": "mp4",
+                        "quality": "1080p",
+                    }
+                ],
+            }
+            assert "https://cdn.example.com" not in parse.text
+            with session_scope(engine) as session:
+                assert session.query(DownloadTask).count() == 0
             title = result["title"]
 
             # -- 3. preview the parsed task -----------------------------------
@@ -240,7 +287,7 @@ class TestEndToEndSmoke:
             # The WebSocket snapshot for a completed download mints a fresh
             # link — the exact event a frontend client receives — so the smoke
             # uses its token for the file endpoint, then replays the same
-            # token: the token is SHORT-LIVED (5 minutes), not single-use, so
+            # token: the token is SHORT-LIVED (5 minutes), reusable, so
             # playback's repeated/range requests all keep serving.
             with client.websocket_connect(f"/ws/download/{download_id}") as ws:
                 ws_event = ws.receive_json()
@@ -262,7 +309,7 @@ class TestEndToEndSmoke:
 
             # The token the WORKER minted into its complete event also serves
             # the file (the last hop of the worker-minted link, distinct from
-            # the WS-minted link above — single use is per issuance).
+            # the WS-minted link above — each issuance has its own token id).
             worker_link = client.get(
                 f"/api/download/file/{download_id}?token={worker_token}"
             )

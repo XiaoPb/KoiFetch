@@ -4,7 +4,7 @@ Covers: bcrypt verification against the seeded admin (correct/wrong/missing
 user are indistinguishable failures, including timing — the missing-user path
 runs a dummy bcrypt comparison), blank/non-string input rejection, explicit
 rejection of >72-byte passwords (bcrypt truncates instead of raising), token
-issuance with 24h expiry and correct claims, the ``login`` convenience that
+issuance with seven-day expiry and correct claims, the ``login`` convenience that
 bundles authentication + issuance, and the security contract that passwords
 never appear in logs.
 """
@@ -16,6 +16,8 @@ import pytest
 from sqlalchemy import select
 
 from app.adapters.factory import get_access_token_provider
+from app.adapters.protocols import InvalidTokenError
+from app.adapters import tokens_jwt
 from app.application.auth_service import AuthService
 from app.infrastructure import seed
 from app.infrastructure.config import Settings
@@ -38,7 +40,7 @@ def engine(tmp_path):
 @pytest.fixture
 def provider():
     return get_access_token_provider(
-        Settings(admin_password=PASSWORD, secret_key=SECRET)
+        Settings(admin_password=PASSWORD, secret_key=SECRET, cookie_encryption_key="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
     )
 
 
@@ -50,7 +52,7 @@ def service(engine, provider):
 def seed_admin(engine, password: str = PASSWORD) -> None:
     assert (
         seed.seed_admin(
-            settings=Settings(admin_password=password, secret_key=SECRET),
+            settings=Settings(admin_password=password, secret_key=SECRET, cookie_encryption_key="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="),
             engine=engine,
         )
         is True
@@ -144,7 +146,7 @@ class TestAuthenticate:
 
 
 class TestIssueAccessToken:
-    def test_issue_returns_24h_token_with_user_claims(self, engine, service, provider):
+    def test_issue_returns_seven_day_token_with_user_claims(self, engine, service, provider):
         seed_admin(engine)
         user = service.authenticate("admin", PASSWORD)
         token = service.issue_access_token(user)
@@ -152,7 +154,7 @@ class TestIssueAccessToken:
         claims = provider.validate(token)
         assert claims.user_id == user.id
         assert claims.username == "admin"
-        assert claims.expires_at - claims.issued_at == timedelta(hours=24)
+        assert claims.expires_at - claims.issued_at == timedelta(days=7)
 
 
 class TestLogin:
@@ -164,12 +166,40 @@ class TestLogin:
         claims = provider.validate(result.token)
         assert claims.username == "admin"
         assert result.expires_at == claims.expires_at
-        assert result.expires_at - claims.issued_at == timedelta(hours=24)
+        assert result.expires_at - claims.issued_at == timedelta(days=7)
 
     def test_login_failure_returns_none(self, engine, service):
         seed_admin(engine)
         assert service.login("admin", "wrong") is None
         assert service.login("nobody", PASSWORD) is None
+
+
+class TestRefresh:
+    def test_refresh_slides_expiry_and_rotates_jti(
+        self, engine, service, provider, monkeypatch
+    ):
+        seed_admin(engine)
+        base = tokens_jwt._now() - timedelta(seconds=1)
+        moments = iter((base, base + timedelta(seconds=1)))
+        monkeypatch.setattr(tokens_jwt, "_now", lambda: next(moments))
+        old = provider.issue(user_id=1, username="admin")
+
+        result = service.refresh(old)
+
+        old_claims = provider.validate(old)
+        fresh_claims = provider.validate(result.token)
+        assert result.username == "admin"
+        assert result.token != old
+        assert fresh_claims.token_id != old_claims.token_id
+        assert fresh_claims.expires_at > old_claims.expires_at
+        assert result.expires_at == fresh_claims.expires_at
+
+    def test_refresh_rejects_token_for_missing_user(self, engine, service, provider):
+        seed_admin(engine)
+        token = provider.issue(user_id=999999, username="admin")
+
+        with pytest.raises(InvalidTokenError):
+            service.refresh(token)
 
 
 class TestNeverLogsSecrets:

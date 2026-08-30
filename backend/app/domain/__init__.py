@@ -32,11 +32,13 @@ from app.domain.music import (
     MusicSearchResult,
     MusicSong,
 )
+from app.domain.media_manifest import LivePhotoPair, MediaManifest, MediaResource
 from app.domain.paths import (
     PathOutsideRootError,
     build_path,
     is_within,
     safe_media_filename,
+    safe_attachment_filename,
     slugify,
 )
 from app.domain.transitions import (
@@ -44,15 +46,27 @@ from app.domain.transitions import (
     IllegalTransitionError,
     transition,
 )
+from app.domain.transfer import (
+    AssetSelector,
+    DirectTransfer,
+    PrepareRequest,
+    PreparedTransfer,
+    StagedTransfer,
+)
 
 __all__ = [
     "ALLOWED_TRANSITIONS",
+    "AssetSelector",
     "DownloadCommand",
     "DownloadProgress",
     "DownloadResult",
     "DownloadStatus",
+    "DirectTransfer",
     "IllegalTransitionError",
     "MediaType",
+    "LivePhotoPair",
+    "MediaManifest",
+    "MediaResource",
     "MusicAlbum",
     "MusicArtist",
     "MusicCategory",
@@ -62,12 +76,16 @@ __all__ = [
     "MusicSong",
     "ParseCommand",
     "ParseResult",
+    "PrepareRequest",
+    "PreparedTransfer",
     "PathOutsideRootError",
     "build_path",
     "format_duration",
     "is_within",
     "parse_duration",
     "safe_media_filename",
+    "safe_attachment_filename",
     "slugify",
+    "StagedTransfer",
     "transition",
 ]

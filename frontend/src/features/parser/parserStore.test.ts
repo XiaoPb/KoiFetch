@@ -13,6 +13,7 @@ import {
 
 vi.mock('../../services/api', () => ({
   parseApi: { parse: vi.fn() },
+  isSafePublicPreviewRoute: vi.fn(() => true),
 }));
 
 const videoResult: ParseResult = {
@@ -27,6 +28,7 @@ const videoResult: ParseResult = {
   format: 'mp4',
   available_qualities: ['1080p', '720p'],
   available_bitrates: [],
+  manifest: null,
   video_url: null,
   images: [],
 };
@@ -43,6 +45,7 @@ const musicResult: ParseResult = {
   format: 'mp3',
   available_qualities: [],
   available_bitrates: ['320kbps', 'FLAC'],
+  manifest: null,
   video_url: null,
   images: [],
 };
@@ -59,6 +62,33 @@ const imageResult: ParseResult = {
   format: 'jpg',
   available_qualities: [],
   available_bitrates: [],
+  manifest: null,
+  video_url: null,
+  images: [],
+};
+
+const livePhotoResult: ParseResult = {
+  task_id: 't4',
+  url: 'https://example.com/p/live',
+  type: 'live_photo',
+  platform: 'xiaohongshu',
+  title: 'Live Photo',
+  cover: '/api/preview/t4/resources/live/0/image',
+  duration: null,
+  file_size_mb: null,
+  format: null,
+  available_qualities: [],
+  available_bitrates: [],
+  manifest: {
+    kind: 'live_photo',
+    live_photos: [
+      {
+        image_url: '/api/preview/t4/resources/live/0/image',
+        motion_url: '/api/preview/t4/resources/live/0/motion',
+      },
+    ],
+    warnings: [],
+  },
   video_url: null,
   images: [],
 };
@@ -152,6 +182,55 @@ describe('parserStore', () => {
     expect(useParserStore.getState().results).toEqual([musicResult]);
   });
 
+  it('keeps only the latest parse response when requests resolve out of order', async () => {
+    let resolveOld!: (value: unknown) => void;
+    let resolveNew!: (value: unknown) => void;
+    (parseApi.parse as Mock)
+      .mockReturnValueOnce(new Promise((resolve) => { resolveOld = resolve; }))
+      .mockReturnValueOnce(new Promise((resolve) => { resolveNew = resolve; }));
+
+    useParserStore.setState({ input: 'https://example.com/old' });
+    const oldRequest = useParserStore.getState().parse();
+    useParserStore.setState({ input: 'https://example.com/new' });
+    const newRequest = useParserStore.getState().parse();
+
+    resolveNew(okParse({ results: [musicResult] }));
+    await newRequest;
+    resolveOld(okParse({ results: [videoResult] }));
+    await oldRequest;
+
+    expect(useParserStore.getState()).toMatchObject({ status: 'success', results: [musicResult], failed: [] });
+  });
+
+  it('keeps reset state when an in-flight parse resolves afterward', async () => {
+    let resolveParse!: (value: unknown) => void;
+    (parseApi.parse as Mock).mockReturnValue(new Promise((resolve) => { resolveParse = resolve; }));
+    useParserStore.setState({ input: 'https://example.com/old' });
+    const pending = useParserStore.getState().parse();
+
+    useParserStore.getState().reset();
+    resolveParse(okParse());
+    await pending;
+
+    expect(useParserStore.getState()).toMatchObject({
+      input: '', results: [], failed: [], status: 'idle', error: null,
+    });
+  });
+
+  it('invalidates an in-flight parse when a newer validation attempt fails', async () => {
+    let resolveParse!: (value: unknown) => void;
+    (parseApi.parse as Mock).mockReturnValue(new Promise((resolve) => { resolveParse = resolve; }));
+    useParserStore.setState({ input: 'https://example.com/old' });
+    const pending = useParserStore.getState().parse();
+
+    useParserStore.setState({ input: '   ' });
+    await useParserStore.getState().parse();
+    resolveParse(okParse());
+    await pending;
+
+    expect(useParserStore.getState()).toMatchObject({ status: 'error', error: PARSER_EMPTY_INPUT_MESSAGE, results: [] });
+  });
+
   it('rejects an empty input without calling the API', async () => {
     useParserStore.setState({ input: '   \n  \n' });
     await useParserStore.getState().parse();
@@ -205,12 +284,17 @@ describe('parserStore', () => {
   });
 
   it('selectVisibleResults shows video/music per mode and image in both modes', () => {
-    const all = [videoResult, musicResult, imageResult];
-    expect(selectVisibleResults(all, 'video')).toEqual([videoResult, imageResult]);
+    const all = [videoResult, musicResult, imageResult, livePhotoResult];
+    expect(selectVisibleResults(all, 'video')).toEqual([videoResult, imageResult, livePhotoResult]);
     expect(selectVisibleResults(all, 'music')).toEqual([musicResult, imageResult]);
     // image belongs to neither mode, so it must be reachable in both.
     expect(selectVisibleResults([imageResult], 'video')).toEqual([imageResult]);
     expect(selectVisibleResults([imageResult], 'music')).toEqual([imageResult]);
     expect(selectVisibleResults([], 'video')).toEqual([]);
+  });
+
+  it('keeps live-photo results visible in video mode but not music mode', () => {
+    expect(selectVisibleResults([livePhotoResult], 'video')).toEqual([livePhotoResult]);
+    expect(selectVisibleResults([livePhotoResult], 'music')).toEqual([]);
   });
 });

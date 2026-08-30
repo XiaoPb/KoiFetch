@@ -39,6 +39,7 @@ from pathlib import Path
 import pytest
 from apscheduler.triggers.interval import IntervalTrigger
 
+from app.adapters.storage_local import STORAGE_MEDIA_TYPES
 from app.adapters.factory import get_storage
 from app.domain import DownloadStatus, MediaType, transition
 from app.infrastructure import config as config_module
@@ -95,6 +96,37 @@ def seed_completed_with_bubble(
 
 
 class TestFileCleanup:
+    def test_sweep_only_visits_storage_backed_media_types(self, storage, monkeypatch):
+        visited = []
+
+        def list_files(media_type):
+            visited.append(media_type)
+            return []
+
+        monkeypatch.setattr(storage, "list_files", list_files)
+
+        cleanup_module._sweep_bubble_files(storage, NOW, EXPIRE_HOURS)
+
+        assert tuple(visited) == STORAGE_MEDIA_TYPES
+        assert MediaType.LIVE_PHOTO not in visited
+
+    def test_bubble_path_check_only_uses_storage_backed_media_types(
+        self, storage, monkeypatch
+    ):
+        real_bubble_root = storage.bubble_root
+        visited = []
+
+        def bubble_root(media_type):
+            visited.append(media_type)
+            return real_bubble_root(media_type)
+
+        monkeypatch.setattr(storage, "bubble_root", bubble_root)
+
+        outside = real_bubble_root(MediaType.VIDEO).parent / "not-a-bucket"
+        assert cleanup_module._is_bubble_path(storage, outside) is False
+        assert tuple(visited) == STORAGE_MEDIA_TYPES
+        assert MediaType.LIVE_PHOTO not in visited
+
     def test_removes_only_old_bubble_files_keeps_pond(self, env):
         settings, engine, storage, _ = env
         old = write_bubble(storage, MediaType.VIDEO, "old.mp4", hours_back=30)

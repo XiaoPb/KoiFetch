@@ -19,16 +19,22 @@ Design decisions:
 * **Platform-agnostic.** Any non-empty platform string is accepted (blank is
   rejected here; the API validates the shape); the frontend owns the current
   platform list, so f2 gaining a platform later needs no backend change.
-* **Plaintext at rest, documented.** v1 has a single admin and an admin-only
-  API; encrypt-at-rest is a v1.1 hardening (see the ORM model docstring).
+* **Encrypted at rest.** New writes use the injected :class:`CookieCipher`;
+  legacy plaintext rows remain readable until the migration script is run.
 """
 
 from __future__ import annotations
 
+import base64
+import binascii
 import logging
+import os
+import re
 from datetime import datetime, timezone
 from typing import Any
 
+from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from sqlalchemy import Engine, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import SQLAlchemyError
@@ -38,21 +44,74 @@ from app.infrastructure.models import PlatformCookie
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["PlatformCookieService", "CookieStorageError"]
+__all__ = ["CookieCipher", "PlatformCookieService", "CookieStorageError"]
 
 
 class CookieStorageError(Exception):
-    """A cookie write failed; the message never carries the cookie value."""
+    """Safe domain error for cookie read, write, decrypt, and storage failures."""
 
 
 _MESSAGE_STORAGE_ERROR = "Cookie 存储失败 / Cookie storage failed"
+_COOKIE_AAD = b"koi-cookie-v1"
+
+
+class CookieCipher:
+    """Encrypt platform cookies with versioned AES-256-GCM envelopes."""
+
+    PREFIX = "enc:v1:"
+
+    def __init__(self, key_b64: str) -> None:
+        if not isinstance(key_b64, str) or not re.fullmatch(
+            r"[A-Za-z0-9_-]+={0,2}", key_b64
+        ):
+            raise ValueError("cookie encryption key must be URL-safe base64")
+        try:
+            key = base64.b64decode(
+                key_b64.encode("ascii"), altchars=b"-_", validate=True
+            )
+        except (UnicodeEncodeError, ValueError, binascii.Error) as exc:
+            raise ValueError("cookie encryption key must be URL-safe base64") from exc
+        if len(key) != 32:
+            raise ValueError("cookie encryption key must decode to exactly 32 bytes")
+        self._key = key
+        self._aes = AESGCM(key)
+
+    def encrypt(self, value: str) -> str:
+        nonce = os.urandom(12)
+        body = self._aes.encrypt(nonce, value.encode("utf-8"), _COOKIE_AAD)
+        return self.PREFIX + base64.urlsafe_b64encode(nonce + body).decode("ascii")
+
+    def decrypt(self, value: str) -> str:
+        if not isinstance(value, str):
+            raise CookieStorageError(_MESSAGE_STORAGE_ERROR)
+        if not value.startswith("enc:"):
+            return value
+        if not value.startswith(self.PREFIX):
+            raise CookieStorageError(_MESSAGE_STORAGE_ERROR)
+        payload = value[len(self.PREFIX) :]
+        try:
+            raw = base64.b64decode(
+                payload.encode("ascii"), altchars=b"-_", validate=True
+            )
+            if len(raw) < 28:
+                raise ValueError("truncated encrypted cookie")
+            plaintext = self._aes.decrypt(raw[:12], raw[12:], _COOKIE_AAD)
+            return plaintext.decode("utf-8")
+        except (UnicodeEncodeError, ValueError, binascii.Error, InvalidTag):
+            raise CookieStorageError(_MESSAGE_STORAGE_ERROR) from None
 
 
 class PlatformCookieService:
-    """DB-backed read/write store for per-platform cookies."""
+    """DB-backed read/write store for per-platform cookies.
 
-    def __init__(self, *, engine: Engine | None = None) -> None:
+    ``cipher`` is mandatory so every new write is encrypted at rest.
+    """
+
+    def __init__(
+        self, *, cipher: CookieCipher, engine: Engine | None = None
+    ) -> None:
         self._engine = engine
+        self._cipher = cipher
 
     # -- CookieProvider (read side) ----------------------------------------
 
@@ -60,7 +119,9 @@ class PlatformCookieService:
         """Return the stored cookie for ``platform`` (None when unset)."""
         with session_scope(self._engine) as session:
             row = session.get(PlatformCookie, platform)
-        return row.cookie if row is not None else None
+        if row is None:
+            return None
+        return self._cipher.decrypt(row.cookie)
 
     # -- write side --------------------------------------------------------
 
@@ -82,12 +143,20 @@ class PlatformCookieService:
         # SQLite dialect upsert: the repo is SQLite-only in v1 (config default
         # and docker compose both use ``sqlite://``; the migrations already use
         # SQLite-specific ``batch_alter_table``).
+        stored_cookie = self._cipher.encrypt(cookie)
         stmt = (
             sqlite_insert(PlatformCookie)
-            .values(platform=platform, cookie=cookie, updated_at=now)
+            .values(
+                platform=platform,
+                cookie=stored_cookie,
+                updated_at=now,
+            )
             .on_conflict_do_update(
                 index_elements=[PlatformCookie.platform],
-                set_={"cookie": cookie, "updated_at": now},
+                set_={
+                    "cookie": stored_cookie,
+                    "updated_at": now,
+                },
             )
         )
         try:

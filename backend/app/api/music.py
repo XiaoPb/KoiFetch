@@ -8,9 +8,9 @@ This router is deliberately thin — the use cases live in
   ``songs[].play_url`` is a same-origin proxy path (never a platform URL);
   ``song_info`` is intentionally absent from the schema. Blank keyword /
   invalid category / page < 1 → generic 400 envelope.
-* ``GET /api/music/stream?src=...`` — same-origin byte proxy for playback
-  (Range passthrough, engine UA; raw bytes like the preview stream endpoint,
-  errors as envelopes). Only http(s) ``src`` values are accepted.
+* ``GET /api/music/{song_id}/stream`` — same-origin byte proxy for playback;
+  the persisted song row supplies the upstream URL (Range passthrough, engine
+  UA; raw bytes like the preview stream endpoint).
 * ``POST /api/music/import {song_id}`` — creates a MUSIC ParseTask from a
   persisted song; returns ``data: {task_id}``. Unknown song → generic 400.
   The frontend then submits the download through the existing pipeline.
@@ -53,6 +53,7 @@ class SongData(BaseModel):
     cover: str | None = None
     duration: str | None = None
     play_url: str | None = None
+    lyric: str | None = None
     bitrate: int | None = None
 
 
@@ -138,10 +139,22 @@ def get_music_service(request: Request) -> MusicService:
     return request.app.state.music_service
 
 
-def _serialize_search(result) -> dict:
+def _serialize_search(result, *, include_lyrics: bool = False) -> dict:
     return {
         "totals": result.totals,
-        "songs": [song.model_dump(exclude={"song_info", "source", "ext"}) for song in result.songs],
+        # Keep the historical wire shape stable when no lyrics are available,
+        # while exposing the optional lyric payload for providers that return it.
+        "songs": [
+            song.model_dump(
+                exclude={"song_info", "source", "ext"}
+                | ({"lyric"} if not include_lyrics else set()),
+                exclude_none=True,
+            )
+            | ({"cover": None} if song.cover is None else {})
+            | ({"duration": None} if song.duration is None else {})
+            | ({"play_url": None} if song.play_url is None else {})
+            | ({"bitrate": None} if song.bitrate is None else {})
+        for song in result.songs],
         "artists": [artist.model_dump() for artist in result.artists],
         "albums": [album.model_dump() for album in result.albums],
         "playlists": [playlist.model_dump() for playlist in result.playlists],
@@ -149,28 +162,36 @@ def _serialize_search(result) -> dict:
     }
 
 
-@router.get("/search", response_model=MusicSearchResponse)
+@router.get("/search", response_model=None)
 def music_search(
     service: Annotated[MusicService, Depends(get_music_service)],
     keyword: str = Query(min_length=1),
     category: MusicCategory = MusicCategory.ALL,
     page: int = Query(default=1, ge=1),
+    include_lyrics: bool = Query(default=False),
 ) -> dict:
     """Search one category; returns the wire-shaped result (see module docstring)."""
     result = service.search(keyword, category, page)
-    return ok(data=_serialize_search(result), message=_MESSAGE_SEARCH_OK)
+    return ok(data=_serialize_search(result, include_lyrics=include_lyrics), message=_MESSAGE_SEARCH_OK)
 
 
-@router.get("/stream")
+@router.get("/{song_id}/stream")
 def music_stream(
+    song_id: str,
     request: Request,
     service: Annotated[MusicService, Depends(get_music_service)],
-    src: str = Query(min_length=1),
 ) -> StreamingResponse:
-    """Same-origin byte proxy for music playback (Range passthrough)."""
-    stream = service.stream(src, request.headers.get("range"))
+    """Same-origin byte proxy for persisted music playback."""
+    stream = service.stream_song(song_id, request.headers.get("range"))
+
+    def iterator():
+        try:
+            yield from stream.chunks
+        finally:
+            stream.close()
+
     return StreamingResponse(
-        stream.chunks,
+        iterator(),
         status_code=stream.status_code,
         headers=stream.headers,
         media_type=stream.content_type,

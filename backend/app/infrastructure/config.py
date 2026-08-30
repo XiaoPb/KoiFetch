@@ -15,7 +15,11 @@ environment.
 
 from __future__ import annotations
 
+import base64
+import binascii
+import ipaddress
 import os
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -24,22 +28,32 @@ from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, field_validator
 
+from app.application.login_limiter import canonicalize_network
+
 __all__ = ["Settings", "get_settings"]
 
 
 class Settings(BaseModel):
     """Typed application settings backed by environment variables.
 
-    ``ADMIN_PASSWORD`` and ``SECRET_KEY`` are required: constructing a
-    ``Settings`` without them (or with them empty) raises
+    ``ADMIN_PASSWORD``, ``SECRET_KEY``, and ``COOKIE_ENCRYPTION_KEY`` are
+    required: constructing a ``Settings`` without them (or with them empty)
+    raises
     :class:`pydantic.ValidationError` so a misconfigured service fails fast.
     """
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "forbid", "hide_input_in_errors": True}
 
     # --- Required secrets (never log these; safe local values only in .env.example) ---
     admin_password: str = Field(min_length=1)
     secret_key: str = Field(min_length=1)
+    cookie_encryption_key: str
+
+    # Login throttling is deliberately process-local (one limiter per app).
+    login_max_attempts: int = Field(default=5, ge=1, le=1000)
+    login_window_seconds: int = Field(default=300, ge=1, le=86_400)
+    login_max_keys: int = Field(default=10_000, ge=1, le=1_000_000)
+    trusted_proxy_cidrs: list[str] = Field(default_factory=list)
 
     # --- Storage roots (pond = permanent/NAS, bubble = temporary) ---
     video_storage_path: Path = Path("data/pond/video")
@@ -50,6 +64,7 @@ class Settings(BaseModel):
     temp_music_path: Path = Path("data/bubble/music")
 
     # --- Runtime behavior ---
+    access_token_ttl_days: int = Field(default=7, ge=1, le=30)
     max_concurrent: int = Field(default=3, ge=1)
     download_speed_limit: int = Field(default=0, ge=0)  # MB/s; 0 = unlimited
     bubble_expire_hours: int = Field(default=24, ge=1)
@@ -150,6 +165,74 @@ class Settings(BaseModel):
     def _reject_empty_frontend_dist_path(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
             raise ValueError("frontend dist path must not be empty")
+        return value
+
+    @field_validator("secret_key")
+    @classmethod
+    def _validate_secret_key(cls, value: str) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("secret_key must not be blank")
+        normalized = value.strip().casefold()
+        placeholders = {
+            "secret",
+            "secret-key",
+            "default",
+            "default-secret-key",
+            "change-me",
+            "changeme",
+            "please-change-me",
+            "your-secret-key",
+            "replace-me",
+            "sk",
+        }
+        if (
+            normalized in placeholders
+            or "change-me" in normalized
+            or normalized.startswith(("replace_with", "your_", "placeholder"))
+        ):
+            raise ValueError("secret_key must be a strong, deployment-specific value")
+        if len(value.encode("utf-8")) < 32:
+            raise ValueError("secret_key must be at least 32 UTF-8 bytes")
+        return value
+
+    @field_validator("trusted_proxy_cidrs", mode="before")
+    @classmethod
+    def _parse_trusted_proxy_cidrs(cls, value: object) -> object:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return []
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        return value
+
+    @field_validator("trusted_proxy_cidrs")
+    @classmethod
+    def _validate_trusted_proxy_cidrs(cls, value: list[str]) -> list[str]:
+        result = []
+        for cidr in value:
+            if not isinstance(cidr, str):
+                raise ValueError("trusted_proxy_cidrs must contain CIDR strings")
+            try:
+                network = ipaddress.ip_network(cidr.strip(), strict=False)
+            except ValueError as exc:
+                raise ValueError("trusted_proxy_cidrs contains an invalid network") from exc
+            result.append(str(canonicalize_network(network)))
+        return result
+
+    @field_validator("cookie_encryption_key")
+    @classmethod
+    def _validate_cookie_encryption_key(cls, value: str) -> str:
+        if not isinstance(value, str) or not re.fullmatch(
+            r"[A-Za-z0-9_-]+={0,2}", value
+        ):
+            raise ValueError("cookie_encryption_key must be URL-safe base64")
+        try:
+            decoded = base64.b64decode(
+                value.encode("ascii"), altchars=b"-_", validate=True
+            )
+        except (UnicodeEncodeError, ValueError, binascii.Error) as exc:
+            raise ValueError("cookie_encryption_key must be URL-safe base64") from exc
+        if len(decoded) != 32:
+            raise ValueError("cookie_encryption_key must decode to exactly 32 bytes")
         return value
 
     @field_validator("cors_origins", mode="before")

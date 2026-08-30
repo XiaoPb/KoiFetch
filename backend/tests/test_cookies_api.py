@@ -26,7 +26,7 @@ PASSWORD = "admin-s3cret-pass"
 def make_settings(**overrides):
     from app.infrastructure.config import Settings
 
-    return Settings(admin_password=PASSWORD, secret_key=SECRET, **overrides)
+    return Settings(admin_password=PASSWORD, secret_key=SECRET, cookie_encryption_key="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", **overrides)
 
 
 @pytest.fixture

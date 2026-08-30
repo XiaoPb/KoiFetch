@@ -63,6 +63,7 @@ from app.adapters.factory import (
     get_parser,
     get_storage,
 )
+from app.adapters.safe_upstream import SafeUpstreamClient
 from app.api.auth import router as auth_router
 from app.api.cookies import router as cookies_router
 from app.api.download import router as download_router
@@ -73,9 +74,11 @@ from app.api.parse import router as parse_router
 from app.api.preview import router as preview_router
 from app.api.responses import error, ok, register_exception_handlers
 from app.application.auth_service import AuthService
-from app.application.cookie_service import PlatformCookieService
+from app.application.login_limiter import LoginLimiter
+from app.application.cookie_service import CookieCipher, PlatformCookieService
 from app.application.download_events import event_hub
 from app.application.download_service import DownloadService
+from app.application.transfer_service import TransferService
 from app.application.music_service import MusicService
 from app.application.nas_service import NasService
 from app.application.parse_service import ParseService
@@ -268,8 +271,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     """Build the application, optionally with explicit settings.
 
     ``settings`` defaults to the process-wide singleton (:func:`get_settings`),
-    which reads ``ADMIN_PASSWORD``/``SECRET_KEY`` from the environment; tests
-    pass a settings object built from a temp directory instead.
+    which reads ``ADMIN_PASSWORD``/``SECRET_KEY``/``COOKIE_ENCRYPTION_KEY``
+    from the environment; tests pass a settings object built from a temp
+    directory instead.
     """
     settings = settings or get_settings()
 
@@ -297,14 +301,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.cookie_service = PlatformCookieService(
         engine=get_engine(settings.database_url),
+        cipher=CookieCipher(settings.cookie_encryption_key),
     )
     app.state.parse_service = ParseService(
         parser=get_parser(settings, cookie_provider=app.state.cookie_service),
         engine=get_engine(settings.database_url),
     )
+    upstream = SafeUpstreamClient(
+        timeout=settings.engine_timeout_seconds, proxy=settings.engine_proxy
+    )
+    app.state.upstream_client = upstream
     app.state.preview_service = PreviewService(
         engine=get_engine(settings.database_url),
-        proxy=settings.engine_proxy,
+        upstream=upstream,
     )
     try:
         storage = get_storage(settings)
@@ -319,6 +328,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         downloader=get_downloader(settings),
         engine=get_engine(settings.database_url),
     )
+    app.state.transfer_service = TransferService(
+        download_service=app.state.download_service,
+        engine=get_engine(settings.database_url),
+        upstream=upstream,
+    )
     app.state.nas_service = NasService(
         storage=storage,
         engine=get_engine(settings.database_url),
@@ -326,9 +340,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.music_service = MusicService(
         adapter=get_music_search(settings),
         engine=get_engine(settings.database_url),
+        upstream=upstream,
     )
     # The music /hot endpoint reads the configured hot keywords.
     app.state.settings = settings
+    app.state.login_limiter = LoginLimiter(
+        max_attempts=settings.login_max_attempts,
+        window_seconds=settings.login_window_seconds,
+        max_keys=settings.login_max_keys,
+    )
     # The in-process event hub: the download WebSocket subscribes here and the
     # worker (Task 11) publishes progress through the same singleton.
     app.state.download_event_hub = event_hub

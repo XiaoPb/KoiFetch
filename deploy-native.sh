@@ -4,9 +4,7 @@
 # Builds and runs the full stack on the host, in engine mode
 # (PARSER_ENGINE/DOWNLOADER_ENGINE=engine → f2 / parse-video-py + musicdl):
 #
-#   1. venv + backend deps        (pip; writable cache inside .venv)
-#   2. musicdl Python-3.10 shim   (backend/scripts/patch_musicdl_py310.py)
-#   3. f2 parser (no-deps)        (backend/scripts/install_f2.sh)
+#   1. venv + backend deps        (verified compatibility installer)
 #   4. frontend build             (npm ci/install + vite build → frontend/dist)
 #   5. migrations + admin seed    (alembic upgrade head, app.infrastructure.seed)
 #   6. API + worker daemons       (background, PID files, logs)
@@ -66,28 +64,24 @@ log() { echo "==> $*"; }
 die() { echo "ERROR: $*" >&2; exit 1; }
 
 start() {
-  # --- 1-3. backend deps + musicdl shim + f2 parser ---------------------
+  # --- 1. backend deps (including compatibility wheels and smoke test) ----
   if [ "${SKIP_DEPS:-0}" != "1" ]; then
     if [ ! -x "$PY" ]; then
       log "creating venv"
       python3 -m venv "$ROOT/.venv"
     fi
     log "installing backend dependencies (cache: $PIP_CACHE)"
-    "$PY" -m pip install --upgrade pip -q --cache-dir "$PIP_CACHE" 2>/dev/null || true
-    "$PY" -m pip install -r "$ROOT/backend/requirements.txt" \
-      --cache-dir "$PIP_CACHE" ${PIP_INDEX:+-i "$PIP_INDEX"}
-    log "patching musicdl for Python 3.10 (typing.Unpack shim)"
-    "$PY" "$ROOT/backend/scripts/patch_musicdl_py310.py"
-    log "installing f2 parser (no-deps + import check)"
-    VIRTUAL_ENV="$ROOT/.venv" "$ROOT/backend/scripts/install_f2.sh"
+    if [ -n "${PIP_INDEX:-}" ]; then
+      export PIP_INDEX_URL="$PIP_INDEX"
+    fi
+    "$PY" "$ROOT/backend/scripts/install_backend_dependencies.py" \
+      --cache "$PIP_CACHE"
   fi
 
   # --- 4. frontend build -------------------------------------------------
   if [ "${SKIP_DEPS:-0}" != "1" ] && [ "${SKIP_FRONTEND:-0}" != "1" ]; then
-    if [ ! -d "$ROOT/frontend/node_modules" ]; then
-      log "installing frontend dependencies"
-      npm install --prefix frontend --cache "$NPM_CACHE"
-    fi
+    log "installing frontend dependencies"
+    npm ci --prefix frontend --cache "$NPM_CACHE"
     log "building frontend"
     npm run build --prefix frontend
   fi

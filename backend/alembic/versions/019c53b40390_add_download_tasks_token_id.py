@@ -1,8 +1,9 @@
 """add download_tasks.token_id
 
-Stores the one-time token ``tid`` claim on the row that first served the
-bubble file, so the download-file API (Task 9) can enforce single use
-atomically without an external registry.
+Adds a nullable legacy/reserved column for a download token ``tid`` claim. The
+current token issuance flow does not populate it; the JWT claim itself binds
+the short-lived link to the task, whose stored filename is served, without an
+external registry.
 
 Revision ID: 019c53b40390
 Revises: 56320d63278e

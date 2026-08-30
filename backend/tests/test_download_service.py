@@ -11,9 +11,9 @@ Covers :class:`app.application.download_service.DownloadService`:
 * ``get_progress`` — a snapshot with ``remaining_time`` computed from speed
   while downloading; unknown download → ``3001``.
 * ``get_file`` — token rules: missing/invalid/expired/mis-targeted
-  token → ``5003`` (401); the token is short-lived (5 minutes), NOT
-  single-use — repeated/range playback requests all serve until expiry.
-  (same token twice → 5003, a fresh token still works); status rules: not
+  token → ``5003`` (401); the token is short-lived (5 minutes) and
+  reusable — repeated GET/Range playback requests all serve until expiry.
+  (same token twice remains valid, a fresh token also works); status rules: not
   completed → ``5002``, expired → ``5004`` (410); the bubble file must exist
   inside the bubble root (missing/absent path → ``5001`` (404), traversal
   attempt → ``5001``).
@@ -48,7 +48,7 @@ from app.api.responses import (
     ApiError,
 )
 from app.application.download_service import DownloadService
-from app.domain import DownloadStatus, MediaType
+from app.domain import AssetSelector, DownloadStatus, MediaType
 from app.infrastructure import seed
 from app.infrastructure.config import Settings
 from app.infrastructure.database import Base, build_engine, session_scope
@@ -64,7 +64,7 @@ BUBBLE_FILENAME = "2026-01-01_shili-shipin_av123.mp4"
 
 
 def make_settings(**overrides) -> Settings:
-    return Settings(admin_password=PASSWORD, secret_key=SECRET, **overrides)
+    return Settings(admin_password=PASSWORD, secret_key=SECRET, cookie_encryption_key="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", **overrides)
 
 
 @pytest.fixture
@@ -176,6 +176,34 @@ def seed_completed_with_file(engine, storage, *, task_id, **kwargs) -> str:
         bubble_path=str(path),
         **kwargs,
     )
+
+
+def test_submit_persists_selector_and_completed_identity_includes_selector(
+    service, engine
+):
+    task_id = seed_parse_task(engine)
+    selector = AssetSelector(kind="video", index=2)
+
+    first = service.submit(task_id, format="mp4", quality="720p", selector=selector)
+    with session_scope(engine) as session:
+        row = session.get(DownloadTask, first.download_id)
+        assert row.asset_selector == selector.model_dump(mode="json")
+
+    # A completed ordinary selection and a selected resource are distinct
+    # variants, while an identical selector remains deduplicated.
+    with session_scope(engine) as session:
+        row = session.get(DownloadTask, first.download_id)
+        row.status = DownloadStatus.COMPLETED
+        row.progress = 100.0
+    second = service.submit(task_id, format="mp4", quality="720p", selector=None)
+    assert second.download_id != first.download_id
+    with session_scope(engine) as session:
+        row = session.get(DownloadTask, second.download_id)
+        row.status = DownloadStatus.COMPLETED
+        row.progress = 100.0
+    with pytest.raises(ApiError) as exc:
+        service.submit(task_id, format="mp4", quality="720p", selector=selector)
+    assert exc.value.code == CODE_TASK_ALREADY_COMPLETED
 
 
 def api_error(exc: Exception) -> ApiError:
@@ -450,9 +478,9 @@ class TestGetFile:
         exc = api_error(excinfo.value)
         assert exc.code == CODE_FILE_TOKEN_INVALID
 
-    def test_token_is_short_lived_not_single_use(self, service, engine, storage):
+    def test_token_is_short_lived_and_reusable(self, service, engine, storage):
         # Playback compatibility: a media player issues multiple requests per
-        # session (initial load + Range/seek + HEAD probes), so a valid token
+        # session (initial load plus repeated GET/Range/seek requests), so a valid token
         # must serve the file repeatedly until its 5-minute expiry.
         task_id = seed_parse_task(engine)
         download_id = seed_completed_with_file(engine, storage, task_id=task_id)
@@ -472,7 +500,7 @@ class TestGetFile:
         assert service.get_file(download_id, second).path.is_file()
 
     def test_concurrent_requests_with_same_token_all_serve(self, service, engine, storage):
-        # No atomic single-use claim anymore: concurrent playback requests
+        # No atomic consumption claim: concurrent playback requests
         # (e.g. a video element issuing several Range requests at once) all
         # serve as long as the token is valid and correctly bound.
         task_id = seed_parse_task(engine)

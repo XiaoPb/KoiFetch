@@ -1,5 +1,5 @@
 # Backend Python dependencies for the Koi Fetch v1 foundation.
-# Install with: pip install -r backend/requirements.txt
+# Install with: python backend/scripts/install_backend_dependencies.py
 #
 # The settings module (app/infrastructure/config.py) implements the
 # pydantic-settings-equivalent behavior with plain pydantic; python-dotenv
@@ -16,6 +16,9 @@ python-dotenv>=1.2
 tzdata>=2023.3
 httpx>=0.27
 pytest>=8.4
+cryptography>=50.0.1,<51
+# Standards parser used by the verified compatibility-wheel builder.
+packaging==26.3
 
 # Test dependency: backend/tests/test_compose.py parses docker-compose.yml with
 # PyYAML (Docker itself is absent in CI, so the compose contract is validated
@@ -39,8 +42,10 @@ sqlalchemy>=2.0
 alembic>=1.13
 bcrypt>=3.2,<5
 
-# Tokens: PyJWT signs the 24-hour admin access tokens and the five-minute
-# single-use file tokens issued by the download API (app/adapters/tokens_jwt.py).
+# Tokens: PyJWT signs configurable admin access tokens (seven-day default)
+# and five-minute reusable file tokens issued by the download API; each token
+# binds a download task+filename and playback may send repeated GET/Range
+# requests (app/adapters/tokens_jwt.py).
 pyjwt>=2.13
 
 # Scheduling: APScheduler runs the worker daemon's periodic bubble-cleanup /
@@ -59,16 +64,15 @@ parse-video-py @ git+https://github.com/wujunwei928/parse-video-py.git@5fcf87256
 # xiaohongshu/xigua/...) while PARSER_LEGACY_FALLBACK=true. Requires Python
 # >= 3.10.
 #
-# INSTALL NOTE: f2 itself is installed with `pip install --no-deps f2==0.0.1.7`
-# (see backend/scripts/install_f2.sh and the Dockerfile): f2 0.0.1.7's metadata
-# hard-pins pytest==8.3.4, cryptography==44.0.0, m3u8==3.6.0, protobuf==5.28.3,
-# websockets<13.0, and websockets-proxy==0.1.2, which conflict with this repo's
-# pytest>=8.4, musicdl's cryptography>=46.0.5,<47, and the repo's newer
-# websockets/websockets-proxy versions. All are silently resolved to
-# newer/compatible versions in this repo — f2's code only uses stable APIs and
-# runs on the repo's newer shared-library versions. The shared deps
-# (httpx/pydantic/websockets/...) come from the repo's own pins; the following
-# nine are f2's runtime deps the repo does not otherwise pull in:
+# INSTALL NOTE: run `python backend/scripts/install_backend_dependencies.py`
+# instead of installing this file directly. It downloads fixed SHA-256 pinned
+# pure-Python wheels for f2 and musicdl, removes their incompatible dependency
+# metadata, and installs this file with the project's shared dependency pins.
+# f2 0.0.1.7 hard-pins pytest==8.3.4, cryptography==44.0.0, m3u8==3.6.0,
+# protobuf==5.28.3, websockets<13.0, and websockets-proxy==0.1.2. The
+# compatibility wheel removes those hard locks; f2's code uses the explicit
+# dependencies below and the newer shared-library versions.
+# The following nine are f2's runtime deps the repo does not otherwise pull in:
 aiofiles>=24.1.0
 aiosqlite>=0.20.0
 browser-cookie3>=0.20.1
@@ -85,9 +89,9 @@ m3u8>=6.0.0,<7
 rich>=13.9.3,<15
 click>=8.1.7,<9
 protobuf>=6.33.0
-# To bump f2: update the three f2 pins (requirements.txt comment,
-# backend/scripts/install_f2.sh, Dockerfile), re-verify the module-import list,
-# and re-check the pin conflicts above.
+# To bump f2: update its URL/SHA-256 in
+# backend/scripts/build_compatible_wheels.py, re-verify the module-import list,
+# and re-check the explicit dependencies above.
 # musicdl: music search/download (netease/qq/kugou/kuwo/migu/...). Heavy install:
 # pulls nodejs-wheel (a Node.js runtime), pywidevine, av, curl-cffi, cryptography.
 # NOTE: musicdl 2.13.x imports `Unpack` from `typing` (Python >= 3.11) but
@@ -95,6 +99,9 @@ protobuf>=6.33.0
 # fails with ImportError. After install run
 # `.venv/bin/python backend/scripts/patch_musicdl_py310.py` (installs an
 # idempotent typing.Unpack backport shim; not needed on Python >= 3.11).
+# The installer removes this line before normal resolution and installs the
+# hash-verified compatibility wheel instead. Its metadata requires
+# cryptography>=50.0.1,<51, matching the security floor above.
 musicdl>=2.13.6,<3
 # typing_extensions backs the 3.10 shim above (typing.Unpack backport). musicdl
 # does not declare it, so it must be explicit here; Unpack exists since 4.1.
