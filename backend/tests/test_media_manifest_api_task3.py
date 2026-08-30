@@ -415,6 +415,100 @@ def test_resource_stream_closes_upstream_when_response_is_consumed(engine):
     assert closed == [True]
 
 
+def test_resource_stream_chunk_error_is_sanitized_and_closes_once(engine, caplog):
+    with session_scope(engine) as session:
+        session.add(
+            ParseTask(
+                task_id=TASK_ID,
+                url=SOURCE_URL,
+                platform="douyin",
+                media_type=MediaType.LIVE_PHOTO,
+                title="live",
+                format="jpg",
+                metadata_={"manifest": live_manifest().model_dump(mode="json")},
+            )
+        )
+    close_calls = []
+
+    def chunks():
+        yield b"prefix"
+        raise RuntimeError("bug https://cdn.example/private-token")
+
+    class BrokenUpstream:
+        def stream(self, url, **kwargs):
+            return UpstreamStream(
+                status_code=200,
+                content_type="image/jpeg",
+                headers={},
+                chunks=chunks(),
+                close=lambda: close_calls.append(True),
+            )
+
+    app = create_app(settings=settings())
+    app.dependency_overrides[get_preview_service] = lambda: PreviewService(
+        engine=engine, upstream=BrokenUpstream()
+    )
+    caplog.set_level(logging.ERROR)
+    response = TestClient(app, raise_server_exceptions=False).get(
+        f"/api/preview/{TASK_ID}/resources/live/0/image"
+    )
+
+    assert response.status_code == 200
+    assert close_calls == [True]
+    assert "cdn.example" not in caplog.text
+    assert "private-token" not in caplog.text
+    assert "bug https" not in caplog.text
+    assert "RuntimeError" in caplog.text
+    assert "Traceback (most recent call last)" not in caplog.text
+
+
+def test_resource_stream_close_error_is_sanitized_and_closes_once(engine, caplog):
+    with session_scope(engine) as session:
+        session.add(
+            ParseTask(
+                task_id=TASK_ID,
+                url=SOURCE_URL,
+                platform="douyin",
+                media_type=MediaType.LIVE_PHOTO,
+                title="live",
+                format="jpg",
+                metadata_={"manifest": live_manifest().model_dump(mode="json")},
+            )
+        )
+    close_calls = []
+
+    def close():
+        close_calls.append(True)
+        raise RuntimeError("bug https://cdn.example/private-token")
+
+    class BrokenUpstream:
+        def stream(self, url, **kwargs):
+            return UpstreamStream(
+                status_code=200,
+                content_type="image/jpeg",
+                headers={},
+                chunks=iter([b"jpg"]),
+                close=close,
+            )
+
+    app = create_app(settings=settings())
+    app.dependency_overrides[get_preview_service] = lambda: PreviewService(
+        engine=engine, upstream=BrokenUpstream()
+    )
+    caplog.set_level(logging.ERROR)
+    response = TestClient(app, raise_server_exceptions=False).get(
+        f"/api/preview/{TASK_ID}/resources/live/0/image"
+    )
+
+    assert response.status_code == 200
+    assert close_calls == [True]
+    assert "cdn.example" not in caplog.text
+    assert "private-token" not in caplog.text
+    assert "bug https" not in caplog.text
+    assert "RuntimeError" in caplog.text
+    assert "Traceback (most recent call last)" not in caplog.text
+
+
 def test_live_resource_proxy_forwards_range_and_content_headers(engine):
     with session_scope(engine) as session:
         session.add(

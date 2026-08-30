@@ -17,6 +17,7 @@ mounted on an app built by ``create_app`` (or one that sets the same state).
 
 from __future__ import annotations
 
+import logging
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Request
@@ -38,6 +39,8 @@ __all__ = [
 router = APIRouter(prefix="/preview", tags=["preview"])
 
 _MESSAGE_PREVIEW_OK = "获取预览成功 / Preview loaded"
+
+logger = logging.getLogger(__name__)
 
 
 class StreamInfo(BaseModel):
@@ -78,6 +81,30 @@ class PreviewResponse(BaseModel):
     data: PreviewData | None = None
 
 
+def _stream_iterator(stream):
+    """Yield media chunks while keeping lazy upstream failures private."""
+    try:
+        yield from stream.chunks
+    except Exception as exc:
+        # The response has already started by the time lazy iteration runs.
+        # Log only a stable class name: exception messages may contain signed
+        # upstream URLs or tokens. Base exceptions (including cancellation)
+        # intentionally continue propagating.
+        logger.error(
+            "media proxy stream failed exception_class=%s", type(exc).__name__
+        )
+    finally:
+        try:
+            stream.close()
+        except Exception as exc:
+            # Closing can fail after headers are sent as well, so apply the
+            # same sanitization and do not re-raise the ordinary error.
+            logger.error(
+                "media proxy stream close failed exception_class=%s",
+                type(exc).__name__,
+            )
+
+
 def get_preview_service(request: Request) -> PreviewService:
     """DI hook: the app-wired preview service (override in tests)."""
     return request.app.state.preview_service
@@ -113,15 +140,8 @@ def stream_media(
     """
     stream = service.stream_video(task_id, request.headers.get("range"))
 
-    def iterator():
-        try:
-            for chunk in stream.chunks:
-                yield chunk
-        finally:
-            stream.close()
-
     return StreamingResponse(
-        iterator(),
+        _stream_iterator(stream),
         status_code=stream.status_code,
         headers=stream.headers,
         media_type=None,
@@ -186,14 +206,8 @@ def _resource_response(
         range_header=request.headers.get("range"),
     )
 
-    def iterator():
-        try:
-            yield from stream.chunks
-        finally:
-            stream.close()
-
     return StreamingResponse(
-        iterator(),
+        _stream_iterator(stream),
         status_code=stream.status_code,
         headers=stream.headers,
         media_type=None,
