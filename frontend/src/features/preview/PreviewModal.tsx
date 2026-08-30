@@ -19,8 +19,8 @@ type LoadStatus = 'loading' | 'success' | 'error';
  * (`activeTask`); this modal renders from it. On open it fetches the full
  * metadata via `previewApi.getPreview(task_id)` and renders per `preview_type`:
  * - `image` → the cover image (real media) + metadata;
- * - `video` → once the task's download completed (auto-downloaded after parse,
- *   or re-attached via `GET /api/download/by-task` after a page reload), a
+ * - `video` → once an explicitly requested task download completes (or is
+ *   re-attached via `GET /api/download/by-task` after a page reload), a
  *   real react-player inline player; before that, an honest
  *   "play after download" hint;
  * - `music` → the metadata panel (v1 music URLs are unsupported by the engine).
@@ -64,8 +64,8 @@ export function PreviewModal(): JSX.Element {
   // so a completed download is invisible to the preview. Ask the backend for
   // the task's NEWEST download; if it already completed, re-attach it to the
   // store and refresh its file link (the WS mints a fresh short-lived reusable
-  // token → `complete` event → the player appears). In-session flows (auto-download
-  // after parse) never need this: the store already has the item.
+  // token → `complete` event → the player appears). In-session explicit-download
+  // flows normally do not need this: the store already has the item.
   useEffect(() => {
     if (!taskId || data?.preview_type !== 'video' || completedUrl) return;
     let cancelled = false;
@@ -82,7 +82,8 @@ export function PreviewModal(): JSX.Element {
         }
       } catch {
         // 3001 (no download for this task yet) or a transient error: the
-        // "play after download" hint stays; the auto-download path covers it.
+        // "play after download" hint stays; an explicit download action can
+        // create the item later.
       }
     })();
     return () => {
@@ -131,8 +132,8 @@ export function PreviewModal(): JSX.Element {
   const handleDownload = async () => {
     if (!taskId) return;
     // 下载 = 前端下载到本地: when the file is already downloaded server-side
-    // with a valid link, open it directly (the browser downloads it); the
-    // auto-download after parse usually makes this the instant path.
+    // with a valid link, open it directly (the browser downloads it). Parsing
+    // is preview-only; this server-side download starts only from [下载].
     if (completedUrl) {
       window.open(downloadApi.getFileUrl(completedUrl), '_blank', 'noopener');
       return;
