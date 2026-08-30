@@ -74,7 +74,8 @@ def main() -> int:
     # Match Settings.from_env's non-overriding behavior while making the
     # project's current-working-directory .env explicit for direct CLI use.
     dotenv_path = Path.cwd() / ".env"
-    load_dotenv(dotenv_path=dotenv_path if dotenv_path.is_file() else None)
+    if dotenv_path.is_file():
+        load_dotenv(dotenv_path=dotenv_path)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--database-url", default=os.environ.get("DATABASE_URL"))
     parser.add_argument("--cookie-encryption-key", default=os.environ.get("COOKIE_ENCRYPTION_KEY"))

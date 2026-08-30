@@ -270,6 +270,28 @@ def test_migration_cli_imports_from_container_app_layout(tmp_path):
         assert session.get(PlatformCookie, "douyin").cookie.startswith("enc:v1:")
 
 
+def test_migration_cli_does_not_search_parent_directories_for_dotenv(tmp_path):
+    parent = tmp_path / "parent"
+    child = parent / "child"
+    child.mkdir(parents=True)
+    (parent / ".env").write_text(f"COOKIE_ENCRYPTION_KEY={KEY}\n", encoding="utf-8")
+    database_url = f"sqlite:///{tmp_path / 'no-parent-env.db'}"
+    script = REPO_ROOT / "backend" / "scripts" / "encrypt_platform_cookies.py"
+    environment = os.environ.copy()
+    environment.pop("COOKIE_ENCRYPTION_KEY", None)
+    environment.pop("DATABASE_URL", None)
+    environment.pop("PYTHONPATH", None)
+    result = subprocess.run(
+        [sys.executable, str(script), "--database-url", database_url],
+        cwd=child,
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "COOKIE_ENCRYPTION_KEY" in result.stderr
+
+
 def test_settings_requires_cookie_encryption_key():
     with pytest.raises(ValidationError):
         Settings(admin_password="pw", secret_key="test-secret-key-0123456789abcdef")

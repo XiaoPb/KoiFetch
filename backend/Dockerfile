@@ -54,10 +54,14 @@ RUN apt-get update \
 # The standard-library installer builds verified compatibility wheels before
 # resolving dependencies, so the original musicdl/f2 conflict metadata never
 # enters the environment.
-COPY backend/app ./app
-COPY backend/requirements.txt ./backend/requirements.txt
+COPY backend/requirements.txt backend/constraints.txt ./backend/
 COPY backend/scripts/build_compatible_wheels.py backend/scripts/install_backend_dependencies.py backend/scripts/patch_musicdl_py310.py backend/scripts/encrypt_platform_cookies.py ./backend/scripts/
-RUN python backend/scripts/install_backend_dependencies.py
+RUN python backend/scripts/install_backend_dependencies.py --skip-smoke
+
+# Keep source changes out of the dependency layer.  The app import smoke test
+# runs only after its source is present, matching the runtime layout.
+COPY backend/app ./app
+RUN python -c "from musicdl import musicdl; import f2.exceptions, f2.utils.utils; from app.adapters.safe_upstream import SafeUpstreamClient; print(musicdl.MusicClient.__name__, SafeUpstreamClient.__name__)"
 
 # Network-free f2 import sanity check (handler modules fetch token APIs at
 # import time; utils/exceptions cover the cryptography compatibility risk).

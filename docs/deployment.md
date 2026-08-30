@@ -49,7 +49,7 @@ On success it prints the live URL and the PIDs. Manage the daemons:
    runs `pip check`, and performs an import smoke test. Its wheel cache is
    `.venv/pip-cache` (a root-owned `~/.cache/pip` breaks installs in sandboxed
    homes).
-2. **Frontend build** — `npm install` (writable `--cache /tmp/npm-cache`)
+2. **Frontend build** — `npm ci` (writable `--cache /tmp/npm-cache`)
    then `npm run build` → `frontend/dist`, which the backend serves at `/`.
 3. **Migrations + admin seed** — `alembic upgrade head` and
    `app.infrastructure.seed` against the configured database.
@@ -121,7 +121,7 @@ python3 -m venv .venv
 # Windows PowerShell (from the repository root):
 py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe backend/scripts/install_backend_dependencies.py --cache .venv\pip-cache
-npm install --prefix frontend --cache /tmp/npm-cache   # once
+npm ci --prefix frontend --cache /tmp/npm-cache        # once
 npm run build --prefix frontend
 
 (cd backend && ../.venv/bin/python -m alembic upgrade head)
@@ -170,7 +170,7 @@ the same `DATABASE_URL`/storage vars.
 | `attempt to write a readonly database` | The DB file sits under a root-owned `data/`. Use `KOI_DATA_ROOT=backend/data` (the default) or chown the path. |
 | `address already in use` on 8000 | A legacy deployment owns 8000. Use `KOI_PORT=8010` (the default) or stop the other process. |
 | Backend dependency installation fails with `Permission denied` on the cache | Set the installer `--cache` inside the workspace (the deploy script does) or point `PIP_CACHE`. |
-| `npm install` fails writing `~/.npm` | Use `--cache /tmp/npm-cache` (the script does). |
+| `npm ci` fails writing `~/.npm` | Use `--cache /tmp/npm-cache` (the script does). |
 | Backend engine imports fail | Re-run `backend/scripts/install_backend_dependencies.py`; it applies the tested compatibility wheel metadata and import smoke test. |
 | Parse failure shows `(KeyError)` | Engine-side issue in parse-video-py (e.g. douyin `/note/` 图集 pages are filtered by douyin risk control, `reason: 8`); a normal video link should still parse. The class name is a diagnostic hint, not raw text. |
 | API healthy but the frontend is stale | Hard-refresh the browser; the backend serves `frontend/dist` from disk per request. |

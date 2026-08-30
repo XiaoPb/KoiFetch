@@ -18,6 +18,8 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BUILDER = REPO_ROOT / "backend" / "scripts" / "build_compatible_wheels.py"
 INSTALLER = REPO_ROOT / "backend" / "scripts" / "install_backend_dependencies.py"
+AUDIT_SCRIPT = REPO_ROOT / "backend" / "scripts" / "audit_backend_dependencies.py"
+CONSTRAINTS = REPO_ROOT / "backend" / "constraints.txt"
 DOCKERFILE = REPO_ROOT / "backend" / "Dockerfile"
 REQUIREMENTS = REPO_ROOT / "backend" / "requirements.txt"
 DEPLOY_NATIVE = REPO_ROOT / "deploy-native.sh"
@@ -50,6 +52,24 @@ def _wheel(path: Path, metadata: str) -> None:
         for name, value in files.items():
             archive.writestr(name, value)
         archive.writestr(f"{dist_info}/RECORD", "")
+
+
+def _named_wheel(path: Path, name: str, version: str, metadata: str) -> None:
+    dist_info = f"{name.replace('-', '_')}-{version}.dist-info"
+    files = {
+        f"{name}/__init__.py": b"VALUE = 1\n",
+        f"{dist_info}/METADATA": metadata.encode(),
+        f"{dist_info}/WHEEL": (
+            "Wheel-Version: 1.0\n"
+            "Generator: test\n"
+            "Root-Is-Purelib: true\n"
+            "Tag: py3-none-any\n"
+        ).encode(),
+        f"{dist_info}/RECORD": b"",
+    }
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+        for entry, value in files.items():
+            archive.writestr(entry, value)
 
 
 def _record_entries(path: Path) -> dict[str, tuple[str, str]]:
@@ -88,6 +108,78 @@ def test_rewrite_wheel_updates_metadata_and_rebuilds_record(tmp_path):
             encoded = base64.urlsafe_b64encode(hashlib.sha256(content).digest()).rstrip(b"=")
             assert digest == f"sha256={encoded.decode()}"
             assert size == str(len(content))
+
+
+@pytest.mark.parametrize(
+    "entry_name",
+    ["/absolute.txt", "..\\outside.txt", "../outside.txt", "safe/../outside.txt"],
+)
+def test_rewrite_wheel_rejects_unsafe_zip_paths(tmp_path, entry_name):
+    builder = _load_builder()
+    source = tmp_path / "sample-1.0.0-py3-none-any.whl"
+    _wheel(source, "Metadata-Version: 2.1\nName: sample\nVersion: 1.0.0\n")
+    with zipfile.ZipFile(source, "a") as archive:
+        archive.writestr(entry_name, b"unsafe")
+    with pytest.raises(RuntimeError, match="unsafe wheel entry path"):
+        builder.rewrite_wheel(source, tmp_path / "out")
+
+
+def test_rewrite_wheel_rejects_duplicate_entries_and_ambiguous_dist_info(tmp_path):
+    builder = _load_builder()
+    duplicate = tmp_path / "duplicate-1.0.0-py3-none-any.whl"
+    _wheel(duplicate, "Metadata-Version: 2.1\nName: sample\nVersion: 1.0.0\n")
+    with zipfile.ZipFile(duplicate, "a") as archive:
+        archive.writestr("sample-1.0.0.dist-info/METADATA", b"duplicate")
+    with pytest.raises(RuntimeError, match="duplicate wheel entry"):
+        builder.rewrite_wheel(duplicate, tmp_path / "out-duplicate")
+
+    ambiguous = tmp_path / "ambiguous-1.0.0-py3-none-any.whl"
+    with zipfile.ZipFile(ambiguous, "w") as archive:
+        for dist_info in ("sample-1.0.0.dist-info", "other-1.0.0.dist-info"):
+            archive.writestr(f"{dist_info}/METADATA", b"Metadata-Version: 2.1\n")
+            archive.writestr(f"{dist_info}/RECORD", b"")
+    with pytest.raises(RuntimeError, match="exactly one dist-info"):
+        builder.rewrite_wheel(ambiguous, tmp_path / "out-ambiguous")
+
+
+def test_rewrite_wheel_validates_expected_filename_and_metadata_identity(tmp_path):
+    builder = _load_builder()
+    source = tmp_path / "f2-0.0.1.7-py3-none-any.whl"
+    _named_wheel(
+        source,
+        "f2",
+        "0.0.1.7",
+        "Metadata-Version: 2.4\nName: f2\nVersion: 0.0.1.7\n",
+    )
+    expected = builder.WheelSpec("f2", "0.0.1.7", "https://example.invalid/f2.whl", "0" * 64)
+    output = builder.rewrite_wheel(source, tmp_path / "out", expected_spec=expected)
+    assert output.is_file()
+
+    wrong_name = tmp_path / "f2-0.0.1.7-py3-none-any.whl"
+    _named_wheel(
+        wrong_name,
+        "other",
+        "0.0.1.7",
+        "Metadata-Version: 2.4\nName: other\nVersion: 0.0.1.7\n",
+    )
+    with pytest.raises(RuntimeError, match="wheel metadata Name"):
+        builder.rewrite_wheel(wrong_name, tmp_path / "out-wrong", expected_spec=expected)
+
+
+def test_metadata_rewrite_uses_exact_pep508_names_and_rejects_unsupported_shapes():
+    builder = _load_builder()
+    with pytest.raises(RuntimeError, match="unreviewed f2 runtime dependency: cryptography-extra"):
+        builder._rewrite_metadata(
+            "f2",
+            b"Metadata-Version: 2.4\nName: f2\nVersion: 0.0.1.7\n"
+            b"Requires-Dist: cryptography-extra==1\n",
+        )
+    with pytest.raises(RuntimeError, match="extras or markers"):
+        builder._rewrite_metadata(
+            "f2",
+            b"Metadata-Version: 2.4\nName: f2\nVersion: 0.0.1.7\n"
+            b"Requires-Dist: cryptography[foo]==44.0.0\n",
+        )
 
 
 def test_pinned_upstream_wheels_and_security_rewrite_contracts():
@@ -131,6 +223,7 @@ def test_f2_rewrite_preserves_each_reviewed_runtime_requirement_and_drops_only_d
     upstream = (
         "Metadata-Version: 2.4\n"
         "Name: f2\n"
+        "Version: 0.0.1.7\n"
         "Requires-Dist: aiofiles==24.1.0\n"
         "Requires-Dist: aiosqlite==0.20.0\n"
         "Requires-Dist: babel==2.13.0\n"
@@ -171,14 +264,15 @@ def test_f2_rewrite_fails_closed_for_unreviewed_runtime_dependency():
     with pytest.raises(RuntimeError, match="unreviewed f2 runtime dependency: requests"):
         builder._rewrite_metadata(
             "f2",
-            b"Metadata-Version: 2.4\nName: f2\nRequires-Dist: requests==2.32.0\n",
+            b"Metadata-Version: 2.4\nName: f2\nVersion: 0.0.1.7\n"
+            b"Requires-Dist: requests==2.32.0\n",
         )
 
 
 def test_metadata_diff_is_narrow_and_hash_mismatch_fails_closed(tmp_path, monkeypatch):
     builder = _load_builder()
     original = (
-        b"Metadata-Version: 2.1\nName: musicdl\n"
+        b"Metadata-Version: 2.1\nName: musicdl\nVersion: 2.13.6\n"
         b"Requires-Dist: cryptography<47,>=46.0.5\n"
         b"Requires-Dist: requests\n"
     )
@@ -188,7 +282,7 @@ def test_metadata_diff_is_narrow_and_hash_mismatch_fails_closed(tmp_path, monkey
     assert "cryptography<47" not in rewritten
     f2_metadata = builder._rewrite_metadata(
         "f2",
-        b"Metadata-Version: 2.1\nName: f2\n"
+        b"Metadata-Version: 2.1\nName: f2\nVersion: 0.0.1.7\n"
         b"Requires-Dist: aiofiles==24.1.0\n"
         b"Requires-Dist: pytest==8.3.4\n"
         b"Requires-Dist: cryptography==44.0.0\n",
@@ -221,9 +315,12 @@ def test_install_entrypoints_build_compat_wheels_before_pip_audit_and_checks():
     assert "patch_musicdl_py310.py" in installer
     assert "--no-deps" not in installer
     assert "pip check" in installer
+    assert "constraints.txt" in installer
     assert "import f2.exceptions" in installer and "import musicdl" in installer
     assert "cryptography>=50.0.1,<51" in requirements
     assert "python backend/scripts/install_backend_dependencies.py" in docker
+    assert "backend/constraints.txt" in docker
+    assert "--skip-smoke" in docker
     assert "pip install --no-cache-dir -r requirements.txt" not in docker
     assert "pip_audit" not in installer
 
@@ -231,6 +328,16 @@ def test_install_entrypoints_build_compat_wheels_before_pip_audit_and_checks():
 def test_docker_image_contains_cookie_migration_script():
     docker = DOCKERFILE.read_text(encoding="utf-8")
     assert "backend/scripts/encrypt_platform_cookies.py" in docker
+    assert docker.index("COPY backend/requirements.txt") < docker.index("COPY backend/app")
+    assert docker.index("COPY backend/app") < docker.index("from musicdl import musicdl")
+
+
+def test_backend_constraints_lock_the_runtime_and_reviewed_wheels():
+    constraints = CONSTRAINTS.read_text(encoding="utf-8")
+    assert "packaging==26.3" in constraints
+    assert "f2==0.0.1.7" in constraints
+    assert "musicdl==2.13.6" in constraints
+    assert "parse-video-py" in constraints and "exact commit" in constraints
 
 
 def test_native_deploy_uses_only_the_unified_dependency_installer():
@@ -240,6 +347,8 @@ def test_native_deploy_uses_only_the_unified_dependency_installer():
     assert 'pip install -r "$ROOT/backend/requirements.txt"' not in deploy
     assert "patch_musicdl_py310.py" not in deploy
     assert "install_f2.sh" not in deploy
+    assert "npm ci --prefix frontend --cache \"$NPM_CACHE\"" in deploy
+    assert "[ ! -d \"$ROOT/frontend/node_modules\" ]" not in deploy
 
 
 @pytest.mark.integration
@@ -273,7 +382,7 @@ def test_live_clean_venv_installs_and_smoke_tests_real_application(monkeypatch, 
         env=environment,
     )
     subprocess.run(
-        [str(python), "-m", "pip_audit"],
+        [str(python), str(AUDIT_SCRIPT)],
         check=True,
         cwd=REPO_ROOT,
         env=environment,

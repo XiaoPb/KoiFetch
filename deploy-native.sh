@@ -80,10 +80,8 @@ start() {
 
   # --- 4. frontend build -------------------------------------------------
   if [ "${SKIP_DEPS:-0}" != "1" ] && [ "${SKIP_FRONTEND:-0}" != "1" ]; then
-    if [ ! -d "$ROOT/frontend/node_modules" ]; then
-      log "installing frontend dependencies"
-      npm install --prefix frontend --cache "$NPM_CACHE"
-    fi
+    log "installing frontend dependencies"
+    npm ci --prefix frontend --cache "$NPM_CACHE"
     log "building frontend"
     npm run build --prefix frontend
   fi

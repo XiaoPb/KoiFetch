@@ -4,7 +4,8 @@ The upstream ``musicdl`` and ``f2`` wheels are pure Python, so their package
 code can be reused without running an unreviewed build.  This script downloads
 the exact upstream wheel, verifies its SHA-256, rewrites only dependency
 metadata that is incompatible with Koi Fetch's tested dependency set, and
-rebuilds ``RECORD``.  It intentionally uses only the Python standard library.
+rebuilds ``RECORD``.  ``packaging`` is used for standards-compliant wheel and
+requirement parsing and is installed explicitly by the backend installer.
 """
 
 from __future__ import annotations
@@ -12,16 +13,21 @@ from __future__ import annotations
 import argparse
 import base64
 import csv
+from email.parser import BytesParser
+from email.policy import compat32
 import hashlib
 import io
 import os
-import re
 import shutil
 import tempfile
 import urllib.request
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
+
+from packaging.requirements import InvalidRequirement, Requirement
+from packaging.utils import InvalidWheelFilename, canonicalize_name, parse_wheel_filename
+from packaging.version import InvalidVersion, Version
 
 MUSICDL_CRYPTOGRAPHY_REQUIREMENT = "cryptography<51,>=50.0.1"
 
@@ -102,27 +108,91 @@ def _download(spec: WheelSpec, cache_dir: Path) -> Path:
     return destination
 
 
-def _rewrite_metadata(package: str, raw: bytes) -> bytes:
-    text = raw.decode("utf-8")
+def _metadata_message(raw: bytes):
+    try:
+        message = BytesParser(policy=compat32).parsebytes(raw)
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise RuntimeError("invalid wheel metadata") from exc
+    if message.defects:
+        raise RuntimeError(f"invalid wheel metadata defects: {message.defects[0]}")
+    names = message.get_all("Name", [])
+    versions = message.get_all("Version", [])
+    if len(names) != 1 or len(versions) != 1 or not names[0].strip():
+        raise RuntimeError("wheel metadata must contain exactly one Name and Version")
+    try:
+        Version(versions[0].strip())
+    except InvalidVersion as exc:
+        raise RuntimeError("invalid wheel metadata Version") from exc
+    return message, names[0].strip(), versions[0].strip()
+
+
+def _requirement(text: str, *, reject_semantics: bool = False) -> Requirement:
+    try:
+        requirement = Requirement(text)
+    except InvalidRequirement as exc:
+        raise RuntimeError(f"invalid wheel dependency requirement: {text}") from exc
+    if reject_semantics and (requirement.extras or requirement.marker is not None):
+        raise RuntimeError(
+            "wheel dependency extras or markers are unsupported for compatibility rewrite"
+        )
+    return requirement
+
+
+def _rewrite_metadata(
+    package: str,
+    raw: bytes,
+    *,
+    expected_name: str | None = None,
+    expected_version: str | None = None,
+) -> bytes:
+    _message, metadata_name, metadata_version = _metadata_message(raw)
+    if expected_name is not None and canonicalize_name(metadata_name) != canonicalize_name(
+        expected_name
+    ):
+        raise RuntimeError(
+            f"wheel metadata Name {metadata_name!r} does not match {expected_name!r}"
+        )
+    if expected_version is not None and Version(metadata_version) != Version(expected_version):
+        raise RuntimeError(
+            f"wheel metadata Version {metadata_version!r} does not match {expected_version!r}"
+        )
+
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise RuntimeError("wheel metadata is not valid UTF-8") from exc
     lines = text.splitlines(keepends=True)
     rewritten: list[str] = []
+    previous_requires_dist = False
     for line in lines:
-        if package == "f2" and line.startswith("Requires-Dist:"):
-            requirement = line.partition(":")[2].strip()
-            dependency_name = re.split(r"[<>=!~;\s]", requirement, maxsplit=1)[0].lower()
+        if previous_requires_dist and line[:1].isspace():
+            raise RuntimeError("folded Requires-Dist metadata is unsupported")
+        previous_requires_dist = False
+        if line.lower().startswith("requires-dist:"):
+            requirement = _requirement(
+                line.partition(":")[2].strip(), reject_semantics=package == "f2"
+            )
+            dependency_name = canonicalize_name(requirement.name)
             replacement = _F2_COMPAT_REQUIREMENTS.get(dependency_name)
-            if replacement is None:
-                if dependency_name in _F2_DEV_REQUIREMENTS:
-                    # Development-only requirements are intentionally absent
-                    # from the runtime compatibility wheel.
-                    continue
-                raise RuntimeError(
-                    f"unreviewed f2 runtime dependency: {dependency_name}"
+            previous_requires_dist = True
+            if package == "f2":
+                # Require every f2 runtime dependency to be explicitly reviewed.
+                if replacement is None:
+                    if dependency_name in _F2_DEV_REQUIREMENTS:
+                        continue
+                    raise RuntimeError(
+                        f"unreviewed f2 runtime dependency: {dependency_name}"
+                    )
+                line = f"Requires-Dist: {replacement}\n"
+            elif package == "musicdl" and dependency_name == "cryptography":
+                ending = "\r\n" if line.endswith("\r\n") else "\n"
+                extras = (
+                    "[" + ",".join(sorted(requirement.extras)) + "]"
+                    if requirement.extras
+                    else ""
                 )
-            line = f"Requires-Dist: {replacement}\n"
-        if package == "musicdl" and line.startswith("Requires-Dist: cryptography"):
-            ending = "\r\n" if line.endswith("\r\n") else "\n"
-            line = f"Requires-Dist: {MUSICDL_CRYPTOGRAPHY_REQUIREMENT}{ending}"
+                marker = f"; {requirement.marker}" if requirement.marker else ""
+                line = f"Requires-Dist: cryptography{extras}<51,>=50.0.1{marker}{ending}"
         rewritten.append(line)
     return "".join(rewritten).encode("utf-8")
 
@@ -139,23 +209,96 @@ def rewrite_wheel(
     *,
     package: str | None = None,
     remove_dependencies: bool = False,
+    expected_spec: WheelSpec | None = None,
 ) -> Path:
     """Rewrite one pure-Python wheel and return the rebuilt wheel path."""
     output_dir.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(source) as archive:
+        names = archive.namelist()
+        if len(names) != len(set(names)):
+            raise RuntimeError("duplicate wheel entry")
+        for name in names:
+            parts = name.split("/")
+            if (
+                not name
+                or name.startswith(("/", "\\"))
+                or name[:2].isalpha() and name[2:3] == ":"
+                or "\\" in name
+                or ".." in parts
+            ):
+                raise RuntimeError(f"unsafe wheel entry path: {name!r}")
         entries = {
             name: archive.read(name)
-            for name in archive.namelist()
+            for name in names
             if not name.endswith("/")
         }
-    metadata_name = next(name for name in entries if name.endswith(".dist-info/METADATA"))
-    record_name = next(name for name in entries if name.endswith(".dist-info/RECORD"))
+    dist_info_dirs = {
+        "/".join(name.split("/")[: index + 1])
+        for name in names
+        for index, part in enumerate(name.split("/"))
+        if part.endswith(".dist-info")
+    }
+    if len(dist_info_dirs) != 1:
+        raise RuntimeError("wheel must contain exactly one dist-info directory")
+    metadata_names = [name for name in names if name.endswith(".dist-info/METADATA")]
+    record_names = [name for name in names if name.endswith(".dist-info/RECORD")]
+    if len(metadata_names) != 1:
+        raise RuntimeError("wheel must contain exactly one METADATA")
+    if len(record_names) != 1:
+        raise RuntimeError("wheel must contain exactly one RECORD")
+    metadata_name = metadata_names[0]
+    record_name = record_names[0]
     package_name = package or metadata_name.split("/")[0].split("-")[0].lower()
+    _message, metadata_identity_name, metadata_identity_version = _metadata_message(
+        entries[metadata_name]
+    )
+    if expected_spec is not None:
+        expected_filename = (
+            f"{expected_spec.name}-{expected_spec.version}-py3-none-any.whl"
+        )
+        if source.name != expected_filename:
+            raise RuntimeError(
+                f"compatibility wheel filename must be {expected_filename}, got {source.name}"
+            )
+        try:
+            wheel_name, wheel_version, _build, tags = parse_wheel_filename(source.name)
+        except InvalidWheelFilename as exc:
+            raise RuntimeError(f"invalid compatibility wheel filename: {source.name}") from exc
+        if canonicalize_name(str(wheel_name)) != canonicalize_name(expected_spec.name):
+            raise RuntimeError("wheel filename distribution does not match expected package")
+        if Version(str(wheel_version)) != Version(expected_spec.version):
+            raise RuntimeError("wheel filename version does not match expected package")
+        if {str(tag) for tag in tags} != {"py3-none-any"}:
+            raise RuntimeError("compatibility wheel must be tagged py3-none-any")
+        if canonicalize_name(metadata_identity_name) != canonicalize_name(expected_spec.name):
+            raise RuntimeError(
+                f"wheel metadata Name {metadata_identity_name!r} does not match "
+                f"{expected_spec.name!r}"
+            )
+        if Version(metadata_identity_version) != Version(expected_spec.version):
+            raise RuntimeError("wheel metadata Version does not match expected package")
+        dist_info_stem = Path(next(iter(dist_info_dirs))).name.removesuffix(".dist-info")
+        if canonicalize_name(dist_info_stem.rsplit("-", 1)[0]) != canonicalize_name(
+            expected_spec.name
+        ):
+            raise RuntimeError("wheel dist-info distribution does not match expected package")
     metadata = entries[metadata_name]
     if remove_dependencies:
-        metadata = _rewrite_metadata("f2", metadata)
+        metadata = _rewrite_metadata(
+            "f2",
+            metadata,
+            expected_name=expected_spec.name if expected_spec else None,
+            expected_version=expected_spec.version if expected_spec else None,
+        )
     elif package_name == "musicdl":
-        metadata = _rewrite_metadata("musicdl", metadata)
+        metadata = _rewrite_metadata(
+            "musicdl",
+            metadata,
+            expected_name=expected_spec.name if expected_spec else None,
+            expected_version=expected_spec.version if expected_spec else None,
+        )
+    else:
+        _metadata_message(metadata)
     entries[metadata_name] = metadata
 
     record_rows: list[list[str]] = []
@@ -201,6 +344,7 @@ def build_compatible_wheels(output_dir: Path, cache_dir: Path | None = None) -> 
                     output_dir,
                     package=package,
                     remove_dependencies=package == "f2",
+                    expected_spec=spec,
                 )
             )
         return results

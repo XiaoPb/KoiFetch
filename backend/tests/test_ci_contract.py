@@ -15,6 +15,7 @@ OPERATIONS_FILE = REPO_ROOT / "OPERATIONS.md"
 RELEASE_FILE = REPO_ROOT / "RELEASE-CHECKLIST.md"
 DEPLOYMENT_FILE = REPO_ROOT / "docs" / "deployment.md"
 README_FILE = REPO_ROOT / "README.md"
+AUDIT_SCRIPT = REPO_ROOT / "backend" / "scripts" / "audit_backend_dependencies.py"
 
 
 def _workflow_run_text() -> str:
@@ -34,23 +35,36 @@ def _index(text: str, needle: str) -> int:
 
 
 def test_ci_audits_python_and_javascript_dependencies_in_gate_order():
-    text = _workflow_run_text()
+    workflow = yaml.safe_load(CI_FILE.read_text(encoding="utf-8"))
+    backend_text = "\n".join(
+        str(step["run"])
+        for step in workflow["jobs"]["backend"]["steps"]
+        if isinstance(step, dict) and step.get("run")
+    )
+    audit_text = "\n".join(
+        str(step["run"])
+        for step in workflow["jobs"]["audit"]["steps"]
+        if isinstance(step, dict) and step.get("run")
+    )
+    text = backend_text + "\n" + audit_text + "\n" + _workflow_run_text()
     backend_install = _index(
-        text, "python backend/scripts/install_backend_dependencies.py"
+        backend_text, "python backend/scripts/install_backend_dependencies.py"
     )
     audit_install = re.search(
-        r"python -m pip install pip-audit==[0-9]+\.[0-9]+\.[0-9]+", text
+        r"python -m pip install pip-audit==[0-9]+\.[0-9]+\.[0-9]+", audit_text
     )
     assert audit_install, "pip-audit must be installed at a pinned version"
-    python_audit = _index(text, "python -m pip_audit")
+    python_audit = _index(audit_text, "python backend/scripts/audit_backend_dependencies.py")
     npm_ci = _index(text, "npm ci --prefix frontend")
     npm_audit = _index(text, "npm audit --prefix frontend --audit-level=high")
     frontend_tests = _index(text, "npm test --prefix frontend")
     frontend_build = _index(text, "npm run build --prefix frontend")
 
-    assert backend_install < audit_install.start() < python_audit
+    assert backend_install < _index(backend_text, "python -m pytest backend/tests -q")
+    assert audit_install.start() < python_audit
     assert npm_ci < npm_audit < frontend_tests < frontend_build
     assert "python -m pip_audit -r" not in text
+    assert "python -m pip_audit" not in text
 
 
 def test_ci_keeps_engine_self_test_and_backend_gate_without_masking_failures():
@@ -103,7 +117,7 @@ def test_operations_runbook_covers_cookie_migration_and_security_boundaries():
         "shared music/preview client",
         "no caller-supplied music URL",
         "^20.19.0 || ^22.13.0 || >=24.0.0",
-        "python -m pip_audit",
+        "python backend/scripts/audit_backend_dependencies.py",
         "npm audit --prefix frontend --audit-level=high",
         "install_backend_dependencies.py",
         "cryptography>=50.0.1,<51",
@@ -139,7 +153,7 @@ def test_readme_install_guidance_uses_the_unified_backend_installer():
 def test_release_checklist_has_executable_security_rows_without_secrets():
     text = RELEASE_FILE.read_text(encoding="utf-8")
     required = (
-        "python -m pip_audit",
+        "python backend/scripts/audit_backend_dependencies.py",
         "npm audit --prefix frontend --audit-level=high",
         "python backend/scripts/encrypt_platform_cookies.py",
         "backup DB and COOKIE_ENCRYPTION_KEY",
@@ -164,3 +178,49 @@ def test_release_docs_use_dynamic_statuses_and_current_runtime_scope():
     for stale in ("637 passed", "147 passed", "Docker is not installed"):
         assert stale not in release
     assert "Exit 0; no test failures" in release
+
+
+def test_audit_wrapper_rejects_unknown_skipped_packages():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("audit_backend_dependencies", AUDIT_SCRIPT)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    with pytest.raises(RuntimeError, match="unexpected pip-audit skip set"):
+        module.validate_audit_payload(
+            [
+                {"name": "parse-video-py", "version": "1", "skip_reason": "VCS"},
+                {"name": "new-unreviewed-package", "version": "1", "skip_reason": "unknown"},
+            ]
+        )
+
+
+def test_audit_wrapper_requires_the_exact_parse_video_git_source():
+    import importlib.util
+    import json
+
+    spec = importlib.util.spec_from_file_location("audit_backend_dependencies", AUDIT_SCRIPT)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    class Distribution:
+        metadata = {"Name": "parse-video-py"}
+
+        def read_text(self, name):
+            assert name == "direct_url.json"
+            return json.dumps(
+                {
+                    "url": module.PARSE_VIDEO_URL,
+                    "vcs_info": {"vcs": "git", "commit_id": module.PARSE_VIDEO_COMMIT},
+                }
+            )
+
+    module.validate_vcs_installs([Distribution()])
+    bad = Distribution()
+    bad.read_text = lambda _name: json.dumps(
+        {"url": module.PARSE_VIDEO_URL, "vcs_info": {"vcs": "git", "commit_id": "wrong"}}
+    )
+    with pytest.raises(RuntimeError, match="approved URL/commit"):
+        module.validate_vcs_installs([bad])

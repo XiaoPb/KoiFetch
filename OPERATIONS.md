@@ -34,8 +34,7 @@ python3 -m venv .venv                                  # create the virtualenv (
 py -3.12 -m venv .venv                                  # create the virtualenv (once)
 .\.venv\Scripts\python.exe backend/scripts/install_backend_dependencies.py --cache .venv\pip-cache
 
-npm install --prefix frontend                          # frontend deps (once)
-#   or, since package-lock.json is committed: npm ci --prefix frontend
+npm ci --prefix frontend                               # frontend deps (once)
 ```
 
 Activating the venv (`.venv\Scripts\Activate.ps1` in PowerShell on Windows,
@@ -256,7 +255,7 @@ frontend builds.
 CI runs both dependency audits after lock/requirements installation:
 
 ```bash
-python -m pip_audit
+python backend/scripts/audit_backend_dependencies.py
 npm audit --prefix frontend --audit-level=high
 ```
 

@@ -32,20 +32,14 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: backend/requirements.txt
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/constraints.txt
 
       # Full dependency install (incl. git-installed parse-video-py and the
       # verified compatibility wheels) exactly as the runtime image does.
       - name: Install backend dependencies
         run: python backend/scripts/install_backend_dependencies.py
-
-      # Keep the audit tool out of the production image while making the CI
-      # gate reproducible.  The version is pinned to the current PyPI release.
-      - name: Install pinned Python dependency auditor
-        run: python -m pip install pip-audit==2.10.1
-
-      - name: Audit Python dependencies
-        run: python -m pip_audit
 
       # This opt-in contract creates a separate temporary venv, reruns the
       # unified installer, and performs pip-check plus real application imports.
@@ -56,6 +50,32 @@ jobs:
 
       - name: Run backend test suite
         run: python -m pytest backend/tests -q
+
+  audit:
+    name: Audited backend environment
+    needs: backend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/constraints.txt
+
+      # Keep pip-audit in an environment that is never used by the backend
+      # tests. The wrapper enforces the exact VCS and skip-review contract.
+      - name: Install backend dependencies for audit
+        run: python backend/scripts/install_backend_dependencies.py --skip-smoke
+
+      - name: Install pinned Python dependency auditor
+        run: python -m pip install pip-audit==2.10.1
+
+      - name: Audit Python dependencies
+        run: python backend/scripts/audit_backend_dependencies.py
 
   frontend:
     name: Frontend tests + build
