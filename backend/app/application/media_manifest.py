@@ -7,6 +7,7 @@ with same-origin, index-addressed proxy routes for API responses.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from pydantic import ValidationError
@@ -24,6 +25,11 @@ __all__ = [
 
 _MESSAGE_MANIFEST_MISSING = "媒体清单不存在 / Media manifest is missing"
 _MESSAGE_MANIFEST_INVALID = "媒体清单无效 / Invalid media manifest"
+_MESSAGE_PUBLIC_METADATA_UNAVAILABLE = "metadata unavailable"
+_UNSAFE_PUBLIC_TEXT = re.compile(
+    r"(?i)(?:[a-z][a-z0-9+.-]{1,31}://|//[^\s]+|"
+    r"(?<![\w-])(?:access[_-]?token|auth|expires|key|secret|sig(?:nature)?|token)=)"
+)
 
 
 class ManifestError(ValueError):
@@ -86,6 +92,13 @@ def validate_manifest_media_type(manifest: MediaManifest, media_type: Any) -> Me
     return manifest
 
 
+def _public_text(value: str) -> str:
+    """Keep ordinary labels while replacing URL/token-bearing values wholly."""
+    if _UNSAFE_PUBLIC_TEXT.search(value):
+        return _MESSAGE_PUBLIC_METADATA_UNAVAILABLE
+    return value
+
+
 def public_manifest(task_id: str, manifest: MediaManifest) -> dict[str, Any]:
     """Project a private manifest to same-origin resource-index routes."""
     base = f"/api/preview/{task_id}/resources"
@@ -96,7 +109,7 @@ def public_manifest(task_id: str, manifest: MediaManifest) -> dict[str, Any]:
                 {
                     "url": f"{base}/video/{index}",
                     "format": item.format,
-                    "quality": item.quality,
+                    "quality": _public_text(item.quality) if item.quality else None,
                 }
                 for index, item in enumerate(manifest.videos)
             ],
@@ -120,7 +133,7 @@ def public_manifest(task_id: str, manifest: MediaManifest) -> dict[str, Any]:
             }
             for index, pair in enumerate(manifest.live_photos)
         ],
-        "warnings": list(manifest.warnings),
+        "warnings": [_public_text(warning) for warning in manifest.warnings],
     }
 
 

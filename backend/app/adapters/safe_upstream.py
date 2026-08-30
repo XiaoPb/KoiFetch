@@ -265,7 +265,7 @@ class SafeUpstreamClient:
                 # Always defer body consumption.  ``open`` applies its cap
                 # itself, and redirects are discarded without being read.
                 response = client.send(request, stream=True)
-            except Exception:
+            except BaseException:
                 _close_resources(client, suppress=True)
                 raise
             if response.is_redirect:

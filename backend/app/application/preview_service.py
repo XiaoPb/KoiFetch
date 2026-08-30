@@ -125,6 +125,18 @@ def _raise_sanitized_proxy_error(
     raise SafeMediaProxyError("media proxy internal failure") from None
 
 
+def _close_stream_safely(close: Callable[[], None], operation: str) -> None:
+    """Best-effort stream cleanup without exposing close-error details."""
+    try:
+        close()
+    except Exception as exc:
+        logger.error(
+            "media proxy cleanup failed operation=%s exception_class=%s",
+            operation,
+            type(exc).__name__,
+        )
+
+
 def _extension_of(url: str) -> str:
     """Lowercase alnum extension of the last path segment (default ``jpg``)."""
     last = url.split("?", 1)[0].rsplit("/", 1)[-1]
@@ -264,7 +276,7 @@ class PreviewService:
                 ),
             )
             if stream.status_code >= 400:
-                stream.close()
+                _close_stream_safely(stream.close, "stream_resource")
                 raise ApiError(
                     HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_UPSTREAM
                 )
@@ -407,7 +419,7 @@ class PreviewService:
         try:
             stream = self._upstream.stream(url, range_header=range_header)
             if stream.status_code >= 400:
-                stream.close()
+                _close_stream_safely(stream.close, "stream_video")
                 raise ApiError(
                     HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_UPSTREAM
                 )
@@ -418,7 +430,7 @@ class PreviewService:
                 "mpegurl" in content_type.lower()
                 or url.split("?", 1)[0].lower().endswith(".m3u8")
             ):
-                stream.close()
+                _close_stream_safely(stream.close, "stream_video")
                 raise ApiError(
                     HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_HLS_UNSUPPORTED
                 )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import socket
 
 import httpx
@@ -374,4 +375,25 @@ def test_explicit_stream_close_closes_client_when_response_close_raises() -> Non
     stream = client.stream("https://cdn.example/file")
     with pytest.raises(RuntimeError, match="response close failed"):
         stream.close()
+    assert transport.closed is True
+
+
+def test_send_closes_client_when_cancellation_is_raised() -> None:
+    class CancelledTransport(httpx.MockTransport):
+        closed = False
+
+        def handle_request(self, request: httpx.Request) -> httpx.Response:
+            raise asyncio.CancelledError()
+
+        def close(self) -> None:
+            self.closed = True
+
+    transport = CancelledTransport(lambda request: httpx.Response(200))
+    client = SafeUpstreamClient(
+        resolver=resolver_for("93.184.216.34"), transport=transport
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        client._send("https://cdn.example/file")
+
     assert transport.closed is True

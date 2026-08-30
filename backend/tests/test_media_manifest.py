@@ -1,8 +1,11 @@
 """Strict domain contracts for previewable media manifests."""
 
+import json
+
 import pytest
 from pydantic import ValidationError
 
+from app.application.media_manifest import public_manifest
 from app.domain import LivePhotoPair, MediaManifest, MediaResource
 
 
@@ -277,3 +280,44 @@ def test_manifest_accepts_only_supported_kinds_and_version():
         MediaManifest(kind="audio", videos=(resource(),))
     with pytest.raises(ValidationError):
         MediaManifest(kind="video", version=2, videos=(resource(),))
+
+
+def test_public_manifest_preserves_safe_quality_and_warning_text():
+    video_manifest = MediaManifest(
+        kind="video",
+        videos=(resource(quality="1080p"),),
+    )
+    live_manifest = MediaManifest(
+        kind="live_photo",
+        live_photos=(LivePhotoPair(image=resource()),),
+        warnings=("quality metadata unavailable",),
+    )
+
+    video_public = public_manifest("task-1", video_manifest)
+    live_public = public_manifest("task-1", live_manifest)
+
+    assert video_public["videos"][0]["quality"] == "1080p"
+    assert live_public["warnings"] == ["quality metadata unavailable"]
+
+
+def test_public_manifest_redacts_url_bearing_quality_and_warning_as_whole_values():
+    secret = "https://cdn.example/private-token?sig=secret"
+    video_manifest = MediaManifest(
+        kind="video",
+        videos=(resource(quality=f"best {secret}"),),
+    )
+    live_manifest = MediaManifest(
+        kind="live_photo",
+        live_photos=(LivePhotoPair(image=resource()),),
+        warnings=(f"failed to load {secret}",),
+    )
+
+    video_public = public_manifest("task-1", video_manifest)
+    live_public = public_manifest("task-1", live_manifest)
+    serialized = json.dumps([video_public, live_public])
+
+    assert "cdn.example" not in serialized
+    assert "private-token" not in serialized
+    assert "sig=secret" not in serialized
+    assert video_public["videos"][0]["quality"] == "metadata unavailable"
+    assert live_public["warnings"] == ["metadata unavailable"]
