@@ -104,6 +104,7 @@ from app.domain import (
     DownloadResult,
     DownloadStatus,
     MediaType,
+    AssetSelector,
 )
 from app.infrastructure.database import session_scope
 from app.infrastructure.models import DownloadTask, ParseTask
@@ -177,6 +178,7 @@ class DownloadService:
         task_id: str,
         format: str | None = None,
         quality: str | None = None,
+        selector: AssetSelector | None = None,
     ) -> DownloadResult:
         """Create a ``pending`` download row for an existing parse task.
 
@@ -186,7 +188,12 @@ class DownloadService:
         for a blank selection or malformed task_id.
         """
         try:
-            command = DownloadCommand(task_id=task_id, format=format, quality=quality)
+            command = DownloadCommand(
+                task_id=task_id,
+                format=format,
+                quality=quality,
+                asset_selector=selector,
+            )
         except ValidationError as exc:
             raise ApiError(
                 HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_INVALID_SUBMIT
@@ -214,13 +221,25 @@ class DownloadService:
                     CODE_TASK_ALREADY_DOWNLOADING,
                     _MESSAGE_TASK_ALREADY_DOWNLOADING,
                 )
-            completed_variant = session.scalar(
-                select(DownloadTask).where(
-                    DownloadTask.task_id == command.task_id,
-                    DownloadTask.status == DownloadStatus.COMPLETED,
-                    DownloadTask.format == command.format,
-                    DownloadTask.quality == command.quality,
-                )
+            selector_data = (
+                command.asset_selector.model_dump(mode="json")
+                if command.asset_selector is not None
+                else None
+            )
+            completed_variant = next(
+                (
+                    row
+                    for row in session.scalars(
+                        select(DownloadTask).where(
+                            DownloadTask.task_id == command.task_id,
+                            DownloadTask.status == DownloadStatus.COMPLETED,
+                            DownloadTask.format == command.format,
+                            DownloadTask.quality == command.quality,
+                        )
+                    )
+                    if row.asset_selector == selector_data
+                ),
+                None,
             )
             if completed_variant is not None:
                 raise ApiError(
@@ -235,6 +254,7 @@ class DownloadService:
                 title=parse_task.title,
                 format=command.format,
                 quality=command.quality,
+                asset_selector=selector_data,
                 status=DownloadStatus.PENDING,
                 progress=0.0,
                 retry_count=0,

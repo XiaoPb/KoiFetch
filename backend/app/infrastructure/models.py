@@ -227,6 +227,7 @@ class DownloadTask(Base):
     title: Mapped[str | None] = mapped_column(String(512))
     format: Mapped[str | None] = mapped_column(String(64))
     quality: Mapped[str | None] = mapped_column(String(64))
+    asset_selector: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     status: Mapped[DownloadStatus] = mapped_column(
         enum_column(DownloadStatus, 16),
         nullable=False,

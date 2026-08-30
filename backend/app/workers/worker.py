@@ -79,11 +79,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
+import shutil
+import tempfile
 import threading
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
+import zipfile
 
 from sqlalchemy import Engine, select, update
 from sqlalchemy.orm import selectinload
@@ -94,6 +98,7 @@ from app.adapters.protocols import (
     OneTimeTokenProvider,
     StorageAdapter,
 )
+from app.adapters.engine_errors import EngineDownloadError
 from app.api.responses import CODE_FILE_NOT_DOWNLOADED
 from app.application.download_events import DownloadEventHub
 from app.application.download_service import DownloadService, IssuedDownloadToken
@@ -102,8 +107,14 @@ from app.domain import (
     DownloadProgress,
     DownloadResult,
     DownloadStatus,
+    AssetSelector,
     MediaType,
     transition,
+)
+from app.application.media_manifest import (
+    ManifestError,
+    load_manifest,
+    validate_manifest_media_type,
 )
 from app.domain.paths import slugify
 from app.infrastructure.database import session_scope
@@ -230,24 +241,56 @@ def _execute_download(
             )
             return
         media_type = row.parse_task.media_type
-        command = DownloadCommand(
-            task_id=row.task_id, format=row.format, quality=row.quality
-        )
-        target = storage.resolve_bubble(media_type, _bubble_filename(row, media_type))
+        try:
+            selector = _selector_from_row(row)
+        except Exception as exc:
+            fallback_type = (
+                MediaType.IMAGE if media_type is MediaType.LIVE_PHOTO else media_type
+            )
+            target = storage.resolve_bubble(
+                fallback_type, _bubble_filename(row, fallback_type)
+            )
+            _record_failure(engine, event_hub, download_id, exc, max_retries, target)
+            return
+        storage_type = _storage_media_type(media_type, selector)
+        target = storage.resolve_bubble(storage_type, _bubble_filename(row, storage_type))
         title = row.title
+        source_url = row.parse_task.url
+        try:
+            command = DownloadCommand(
+                task_id=row.task_id,
+                format=row.format,
+                quality=row.quality,
+                asset_selector=selector,
+            )
+            effective_type, metadata = _metadata_for_selector(
+                row.parse_task, selector, media_type
+            )
+        except Exception as exc:
+            _record_failure(engine, event_hub, download_id, exc, max_retries, target)
+            return
 
     request = DownloadRequest(
         command=command,
         download_id=download_id,
         target_path=target,
         title=title,
-        media_type=media_type,
-        source_url=row.parse_task.url,
-        metadata=dict(row.parse_task.metadata_ or {}),
+        media_type=effective_type,
+        source_url=source_url,
+        metadata=metadata,
         progress_callback=_progress_callback_for(engine, event_hub, download_id),
     )
     try:
-        result = downloader.download(request)
+        if selector is not None and selector.package is not None:
+            result = _download_package(
+                downloader,
+                request,
+                row.parse_task,
+                selector,
+                target,
+            )
+        else:
+            result = downloader.download(request)
     except Exception as exc:  # the adapter raises on failure
         logger.warning("download %s failed: %s", download_id, exc)
         _record_failure(engine, event_hub, download_id, exc, max_retries, target)
@@ -260,6 +303,174 @@ def _execute_download(
         _record_failure(engine, event_hub, download_id, error, max_retries, target)
         return
     _record_completion(engine, service, event_hub, download_id, result, target)
+
+
+def _selector_from_row(row: DownloadTask) -> AssetSelector | None:
+    """Strictly reconstruct a persisted selector; never log its raw payload."""
+    if row.asset_selector is None:
+        return None
+    try:
+        return AssetSelector.model_validate(row.asset_selector)
+    except Exception as exc:
+        raise EngineDownloadError("下载失败 / Download failed") from exc
+
+
+def _metadata_for_selector(
+    parse_task, selector: AssetSelector | None, media_type: MediaType
+) -> tuple[MediaType, dict]:
+    """Resolve a persisted selector to exact downloader metadata."""
+    metadata = dict(parse_task.metadata_ or {})
+    if selector is None or selector.package is not None or selector.kind == "music":
+        return media_type, metadata
+    try:
+        manifest = validate_manifest_media_type(load_manifest(parse_task), media_type)
+        resource = _resource_for_selector(manifest, selector, media_type)
+    except (ManifestError, IndexError, TypeError, ValueError) as exc:
+        raise EngineDownloadError("下载失败 / Download failed") from exc
+    if selector.kind in {"video", "live_motion"}:
+        metadata["video_url"] = str(resource.url)
+        return MediaType.VIDEO, metadata
+    metadata["images"] = [{"url": str(resource.url)}]
+    metadata.pop("video_url", None)
+    return MediaType.IMAGE, metadata
+
+
+def _storage_media_type(media_type: MediaType, selector: AssetSelector | None) -> MediaType:
+    """Map live-photo selections to the configured image/video storage roots."""
+    if selector is None:
+        return media_type
+    if selector.kind == "live_motion":
+        return MediaType.VIDEO
+    if selector.kind == "live_image" or selector.package == "live_zip":
+        return MediaType.IMAGE
+    return media_type
+
+
+def _resource_for_selector(manifest, selector: AssetSelector, media_type: MediaType):
+    expected_kind = {
+        MediaType.VIDEO: "video",
+        MediaType.IMAGE: "image",
+        MediaType.LIVE_PHOTO: {"live_image", "live_motion"},
+    }[media_type]
+    if manifest.kind != {
+        MediaType.VIDEO: "video",
+        MediaType.IMAGE: "image_album",
+        MediaType.LIVE_PHOTO: "live_photo",
+    }[media_type]:
+        raise ValueError("manifest kind mismatch")
+    if selector.kind == "video":
+        if expected_kind != "video":
+            raise ValueError("selector kind mismatch")
+        return manifest.videos[selector.index]
+    if selector.kind == "image":
+        if expected_kind != "image":
+            raise ValueError("selector kind mismatch")
+        return manifest.images[selector.index]
+    if selector.kind not in {"live_image", "live_motion"} or not isinstance(expected_kind, set):
+        raise ValueError("selector kind mismatch")
+    pair = manifest.live_photos[selector.index]
+    if selector.kind == "live_motion":
+        if pair.motion is None:
+            raise ValueError("live motion is missing")
+        return pair.motion
+    return pair.image
+
+
+def _package_members(parse_task, selector: AssetSelector) -> list[tuple[str, object, MediaType]]:
+    """Resolve package entries in deterministic manifest order."""
+    try:
+        manifest = validate_manifest_media_type(load_manifest(parse_task), parse_task.media_type)
+        if selector.package == "album_zip":
+            if selector.kind != "image":
+                raise ValueError("package selector mismatch")
+            return [
+                (f"image-{index:04d}.{resource.format}", resource, MediaType.IMAGE)
+                for index, resource in enumerate(manifest.images, 1)
+            ]
+        if selector.package == "live_zip":
+            if selector.kind != "live_image":
+                raise ValueError("package selector mismatch")
+            members = []
+            for index, pair in enumerate(manifest.live_photos, 1):
+                members.append((f"live-{index:04d}-image.{pair.image.format}", pair.image, MediaType.IMAGE))
+                if pair.motion is not None:
+                    members.append((f"live-{index:04d}-motion.{pair.motion.format}", pair.motion, MediaType.VIDEO))
+            return members
+    except (ManifestError, IndexError, TypeError, ValueError) as exc:
+        raise EngineDownloadError("下载失败 / Download failed") from exc
+    raise EngineDownloadError("下载失败 / Download failed")
+
+
+def _download_package(
+    downloader: DownloaderAdapter,
+    request: DownloadRequest,
+    parse_task,
+    selector: AssetSelector,
+    target: Path,
+) -> DownloadResult:
+    """Fetch package members and atomically materialize one deterministic ZIP."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp_dir = Path(tempfile.mkdtemp(prefix=f".{request.download_id[:8]}-", dir=target.parent))
+    zip_path = temp_dir / "package.zip"
+    try:
+        members = _package_members(parse_task, selector)
+        names = [name for name, _, _ in members]
+        if len(names) != len(set(names)) or any(
+            Path(name).name != name or name in {".", ".."} for name in names
+        ):
+            raise EngineDownloadError("下载失败 / Download failed")
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_STORED) as archive:
+            for name, resource, effective_type in members:
+                member_path = temp_dir / name
+                command = request.command.model_copy(
+                    update={
+                        "format": resource.format,
+                        "quality": resource.quality,
+                    }
+                )
+                metadata = dict(request.metadata)
+                if effective_type is MediaType.VIDEO:
+                    metadata["video_url"] = str(resource.url)
+                    metadata.pop("images", None)
+                else:
+                    metadata["images"] = [{"url": str(resource.url)}]
+                    metadata.pop("video_url", None)
+                member_request = DownloadRequest(
+                    command=command,
+                    download_id=request.download_id,
+                    target_path=member_path,
+                    title=request.title,
+                    media_type=effective_type,
+                    source_url=request.source_url,
+                    metadata=metadata,
+                    progress_callback=None,
+                )
+                downloader.download(member_request)
+                if not member_path.is_file():
+                    raise EngineDownloadError("下载失败 / Download failed")
+                archive.write(member_path, arcname=name)
+        os.replace(zip_path, target)
+        size = target.stat().st_size
+        return DownloadResult(
+            download_id=request.download_id,
+            task_id=request.command.task_id,
+            title=request.title,
+            media_type=request.media_type,
+            format="zip",
+            quality=None,
+            status=DownloadStatus.COMPLETED,
+            progress=100.0,
+            speed=None,
+            total_bytes=size,
+            downloaded_bytes=size,
+            retry_count=0,
+            error_message=None,
+        )
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 def _progress_callback_for(

@@ -3,8 +3,8 @@
 The service is deliberately a preparation boundary: direct responses contain
 only an opaque same-origin route and staged responses contain only the
 existing download task identifier.  Persisted manifest URLs never cross this
-boundary.  Task 4 can add selector persistence to ``DownloadTask`` without
-changing the API contract or the manifest resolution below.
+boundary.  Staged selectors are persisted as a strict compatibility seam for
+the worker's exact-resource and package execution path.
 """
 
 from __future__ import annotations
@@ -84,17 +84,31 @@ class TransferService:
         if task.media_type == MediaType.MUSIC:
             # Music imports persist musicdl ``song_info`` rather than a
             # MediaManifest.  The existing engine downloader consumes that
-            # private metadata from the task, so music remains staged until a
-            # selector-aware download row exists (Task 4); no CDN URL is
-            # projected here.
-            if selected.kind != "music":
+            # private metadata from the task.  A plain HTTP song can use the
+            # same-origin direct route; other protocols remain staged.
+            if selected.kind != "music" or selected.index != 0 or selected.package is not None:
                 raise self._asset_error()
             metadata = task.metadata_ if isinstance(task.metadata_, dict) else {}
-            song_info = metadata.get("song_info") if isinstance(metadata, dict) else {}
+            song_info = metadata.get("song_info") if isinstance(metadata, dict) else None
+            if not isinstance(song_info, dict):
+                raise self._asset_error()
+            protocol = song_info.get("protocol", "HTTP")
+            if not isinstance(protocol, str):
+                protocol = ""
+            protocol = protocol.upper()
+            if protocol == "HTTP":
+                resource = _music_resource(task, song_info)
+                if resource is None:
+                    raise self._asset_error()
+                if not force_staged:
+                    return DirectTransfer(
+                        url=_direct_url(task_id, selected),
+                        filename=safe_attachment_filename(task.title, resource.format),
+                    )
             fmt = task.format or (
                 song_info.get("ext") if isinstance(song_info, dict) else None
             )
-            return self._stage(task_id, fmt, None)
+            return self._stage(task_id, fmt, None, selected)
 
         if selected.kind == "music":
             raise self._asset_error()
@@ -106,13 +120,12 @@ class TransferService:
                 filename=safe_attachment_filename(task.title, resource.format),
             )
 
-        # Compatibility seam for Task 4: DownloadTask currently stores only
-        # format/quality and cannot persist ``selected`` or package semantics.
-        # Keep resolution at this boundary and submit once through the stable
-        # route; selector persistence belongs in the upcoming migration.
+        # The selector is persisted with the staged row.  Package semantics
+        # are represented by the canonical zip format and are executed by the
+        # worker, which resolves the strict manifest again.
         if selected.package is not None:
-            return self._stage(task_id, None, None)
-        return self._stage(task_id, resource.format, resource.quality)
+            return self._stage(task_id, "zip", None, selected)
+        return self._stage(task_id, resource.format, resource.quality, selected)
 
     def _load_manifest(self, task: ParseTask) -> MediaManifest:
         try:
@@ -161,8 +174,14 @@ class TransferService:
         task_id: str,
         format: str | None,
         quality: str | None,
+        selector: AssetSelector,
     ) -> StagedTransfer:
-        result = self._download_service.submit(task_id, format=format, quality=quality)
+        result = self._download_service.submit(
+            task_id,
+            format=format,
+            quality=quality,
+            selector=selector,
+        )
         return StagedTransfer(download_id=result.download_id, status=result.status)
 
     @staticmethod
@@ -186,3 +205,18 @@ def _direct_url(task_id: str, selector: AssetSelector) -> str:
     if selector.package is not None:
         query.append(("package", selector.package))
     return f"/api/download/direct/{quote(task_id, safe='')}?{urlencode(query)}"
+
+
+def _music_resource(task: ParseTask, song_info: dict) -> MediaResource | None:
+    """Validate the plain-HTTP music URL without exposing it to callers."""
+    url = song_info.get("download_url")
+    if not isinstance(url, str):
+        return None
+    ext = song_info.get("ext") or task.format
+    if not isinstance(ext, str) or not ext.strip():
+        suffix = PurePosixPath(urlsplit(url).path).suffix.lstrip(".")
+        ext = suffix or "mp3"
+    try:
+        return MediaResource(url=url, format=ext.strip())
+    except (TypeError, ValueError, ValidationError):
+        return None

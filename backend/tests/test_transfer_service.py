@@ -24,8 +24,8 @@ class RecordingDownloadService:
         self.calls = []
         self.result_id = result_id
 
-    def submit(self, task_id, format=None, quality=None):
-        self.calls.append((task_id, format, quality))
+    def submit(self, task_id, format=None, quality=None, selector=None):
+        self.calls.append((task_id, format, quality, selector))
         return type(
             "DownloadResultStub",
             (),
@@ -90,7 +90,7 @@ def test_prepare_stages_streaming_manifests(engine, url):
     )
 
     assert isinstance(result, StagedTransfer)
-    assert downloads.calls == [(task_id, "mp4", "1080p")]
+    assert downloads.calls == [(task_id, "mp4", "1080p", AssetSelector(kind="video"))]
 
 
 def test_prepare_stages_package_once_without_claiming_package_format(engine):
@@ -180,7 +180,10 @@ def test_prepare_music_stages_without_returning_persisted_upstream_url(engine):
                 format="mp3",
                 metadata_={
                     "engine": "musicdl",
-                    "song_info": {"download_url": "https://cdn.example/track.mp3"},
+                    "song_info": {
+                        "protocol": "HLS",
+                        "download_url": "https://cdn.example/track.mp3",
+                    },
                 },
             )
         )
@@ -190,4 +193,85 @@ def test_prepare_music_stages_without_returning_persisted_upstream_url(engine):
     )
     assert result.mode == "staged"
     assert "cdn.example" not in result.model_dump_json()
-    assert downloads.calls == [(task_id, "mp3", None)]
+    assert downloads.calls == [(task_id, "mp3", None, AssetSelector(kind="music"))]
+
+
+@pytest.mark.parametrize("index", [1])
+def test_prepare_music_requires_canonical_zero_index(engine, index):
+    task_id = str(uuid.uuid4())
+    with session_scope(engine) as session:
+        session.add(
+            ParseTask(
+                task_id=task_id,
+                url="musicdl://source/song",
+                platform="music",
+                media_type=MediaType.MUSIC,
+                title="Track",
+                format="mp3",
+                metadata_={"song_info": {"protocol": "HTTP", "download_url": "https://cdn.example/t.mp3", "ext": "mp3"}},
+            )
+        )
+    with pytest.raises(ApiError) as exc:
+        TransferService(download_service=RecordingDownloadService(), engine=engine).prepare(
+            task_id, AssetSelector(kind="music", index=index)
+        )
+    assert exc.value.code == CODE_BAD_REQUEST
+
+
+def test_prepare_music_plain_http_can_be_direct(engine):
+    task_id = str(uuid.uuid4())
+    with session_scope(engine) as session:
+        session.add(
+            ParseTask(
+                task_id=task_id,
+                url="musicdl://source/song",
+                platform="music",
+                media_type=MediaType.MUSIC,
+                title="Track / one",
+                format="mp3",
+                metadata_={"song_info": {"protocol": "http", "download_url": "https://cdn.example/t.mp3?sig=private", "ext": "mp3"}},
+            )
+        )
+    downloads = RecordingDownloadService()
+    result = TransferService(download_service=downloads, engine=engine).prepare(
+        task_id, AssetSelector(kind="music")
+    )
+    assert result.mode == "direct"
+    assert result.url == f"/api/download/direct/{task_id}?kind=music&index=0"
+    assert "cdn.example" not in result.model_dump_json()
+    assert downloads.calls == []
+
+
+@pytest.mark.parametrize("song_info", [
+    {"protocol": "HLS", "download_url": "https://cdn.example/t.m3u8", "ext": "mp3"},
+    {"protocol": "HLS", "download_url": "https://cdn.example/t.mp3", "ext": "mp3"},
+    {"protocol": "HTTP", "download_url": "not-a-url", "ext": "mp3"},
+    None,
+])
+def test_prepare_music_non_plain_or_corrupt_metadata_stages_or_rejects_safely(engine, song_info):
+    task_id = str(uuid.uuid4())
+    with session_scope(engine) as session:
+        session.add(
+            ParseTask(
+                task_id=task_id,
+                url="musicdl://source/song",
+                platform="music",
+                media_type=MediaType.MUSIC,
+                title="Track",
+                format="mp3",
+                metadata_={"song_info": song_info},
+            )
+        )
+    downloads = RecordingDownloadService()
+    if song_info is None or song_info.get("protocol") == "HTTP" and song_info.get("download_url") == "not-a-url":
+        with pytest.raises(ApiError) as exc:
+            TransferService(download_service=downloads, engine=engine).prepare(
+                task_id, AssetSelector(kind="music")
+            )
+        assert exc.value.code == CODE_BAD_REQUEST
+        assert downloads.calls == []
+    else:
+        result = TransferService(download_service=downloads, engine=engine).prepare(
+            task_id, AssetSelector(kind="music")
+        )
+        assert result.mode == "staged"

@@ -48,7 +48,7 @@ from app.api.responses import (
     ApiError,
 )
 from app.application.download_service import DownloadService
-from app.domain import DownloadStatus, MediaType
+from app.domain import AssetSelector, DownloadStatus, MediaType
 from app.infrastructure import seed
 from app.infrastructure.config import Settings
 from app.infrastructure.database import Base, build_engine, session_scope
@@ -176,6 +176,34 @@ def seed_completed_with_file(engine, storage, *, task_id, **kwargs) -> str:
         bubble_path=str(path),
         **kwargs,
     )
+
+
+def test_submit_persists_selector_and_completed_identity_includes_selector(
+    service, engine
+):
+    task_id = seed_parse_task(engine)
+    selector = AssetSelector(kind="video", index=2)
+
+    first = service.submit(task_id, format="mp4", quality="720p", selector=selector)
+    with session_scope(engine) as session:
+        row = session.get(DownloadTask, first.download_id)
+        assert row.asset_selector == selector.model_dump(mode="json")
+
+    # A completed ordinary selection and a selected resource are distinct
+    # variants, while an identical selector remains deduplicated.
+    with session_scope(engine) as session:
+        row = session.get(DownloadTask, first.download_id)
+        row.status = DownloadStatus.COMPLETED
+        row.progress = 100.0
+    second = service.submit(task_id, format="mp4", quality="720p", selector=None)
+    assert second.download_id != first.download_id
+    with session_scope(engine) as session:
+        row = session.get(DownloadTask, second.download_id)
+        row.status = DownloadStatus.COMPLETED
+        row.progress = 100.0
+    with pytest.raises(ApiError) as exc:
+        service.submit(task_id, format="mp4", quality="720p", selector=selector)
+    assert exc.value.code == CODE_TASK_ALREADY_COMPLETED
 
 
 def api_error(exc: Exception) -> ApiError:
