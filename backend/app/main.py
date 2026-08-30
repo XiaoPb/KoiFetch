@@ -331,6 +331,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.transfer_service = TransferService(
         download_service=app.state.download_service,
         engine=get_engine(settings.database_url),
+        upstream=upstream,
     )
     app.state.nas_service = NasService(
         storage=storage,

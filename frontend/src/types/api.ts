@@ -180,6 +180,12 @@ export interface SubmitData {
   created_at: string;
 }
 
+export type AssetKind = 'video' | 'image' | 'live_image' | 'live_motion' | 'music';
+export interface AssetSelector { kind: AssetKind; index?: number; package?: 'album_zip' | 'live_zip'; }
+export type PreparedTransfer =
+  | { mode: 'direct'; url: string; filename: string }
+  | { mode: 'staged'; download_id: string; status: DownloadStatus };
+
 export interface DownloadProgress {
   download_id: string;
   status: DownloadStatus;

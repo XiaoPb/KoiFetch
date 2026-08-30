@@ -13,6 +13,8 @@ import type {
   SubmitData,
   DownloadProgress,
   RefreshData,
+  AssetSelector,
+  PreparedTransfer,
 } from '../types/api';
 import type { PublicMediaManifest } from '../types/mediaManifest';
 import type { MusicSearchParams, MusicSearchResult } from '../types/music';
@@ -410,6 +412,12 @@ export const mediaApi = {
 };
 
 export const downloadApi = {
+  async prepare(taskId: string, asset: AssetSelector, forceStaged = false): Promise<PreparedTransfer> {
+    const { data } = await apiClient.post<PreparedTransfer>('/download/prepare', {
+      task_id: taskId, asset, force_staged: forceStaged,
+    });
+    return data;
+  },
   /** POST /api/download/submit → {download_id, task_id, status, created_at}. */
   async submit(
     taskId: string,

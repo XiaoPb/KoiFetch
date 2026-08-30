@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, waitForElementToBeRemoved } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { StrictMode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
@@ -69,6 +69,7 @@ describe('router', () => {
 
   it('renders the parser workspace at /', async () => {
     renderAt('/');
+    await waitForElementToBeRemoved(() => document.querySelector('.route-loading'), { timeout: 10_000 });
     expect(await screen.findByText('解析工作台')).toBeInTheDocument();
   });
 

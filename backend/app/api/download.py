@@ -60,6 +60,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from typing import Annotated
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
@@ -79,6 +80,7 @@ from app.application.transfer_service import TransferService
 from app.domain import (
     DownloadProgress,
     DownloadStatus,
+    AssetSelector,
     PrepareRequest,
     PreparedTransfer,
 )
@@ -242,6 +244,36 @@ def prepare_download(
         body.task_id,
         body.asset,
         force_staged=body.force_staged,
+    )
+
+
+@router.get("/direct/{task_id}")
+def direct_download(
+    task_id: str,
+    request: Request,
+    service: Annotated[TransferService, Depends(get_transfer_service)],
+    kind: str = Query(min_length=1),
+    index: int = Query(default=0, ge=0),
+    package: str | None = Query(default=None),
+) -> StreamingResponse:
+    """Stream a prepared single asset directly to the caller's device."""
+    try:
+        selector = AssetSelector(kind=kind, index=index, package=package)
+    except (TypeError, ValueError) as exc:
+        raise ApiError(CODE_BAD_REQUEST, CODE_BAD_REQUEST, "媒体资源无效 / Invalid media asset") from exc
+    stream, filename = service.stream_direct(task_id, selector, request.headers.get("range"))
+
+    def iterator():
+        try:
+            yield from stream.chunks
+        finally:
+            stream.close()
+
+    return StreamingResponse(
+        iterator(),
+        status_code=stream.status_code,
+        headers={**stream.headers, "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+        media_type=stream.content_type,
     )
     return ok(
         data=result.model_dump(mode="json"),

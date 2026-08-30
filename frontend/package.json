@@ -10,6 +10,7 @@
   "scripts": {
     "dev": "vite",
     "build": "npm run check:engines && tsc --noEmit && vite build",
+    "build:budget": "npm run check:engines && tsc --noEmit && vite build --manifest && node scripts/check-bundle-budget.mjs",
     "check:engines": "node scripts/check-engines.mjs",
     "preview": "vite preview",
     "test": "vitest run",

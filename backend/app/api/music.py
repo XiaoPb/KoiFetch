@@ -53,6 +53,7 @@ class SongData(BaseModel):
     cover: str | None = None
     duration: str | None = None
     play_url: str | None = None
+    lyric: str | None = None
     bitrate: int | None = None
 
 

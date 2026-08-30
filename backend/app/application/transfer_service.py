@@ -17,6 +17,7 @@ from sqlalchemy import Engine
 from starlette.status import HTTP_400_BAD_REQUEST
 
 from app.api.responses import CODE_BAD_REQUEST, CODE_TASK_NOT_FOUND, ApiError
+from app.adapters.safe_upstream import SafeUpstreamClient, UpstreamStream
 from app.application.download_service import DownloadService
 from app.application.media_manifest import (
     ManifestError,
@@ -52,9 +53,36 @@ class TransferService:
         download_service: DownloadService,
         *,
         engine: Engine | None = None,
+        upstream: SafeUpstreamClient | None = None,
     ) -> None:
         self._download_service = download_service
         self._engine = engine
+        self._upstream = upstream or SafeUpstreamClient()
+
+    def stream_direct(
+        self,
+        task_id: str,
+        selector: AssetSelector,
+        range_header: str | None = None,
+    ) -> tuple[UpstreamStream, str]:
+        """Stream one non-package resource through the SSRF-safe adapter."""
+        with session_scope(self._engine) as session:
+            task = session.get(ParseTask, task_id)
+        if task is None:
+            raise ApiError(HTTP_400_BAD_REQUEST, CODE_TASK_NOT_FOUND, _MESSAGE_TASK_NOT_FOUND)
+        if selector.package is not None:
+            raise self._asset_error()
+        if task.media_type == MediaType.MUSIC:
+            raise self._asset_error()
+        resource = self._resolve_resource(task.media_type, self._load_manifest(task), selector)
+        if _is_streaming(resource):
+            raise self._asset_error()
+        try:
+            return self._upstream.stream(str(resource.url), range_header=range_header), safe_attachment_filename(task.title, resource.format)
+        except Exception as exc:
+            if isinstance(exc, ApiError):
+                raise
+            raise ApiError(HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_ASSET_INVALID) from exc
 
     def prepare(
         self,
