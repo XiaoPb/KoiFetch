@@ -131,8 +131,8 @@ render or log those upstream URLs.
 
 ## 2. Compose commands
 
-The stack is two services sharing one image (`koi-fetch-backend:local`, built
-from the repo root via `backend/Dockerfile`):
+The stack is two services sharing the published GHCR image
+(`ghcr.io/xiaopb/koifetch:latest`, configurable via `KOIFETCH_IMAGE`):
 
 | Service | Startup command | Role |
 | --- | --- | --- |

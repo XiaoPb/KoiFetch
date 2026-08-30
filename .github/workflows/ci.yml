@@ -117,6 +117,11 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
+      - name: Validate Docker Compose configuration
+        run: |
+          cp .env.example .env
+          docker compose config --quiet
+
       # Build the exact production image (repo-root context, backend/Dockerfile)
       # without pushing; the gha cache makes repeat builds fast. cache-to
       # failures are tolerated (cache is an optimization, not the gate).

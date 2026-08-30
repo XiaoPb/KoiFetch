@@ -2,15 +2,14 @@
 # built frontend served at "/") and worker (background parse / download /
 # cleanup jobs).
 #
-# There is no container-internal Nginx anymore: the backend image builds the
-# frontend and serves it at "/", so /api and /ws are same-origin and need no
+# There is no container-internal Nginx anymore: the published backend image
+# builds the frontend and serves it at "/", so /api and /ws are same-origin and need no
 # reverse proxy (production deployments sit behind their own external proxy).
 # Host port 8000 therefore exposes the API AND the SPA on one origin.
 #
 # Workflow: copy .env.example to .env, adjust values, then
-# `docker compose up --build`. Both services share one Python image
-# (./backend/Dockerfile, multi-stage: a Node stage builds the frontend, the
-# Python stage runs backend + static serving) and differ only in their startup
+# `docker compose pull && docker compose up`. Both services share the published
+# image and differ only in their startup
 # command:
 #   - backend:  `alembic upgrade head && python -m app.infrastructure.seed &&
 #               uvicorn ...`  (migrations, then the idempotent admin seed, then API)
@@ -24,12 +23,8 @@ name: koi-fetch
 
 services:
   backend:
-    # The build context is the repository root: the multi-stage Dockerfile
-    # builds the frontend from ./frontend and copies the dist into the image.
-    build:
-      context: .
-      dockerfile: backend/Dockerfile
-    image: koi-fetch-backend:local
+    image: ${KOIFETCH_IMAGE:-ghcr.io/xiaopb/koifetch:latest}
+    pull_policy: always
     env_file: .env
     environment:
       # Per PRD deployment; falls back to Asia/Shanghai even if .env omits TZ.
@@ -66,10 +61,8 @@ services:
       start_period: 10s
 
   worker:
-    build:
-      context: .
-      dockerfile: backend/Dockerfile
-    image: koi-fetch-backend:local
+    image: ${KOIFETCH_IMAGE:-ghcr.io/xiaopb/koifetch:latest}
+    pull_policy: always
     env_file: .env
     environment:
       TZ: ${TZ:-Asia/Shanghai}
