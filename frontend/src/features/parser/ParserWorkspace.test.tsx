@@ -79,6 +79,7 @@ const videoResult: ParseResult = {
   format: 'mp4',
   available_qualities: ['1080p', '720p'],
   available_bitrates: [],
+  manifest: null,
   video_url: null,
   images: [],
 };
@@ -95,6 +96,7 @@ const musicResult: ParseResult = {
   format: 'mp3',
   available_qualities: [],
   available_bitrates: ['320kbps', 'FLAC'],
+  manifest: null,
   video_url: null,
   images: [],
 };
@@ -111,6 +113,7 @@ const imageResult: ParseResult = {
   format: 'jpg',
   available_qualities: [],
   available_bitrates: [],
+  manifest: null,
   video_url: null,
   images: ['https://cdn.example.com/1.jpg', 'https://cdn.example.com/2.jpg'],
 };
@@ -129,6 +132,7 @@ const videoWithUrlResult: ParseResult = {
   format: 'mp4',
   available_qualities: [],
   available_bitrates: [],
+  manifest: null,
   video_url: 'https://cdn.example.com/d.mp4',
   images: [],
 };

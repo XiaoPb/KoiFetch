@@ -17,6 +17,7 @@ const task: ParseResult = {
   format: 'mp4',
   available_qualities: ['1080p'],
   available_bitrates: [],
+  manifest: null,
   video_url: null,
   images: [],
 };

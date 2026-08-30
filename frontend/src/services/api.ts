@@ -8,11 +8,13 @@ import type {
   LoginRequest,
   NasSaveData,
   ParseData,
+  ParseResult,
   PreviewData,
   SubmitData,
   DownloadProgress,
   RefreshData,
 } from '../types/api';
+import type { PublicMediaManifest } from '../types/mediaManifest';
 import type { MusicSearchParams, MusicSearchResult } from '../types/music';
 
 // Typed endpoint functions over the shared axios client (which unwraps the
@@ -59,9 +61,104 @@ export const parseApi = {
   /** POST /api/parse — batch URL parse → {results, failed}. */
   async parse(urls: string[]): Promise<ParseData> {
     const { data } = await apiClient.post<ParseData>('/parse', { urls });
-    return data;
+    return {
+      ...data,
+      results: data.results.map(normalizeParseResult),
+    };
   },
 };
+
+/** Values that were historically populated with private upstream media URLs. */
+const LEGACY_MEDIA_FIELDS = new Set([
+  'video_url',
+  'images',
+  'upstream_url',
+  'upstream_urls',
+  'cdn_url',
+  'cdn_urls',
+  'media_url',
+  'media_urls',
+]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === 'string' ? value : null;
+}
+
+function normalizePublicManifest(value: unknown): PublicMediaManifest | null {
+  if (!isRecord(value) || typeof value.kind !== 'string') return null;
+
+  if (value.kind === 'video' && Array.isArray(value.videos) && value.videos.length > 0) {
+    const videos = value.videos.map((item) => {
+      if (!isRecord(item)) return null;
+      const url = stringValue(item.url);
+      const format = stringValue(item.format);
+      const quality = item.quality === null ? null : stringValue(item.quality);
+      return url !== null && format !== null && (item.quality === null || quality !== null)
+        ? { url, format, quality }
+        : null;
+    });
+    if (!videos.every((item): item is NonNullable<typeof item> => item !== null)) return null;
+    return { kind: 'video', videos };
+  }
+
+  if (value.kind === 'image_album' && Array.isArray(value.images) && value.images.length > 0) {
+    const images = value.images.map((item) => {
+      if (!isRecord(item)) return null;
+      const url = stringValue(item.url);
+      const format = stringValue(item.format);
+      return url !== null && format !== null ? { url, format } : null;
+    });
+    if (!images.every((item): item is NonNullable<typeof item> => item !== null)) return null;
+    return { kind: 'image_album', images };
+  }
+
+  if (
+    value.kind === 'live_photo' &&
+    Array.isArray(value.live_photos) &&
+    value.live_photos.length > 0 &&
+    Array.isArray(value.warnings)
+  ) {
+    const livePhotos = value.live_photos.map((item) => {
+      if (!isRecord(item)) return null;
+      const imageUrl = stringValue(item.image_url);
+      const motionUrl = item.motion_url === null ? null : stringValue(item.motion_url);
+      return imageUrl !== null && (item.motion_url === null || motionUrl !== null)
+        ? { image_url: imageUrl, motion_url: motionUrl }
+        : null;
+    });
+    if (!livePhotos.every((item): item is NonNullable<typeof item> => item !== null)) return null;
+    if (!value.warnings.every((item) => typeof item === 'string')) return null;
+    return {
+      kind: 'live_photo',
+      live_photos: livePhotos,
+      warnings: [...value.warnings],
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Normalize a backend parse result at the API boundary.
+ *
+ * Public manifests are copied only when they satisfy the wire contract. The
+ * legacy URL-bearing compatibility fields are intentionally dropped so a
+ * private CDN URL cannot reach renderer state or JSON serialization.
+ */
+export function normalizeParseResult(result: unknown): ParseResult {
+  const source = isRecord(result) ? result : {};
+  const normalized = Object.fromEntries(
+    Object.entries(source).filter(([key]) => !LEGACY_MEDIA_FIELDS.has(key)),
+  );
+  return {
+    ...normalized,
+    manifest: normalizePublicManifest(source.manifest),
+  } as ParseResult;
+}
 
 export const previewApi = {
   /** GET /api/preview/{task_id} → preview metadata + streams. */

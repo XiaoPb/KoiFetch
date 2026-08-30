@@ -81,12 +81,15 @@ export type RefreshData = LoginData;
 // Parse (POST /api/parse)
 // ---------------------------------------------------------------------------
 
+import type { PublicMediaManifest } from './mediaManifest';
+
 export type MediaType = 'video' | 'music' | 'image';
+export type ParseResultType = 'video' | 'image' | 'live_photo' | 'music';
 
 export interface ParseResult {
   task_id: string;
   url: string;
-  type: string;
+  type: ParseResultType;
   platform: string;
   title: string;
   cover: string | null;
@@ -96,14 +99,18 @@ export interface ParseResult {
   format: string | null;
   available_qualities: string[];
   available_bitrates: string[];
+  /** Public same-origin media resources; null for legacy rows without one. */
+  manifest: PublicMediaManifest | null;
   /**
    * Real playable media URL resolved by the engine at parse time (douyin/
    * bilibili/... CDN). Null in stub mode — the card then shows the cover and
    * only becomes playable once a download completes.
    */
-  video_url: string | null;
+  /** @deprecated Private upstream URL; omitted by API normalization. */
+  video_url?: string | null;
   /** Album image URLs (图集/动图). Empty in stub mode — fall back to `cover`. */
-  images: string[];
+  /** @deprecated Private upstream URLs; omitted by API normalization. */
+  images?: string[];
 }
 
 export interface ParseFailure {

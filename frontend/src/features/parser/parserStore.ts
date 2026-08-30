@@ -56,11 +56,16 @@ export function extractUrls(input: string): string[] {
  * `image` results are shown in BOTH modes: image is a third media type that
  * belongs to neither the video nor the music mode, so hiding it would make
  * those cards unreachable (and the v1 single-image preview would have no
- * entry point). So: video mode → `video` | `image`; music mode → `music` |
- * `image`.
+ * entry point). Live-photo cards are video-mode content. So: video mode →
+ * `video` | `image` | `live_photo`; music mode → `music` | `image`.
  */
 export function selectVisibleResults(results: ParseResult[], mediaMode: MediaMode): ParseResult[] {
-  return results.filter((result) => result.type === mediaMode || result.type === 'image');
+  return results.filter(
+    (result) =>
+      result.type === 'image' ||
+      result.type === mediaMode ||
+      (mediaMode === 'video' && result.type === 'live_photo'),
+  );
 }
 
 /**

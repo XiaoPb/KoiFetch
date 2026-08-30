@@ -27,6 +27,7 @@ const videoResult: ParseResult = {
   format: 'mp4',
   available_qualities: ['1080p', '720p'],
   available_bitrates: [],
+  manifest: null,
   video_url: null,
   images: [],
 };
@@ -43,6 +44,7 @@ const musicResult: ParseResult = {
   format: 'mp3',
   available_qualities: [],
   available_bitrates: ['320kbps', 'FLAC'],
+  manifest: null,
   video_url: null,
   images: [],
 };
@@ -59,6 +61,33 @@ const imageResult: ParseResult = {
   format: 'jpg',
   available_qualities: [],
   available_bitrates: [],
+  manifest: null,
+  video_url: null,
+  images: [],
+};
+
+const livePhotoResult: ParseResult = {
+  task_id: 't4',
+  url: 'https://example.com/p/live',
+  type: 'live_photo',
+  platform: 'xiaohongshu',
+  title: 'Live Photo',
+  cover: '/api/preview/t4/resources/live/0/image',
+  duration: null,
+  file_size_mb: null,
+  format: null,
+  available_qualities: [],
+  available_bitrates: [],
+  manifest: {
+    kind: 'live_photo',
+    live_photos: [
+      {
+        image_url: '/api/preview/t4/resources/live/0/image',
+        motion_url: '/api/preview/t4/resources/live/0/motion',
+      },
+    ],
+    warnings: [],
+  },
   video_url: null,
   images: [],
 };
@@ -205,12 +234,17 @@ describe('parserStore', () => {
   });
 
   it('selectVisibleResults shows video/music per mode and image in both modes', () => {
-    const all = [videoResult, musicResult, imageResult];
-    expect(selectVisibleResults(all, 'video')).toEqual([videoResult, imageResult]);
+    const all = [videoResult, musicResult, imageResult, livePhotoResult];
+    expect(selectVisibleResults(all, 'video')).toEqual([videoResult, imageResult, livePhotoResult]);
     expect(selectVisibleResults(all, 'music')).toEqual([musicResult, imageResult]);
     // image belongs to neither mode, so it must be reachable in both.
     expect(selectVisibleResults([imageResult], 'video')).toEqual([imageResult]);
     expect(selectVisibleResults([imageResult], 'music')).toEqual([imageResult]);
     expect(selectVisibleResults([], 'video')).toEqual([]);
+  });
+
+  it('keeps live-photo results visible in video mode but not music mode', () => {
+    expect(selectVisibleResults([livePhotoResult], 'video')).toEqual([livePhotoResult]);
+    expect(selectVisibleResults([livePhotoResult], 'music')).toEqual([]);
   });
 });

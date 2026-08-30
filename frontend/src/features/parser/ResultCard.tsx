@@ -90,7 +90,7 @@ export function ResultCard({
   // Album slide URLs: the engine's list, else the single cover.
   const albumImages: string[] = useMemo(() => {
     if (result.type !== 'image') return [];
-    if (result.images.length > 0) return result.images;
+    if (result.images && result.images.length > 0) return result.images;
     return result.cover ? [result.cover] : [];
   }, [result]);
 
