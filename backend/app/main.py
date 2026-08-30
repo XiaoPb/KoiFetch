@@ -78,6 +78,7 @@ from app.application.login_limiter import LoginLimiter
 from app.application.cookie_service import CookieCipher, PlatformCookieService
 from app.application.download_events import event_hub
 from app.application.download_service import DownloadService
+from app.application.transfer_service import TransferService
 from app.application.music_service import MusicService
 from app.application.nas_service import NasService
 from app.application.parse_service import ParseService
@@ -325,6 +326,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         token_provider=get_one_time_token_provider(settings),
         storage=storage,
         downloader=get_downloader(settings),
+        engine=get_engine(settings.database_url),
+    )
+    app.state.transfer_service = TransferService(
+        download_service=app.state.download_service,
         engine=get_engine(settings.database_url),
     )
     app.state.nas_service = NasService(

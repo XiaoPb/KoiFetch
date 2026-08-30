@@ -75,7 +75,13 @@ from app.api.responses import (
 )
 from app.application.download_events import DownloadEventHub
 from app.application.download_service import DownloadService
-from app.domain import DownloadProgress, DownloadStatus
+from app.application.transfer_service import TransferService
+from app.domain import (
+    DownloadProgress,
+    DownloadStatus,
+    PrepareRequest,
+    PreparedTransfer,
+)
 from app.domain.models import UuidStr
 
 __all__ = [
@@ -84,7 +90,9 @@ __all__ = [
     "SubmitData",
     "SubmitRequest",
     "SubmitResponse",
+    "PrepareResponse",
     "get_download_service",
+    "get_transfer_service",
     "router",
     "ws_router",
 ]
@@ -155,6 +163,16 @@ class SubmitResponse(BaseModel):
     data: SubmitData | None = None
 
 
+class PrepareResponse(BaseModel):
+    """The unified envelope for ``POST /api/download/prepare``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: int
+    message: str
+    data: PreparedTransfer | None = None
+
+
 class ProgressData(BaseModel):
     """The payload of a progress snapshot (PRD §5.4)."""
 
@@ -207,6 +225,28 @@ class ByTaskResponse(BaseModel):
 def get_download_service(request: Request) -> DownloadService:
     """DI hook: the app-wired download service (override in tests)."""
     return request.app.state.download_service
+
+
+def get_transfer_service(request: Request) -> TransferService:
+    """DI hook for transfer preparation (override in tests)."""
+    return request.app.state.transfer_service
+
+
+@router.post("/prepare", response_model=PrepareResponse)
+def prepare_download(
+    body: PrepareRequest,
+    service: Annotated[TransferService, Depends(get_transfer_service)],
+) -> dict:
+    """Choose a same-origin direct route or create one staged download row."""
+    result = service.prepare(
+        body.task_id,
+        body.asset,
+        force_staged=body.force_staged,
+    )
+    return ok(
+        data=result.model_dump(mode="json"),
+        message="传输准备成功 / Transfer prepared",
+    )
 
 
 @router.post("/submit", response_model=SubmitResponse)

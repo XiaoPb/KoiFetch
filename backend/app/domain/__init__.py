@@ -38,6 +38,7 @@ from app.domain.paths import (
     build_path,
     is_within,
     safe_media_filename,
+    safe_attachment_filename,
     slugify,
 )
 from app.domain.transitions import (
@@ -83,6 +84,7 @@ __all__ = [
     "is_within",
     "parse_duration",
     "safe_media_filename",
+    "safe_attachment_filename",
     "slugify",
     "StagedTransfer",
     "transition",
