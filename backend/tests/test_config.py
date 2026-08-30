@@ -28,6 +28,8 @@ AUTH_DOCUMENTATION_FILES = (
     REPO_ROOT / "README.md",
     REPO_ROOT / "OPERATIONS.md",
     REPO_ROOT / "RELEASE-CHECKLIST.md",
+    REPO_ROOT / "docs" / "deployment.md",
+    REPO_ROOT / "backend" / "requirements.txt",
 )
 
 
@@ -90,11 +92,28 @@ class TestSessionDocumentation:
         assert "ACCESS_TOKEN_TTL_DAYS=7" in text
 
     def test_auth_docs_do_not_describe_access_tokens_as_24_hour(self):
-        stale_phrases = ("24-hour access token", "access tokens are 24-hour")
+        stale_phrases = (
+            "24-hour access token",
+            "access tokens are 24-hour",
+            "24-hour admin access token",
+        )
         for path in AUTH_DOCUMENTATION_FILES:
             text = path.read_text(encoding="utf-8").lower()
             for phrase in stale_phrases:
                 assert phrase not in text, f"stale session wording in {path}"
+
+    def test_file_token_docs_describe_short_lived_reusable_tokens(self):
+        stale_phrases = (
+            "one-time file token",
+            "single-use file token",
+            "file tokens are valid 5 minutes and single-use",
+            "file tokens are 5-minute and single-use",
+            "one-time-token-gated",
+        )
+        for path in AUTH_DOCUMENTATION_FILES:
+            text = path.read_text(encoding="utf-8").lower()
+            for phrase in stale_phrases:
+                assert phrase not in text, f"stale file-token wording in {path}"
 
 
 class TestEnvOverrides:

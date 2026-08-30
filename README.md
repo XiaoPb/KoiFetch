@@ -64,6 +64,9 @@ session and returns to login. A stale startup-refresh response or rejection is
 ignored when a newer login/logout has already won the race; a refresh failure
 for the still-current session logs out.
 
+Download file tokens are short-lived (5 minutes) and reusable until expiry;
+media playback may issue repeated Range/HEAD requests. They are not single-use.
+
 ## Smoke testing
 
 The end-to-end smoke exercises the full v1 path — health check → parse a stub
