@@ -144,6 +144,29 @@ describe('authStore', () => {
     expect(store.getState().token).toBe('login-token');
   });
 
+  it('clears the invalidated old session when the newer login also fails', async () => {
+    let rejectRefresh!: (reason: unknown) => void;
+    let rejectLogin!: (reason: unknown) => void;
+    (authApi.refresh as Mock).mockReturnValue(new Promise<LoginData>((_resolve, reject) => {
+      rejectRefresh = reject;
+    }));
+    (authApi.login as Mock).mockReturnValue(new Promise<LoginData>((_resolve, reject) => {
+      rejectLogin = reject;
+    }));
+    const store = createAuthStore();
+    store.setState({ token: 'old', username: 'admin', expiresAt: FUTURE });
+
+    const refresh = store.getState().refreshSession();
+    const login = store.getState().login('admin', 'pw');
+    rejectRefresh(new Error('expired'));
+    await refresh;
+    rejectLogin(new Error('bad credentials'));
+    await expect(login).rejects.toThrow('bad credentials');
+
+    expect(store.getState().token).toBeNull();
+    expect(store.getState().expiresAt).toBeNull();
+  });
+
   it('lets a login started after refresh win even when refresh returns first', async () => {
     let resolveRefresh!: (data: LoginData) => void;
     let resolveLogin!: (data: LoginData) => void;

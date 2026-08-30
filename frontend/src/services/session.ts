@@ -1,4 +1,9 @@
-import { useAuthStore } from '../stores/authStore';
+import {
+  getAuthHydrationStatus,
+  onAuthHydrationSettled,
+  useAuthStore,
+  type AuthHydrationStatus,
+} from '../stores/authStore';
 import { useDownloadsStore } from '../stores/downloadsStore';
 
 /**
@@ -6,42 +11,60 @@ import { useDownloadsStore } from '../stores/downloadsStore';
  * Sync localStorage normally makes this an immediate resolution, while the
  * subscription path also supports asynchronous storage adapters.
  */
-export function waitForAuthHydration(signal?: AbortSignal): Promise<void> {
+export function waitForAuthHydration(signal?: AbortSignal): Promise<AuthHydrationStatus> {
   const persist = useAuthStore.persist;
-  if (persist.hasHydrated() || signal?.aborted) return Promise.resolve();
+  const hydrated = persist.hasHydrated();
+  const status = getAuthHydrationStatus();
+  if (hydrated || signal?.aborted || status.state === 'error') {
+    return Promise.resolve(status);
+  }
 
   return new Promise((resolve) => {
-    let unsubscribe: (() => void) | undefined;
+    let unsubscribeFinish: (() => void) | undefined;
+    let unsubscribeStatus: (() => void) | undefined;
     let finished = false;
     let cleanupBeforeSubscribe = false;
-    const onAbort = (): void => finish();
+    let resolvedStatus: AuthHydrationStatus = { state: 'pending' };
+    const onAbort = (): void => finish(getAuthHydrationStatus());
     const cleanup = (): void => {
-      if (unsubscribe) {
-        unsubscribe();
+      if (unsubscribeFinish) {
+        unsubscribeFinish();
       } else {
         cleanupBeforeSubscribe = true;
       }
+      unsubscribeStatus?.();
       signal?.removeEventListener('abort', onAbort);
     };
-    const finish = (): void => {
+    const finish = (nextStatus: AuthHydrationStatus): void => {
       if (finished) return;
       finished = true;
+      resolvedStatus = nextStatus;
       cleanup();
-      resolve();
+      resolve(resolvedStatus);
+    };
+    const onStatus = (nextStatus: AuthHydrationStatus): void => {
+      if (nextStatus.state === 'error') {
+        finish(nextStatus);
+      } else if (nextStatus.state === 'ready' && persist.hasHydrated()) {
+        finish(nextStatus);
+      }
     };
 
     signal?.addEventListener('abort', onAbort, { once: true });
     if (signal?.aborted) {
-      finish();
+      finish(status);
       return;
     }
-    unsubscribe = persist.onFinishHydration(finish);
-    // Handle adapters that invoke the listener synchronously while it is
-    // being registered, and close the check/subscribe race.
+    unsubscribeStatus = onAuthHydrationSettled(onStatus);
+    unsubscribeFinish = persist.onFinishHydration(() => {
+      finish(getAuthHydrationStatus());
+    });
+    // Handle adapters that invoke a listener synchronously while it is being
+    // registered, and close the check/subscribe race.
     if (cleanupBeforeSubscribe) {
-      unsubscribe();
+      unsubscribeFinish();
     } else if (!finished && persist.hasHydrated()) {
-      finish();
+      finish(getAuthHydrationStatus());
     }
   });
 }

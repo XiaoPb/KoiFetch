@@ -193,11 +193,53 @@ describe('router', () => {
     renderAt('/nas');
 
     expect(screen.getByTestId('auth-hydration-loading')).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('Restoring session');
     expect(screen.queryByTestId('login-page')).not.toBeInTheDocument();
 
     finishHydration();
     expect(await screen.findByText('NAS 管理')).toBeInTheDocument();
     expect(unsubscribe).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears the session and enters login when persisted hydration fails', async () => {
+    useAuthStore.setState({ token: 'unreadable', username: 'admin', expiresAt: '2099-01-01T00:00:00Z' });
+    const hydrationError = new Error('storage unavailable');
+    vi.spyOn(useAuthStore.persist, 'hasHydrated').mockReturnValue(false);
+    const storage = useAuthStore.persist.getOptions().storage;
+    useAuthStore.persist.setOptions({
+      storage: {
+        getItem: () => { throw hydrationError; },
+        setItem: () => undefined,
+        removeItem: () => undefined,
+      },
+    });
+
+    renderAt('/nas');
+    await useAuthStore.persist.rehydrate();
+
+    expect(await screen.findByTestId('login-page')).toBeInTheDocument();
+    await waitFor(() => expect(useAuthStore.getState().token).toBeNull());
+    useAuthStore.persist.setOptions({ storage });
+  });
+
+  it('keeps routes gated when App mounts after hydration has failed', async () => {
+    const hydrationError = new Error('storage unavailable before mount');
+    const storage = useAuthStore.persist.getOptions().storage;
+    useAuthStore.persist.setOptions({
+      storage: {
+        getItem: () => { throw hydrationError; },
+        setItem: () => undefined,
+        removeItem: () => undefined,
+      },
+    });
+    await useAuthStore.persist.rehydrate();
+    useAuthStore.persist.setOptions({ storage });
+
+    renderAt('/nas');
+
+    expect(screen.getByTestId('auth-hydration-loading')).toBeInTheDocument();
+    expect(screen.queryByTestId('login-page')).not.toBeInTheDocument();
+    expect(await screen.findByTestId('login-page')).toBeInTheDocument();
   });
 
   it('logs out and redirects to login when startup refresh is rejected', async () => {

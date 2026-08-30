@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { App as AntdApp, ConfigProvider } from 'antd';
 import { useNavigate } from 'react-router-dom';
 import enUS from 'antd/locale/en_US';
@@ -6,7 +6,7 @@ import zhCN from 'antd/locale/zh_CN';
 import { ErrorBoundary } from './ErrorBoundary';
 import { AppRoutes } from './AppRoutes';
 import { useAppStore } from '../stores/appStore';
-import { useAuthStore } from '../stores/authStore';
+import { getAuthHydrationStatus, useAuthStore } from '../stores/authStore';
 import { logoutSession, waitForAuthHydration } from '../services/session';
 
 /**
@@ -18,14 +18,24 @@ import { logoutSession, waitForAuthHydration } from '../services/session';
 export function App(): JSX.Element {
   const language = useAppStore((state) => state.language);
   const navigate = useNavigate();
-  const [authHydrated, setAuthHydrated] = useState(() => useAuthStore.persist.hasHydrated());
+  const navigateRef = useRef(navigate);
+  const [authHydrated, setAuthHydrated] = useState(() => (
+    useAuthStore.persist.hasHydrated() && getAuthHydrationStatus().state !== 'error'
+  ));
 
   useEffect(() => {
     let cancelled = false;
     const controller = new AbortController();
     const startSession = async (): Promise<void> => {
-      await waitForAuthHydration(controller.signal);
+      const hydration = await waitForAuthHydration(controller.signal);
       if (cancelled || controller.signal.aborted) return;
+
+      if (hydration.state === 'error') {
+        logoutSession();
+        setAuthHydrated(true);
+        navigateRef.current('/login', { replace: true });
+        return;
+      }
       setAuthHydrated(true);
 
       const startedSession = useAuthStore.getState();
@@ -40,7 +50,7 @@ export function App(): JSX.Element {
           && currentSession.expiresAt === startedSession.expiresAt;
         if (!isSameSession) return;
         logoutSession();
-        navigate('/login', { replace: true });
+        navigateRef.current('/login', { replace: true });
       }
     };
 
@@ -71,7 +81,15 @@ export function App(): JSX.Element {
             <AppRoutes />
           </ErrorBoundary>
         ) : (
-          <div className="route-loading" data-testid="auth-hydration-loading" aria-busy="true" />
+          <div
+            className="route-loading"
+            data-testid="auth-hydration-loading"
+            role="status"
+            aria-live="polite"
+            aria-busy="true"
+          >
+            正在恢复会话 / Restoring session…
+          </div>
         )}
       </AntdApp>
     </ConfigProvider>

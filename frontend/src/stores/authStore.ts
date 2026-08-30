@@ -5,6 +5,28 @@ import type { LoginData } from '../types/api';
 
 export const AUTH_STORAGE_KEY = 'koi-fetch.auth';
 
+export type AuthHydrationStatus =
+  | { state: 'pending' }
+  | { state: 'ready' }
+  | { state: 'error'; error: unknown };
+
+let authHydrationStatus: AuthHydrationStatus = { state: 'pending' };
+const authHydrationListeners = new Set<(status: AuthHydrationStatus) => void>();
+
+export function getAuthHydrationStatus(): AuthHydrationStatus {
+  return authHydrationStatus;
+}
+
+export function onAuthHydrationSettled(listener: (status: AuthHydrationStatus) => void): () => void {
+  authHydrationListeners.add(listener);
+  return () => authHydrationListeners.delete(listener);
+}
+
+function setAuthHydrationStatus(status: AuthHydrationStatus): void {
+  authHydrationStatus = status;
+  authHydrationListeners.forEach((listener) => listener(status));
+}
+
 /**
  * Admin auth state (Task 13 shell): the JWT session, persisted to
  * localStorage, with login/logout actions and token-expiry handling.
@@ -53,6 +75,8 @@ export function createAuthStore() {
   // not share a pending request or revision counter.
   let inFlightRefresh: Promise<void> | null = null;
   let sessionRevision = 0;
+  let pendingLoginRevision: number | null = null;
+  let refreshInvalidatedSession = false;
 
   return create<AuthState>()(
     persist(
@@ -65,13 +89,31 @@ export function createAuthStore() {
           // Reserve this operation when it is initiated. This makes the
           // latest login win even if an older login or refresh resolves first.
           const loginRevision = ++sessionRevision;
-          const data: LoginData = await authApi.login({ username, password });
+          pendingLoginRevision = loginRevision;
+          let data: LoginData;
+          try {
+            data = await authApi.login({ username, password });
+          } catch (error) {
+            if (pendingLoginRevision === loginRevision) {
+              pendingLoginRevision = null;
+              if (refreshInvalidatedSession) {
+                refreshInvalidatedSession = false;
+                sessionRevision += 1;
+                set({ token: null, username: null, expiresAt: null });
+              }
+            }
+            throw error;
+          }
+          if (pendingLoginRevision === loginRevision) pendingLoginRevision = null;
           if (sessionRevision !== loginRevision) return;
+          refreshInvalidatedSession = false;
           set({ token: data.token, username: data.username, expiresAt: data.expires_at });
         },
 
         logout: () => {
           sessionRevision += 1;
+          pendingLoginRevision = null;
+          refreshInvalidatedSession = false;
           set({ token: null, username: null, expiresAt: null });
         },
 
@@ -94,7 +136,20 @@ export function createAuthStore() {
               // A newer login/logout supersedes this refresh even when it has
               // not committed a new token yet. Do not let its rejection reach
               // startup, where it would incorrectly clear the newer session.
-              if (sessionRevision !== startedRevision || get().token !== startedToken) return;
+              const tokenChanged = get().token !== startedToken;
+              if (sessionRevision !== startedRevision || tokenChanged) {
+                // Keep the invalidation only while the old token is still
+                // current; an unrelated token replacement must not be cleared.
+                if (!tokenChanged) {
+                  refreshInvalidatedSession = true;
+                  if (pendingLoginRevision === null) {
+                    refreshInvalidatedSession = false;
+                    sessionRevision += 1;
+                    set({ token: null, username: null, expiresAt: null });
+                  }
+                }
+                return;
+              }
               throw error;
             })
             .finally(() => {
@@ -105,6 +160,12 @@ export function createAuthStore() {
       }),
       {
         name: AUTH_STORAGE_KEY,
+        onRehydrateStorage: () => {
+          setAuthHydrationStatus({ state: 'pending' });
+          return (_state, error) => {
+            setAuthHydrationStatus(error ? { state: 'error', error } : { state: 'ready' });
+          };
+        },
         // Bump when the persisted session shape changes (see zustand's
         // migrate option) so stale data from an older shape cannot corrupt
         // rehydration in later tasks.

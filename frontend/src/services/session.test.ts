@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { waitForAuthHydration } from './session';
-import { useAuthStore } from '../stores/authStore';
+import { getAuthHydrationStatus, useAuthStore } from '../stores/authStore';
 
 describe('waitForAuthHydration', () => {
   beforeEach(() => {
@@ -46,5 +46,27 @@ describe('waitForAuthHydration', () => {
     await hydration;
 
     expect(unsubscribe).toHaveBeenCalledTimes(1);
+  });
+
+  it('settles hydration waiters with an error when persisted storage fails', async () => {
+    const hydrationError = new Error('storage unavailable');
+    vi.spyOn(useAuthStore.persist, 'hasHydrated').mockReturnValue(false);
+    const storage = useAuthStore.persist.getOptions().storage;
+    useAuthStore.persist.setOptions({
+      storage: {
+        getItem: () => { throw hydrationError; },
+        setItem: () => undefined,
+        removeItem: () => undefined,
+      },
+    });
+
+    const hydration = waitForAuthHydration();
+    await useAuthStore.persist.rehydrate();
+
+    await expect(hydration).resolves.toMatchObject({ state: 'error', error: hydrationError });
+    expect(getAuthHydrationStatus()).toMatchObject({ state: 'error', error: hydrationError });
+
+    useAuthStore.persist.setOptions({ storage });
+    await useAuthStore.persist.rehydrate();
   });
 });
