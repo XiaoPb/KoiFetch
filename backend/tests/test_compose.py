@@ -74,13 +74,10 @@ class TestBackendService:
     def test_env_file_is_dotenv(self, compose):
         assert compose["services"]["backend"]["env_file"] == ".env"
 
-    def test_build_context_is_repo_root(self, compose):
-        # The multi-stage Dockerfile builds the frontend from ./frontend, so
-        # the context must be the repository root, not ./backend.
-        assert compose["services"]["backend"]["build"] == {
-            "context": ".",
-            "dockerfile": "backend/Dockerfile",
-        }
+    def test_backend_uses_published_ghcr_image(self, compose):
+        service = compose["services"]["backend"]
+        assert service["image"] == "${KOIFETCH_IMAGE:-ghcr.io/xiaopb/koifetch:latest}"
+        assert service["pull_policy"] == "always"
 
     def test_frontend_dist_path_points_into_image(self, compose):
         # The image copies the Vite build to /app/static; compose must point
@@ -139,10 +136,9 @@ class TestWorkerService:
         assert command == "python -m app.workers.main"
 
     def test_worker_shares_backend_image(self, compose):
-        assert compose["services"]["worker"]["build"] == {
-            "context": ".",
-            "dockerfile": "backend/Dockerfile",
-        }
+        worker = compose["services"]["worker"]
+        assert worker["image"] == compose["services"]["backend"]["image"]
+        assert worker["pull_policy"] == "always"
 
     def test_worker_waits_for_backend_health(self, compose):
         depends = compose["services"]["worker"]["depends_on"]["backend"]
