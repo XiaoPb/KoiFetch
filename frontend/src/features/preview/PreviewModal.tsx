@@ -8,8 +8,28 @@ import { getErrorMessage } from '../../services/apiClient';
 import { useDownloadsStore } from '../../stores/downloadsStore';
 import { usePreviewStore } from '../parser/previewStore';
 import type { PreviewData } from '../../types/api';
+import { LivePhotoViewer, type LivePhotoPair } from '../parser/LivePhotoViewer';
 
 type LoadStatus = 'loading' | 'success' | 'error';
+
+function livePhotoPairs(value: unknown): LivePhotoPair[] | null {
+  if (!value || typeof value !== 'object' || (value as { kind?: unknown }).kind !== 'live_photo') return null;
+  const pairs = (value as { live_photos?: unknown }).live_photos;
+  if (!Array.isArray(pairs) || pairs.length === 0) return null;
+  if (
+    !pairs.every(
+      (pair): pair is LivePhotoPair =>
+        Boolean(pair) &&
+        typeof pair === 'object' &&
+        typeof (pair as { image_url?: unknown }).image_url === 'string' &&
+        ((pair as { motion_url?: unknown }).motion_url === null ||
+          typeof (pair as { motion_url?: unknown }).motion_url === 'string'),
+    )
+  ) {
+    return null;
+  }
+  return pairs;
+}
 
 /**
  * v1 single-media preview Modal (PRD §4.4, Task 15).
@@ -155,6 +175,10 @@ export function PreviewModal(): JSX.Element {
 
   const hasQuality = Boolean(data && data.available_qualities.length > 0);
   const hasBitrate = Boolean(data && data.available_bitrates.length > 0);
+  const livePairs =
+    data?.preview_type === 'live_photo'
+      ? livePhotoPairs(data.manifest) ?? livePhotoPairs(activeTask?.manifest)
+      : null;
 
   return (
     <Modal
@@ -188,11 +212,17 @@ export function PreviewModal(): JSX.Element {
 
       {loadStatus === 'success' && data && (
         <div data-testid="preview-content">
-          {data.preview_type === 'image' && data.cover && (
+          {data.preview_type === 'live_photo' && livePairs ? (
+            <LivePhotoViewer
+              pairs={livePairs}
+              title={data.title ?? activeTask?.title ?? data.platform}
+              testId={`preview-live-photo-${taskId}`}
+            />
+          ) : (data.preview_type === 'image' || data.preview_type === 'live_photo') && data.cover ? (
             <div className="preview-cover" data-testid="preview-cover">
               <Image src={data.cover} alt={data.title ?? data.platform} />
             </div>
-          )}
+          ) : null}
 
           {data.preview_type === 'video' && completedUrl ? (
             <div style={{ marginBottom: 16 }} data-testid="preview-video">

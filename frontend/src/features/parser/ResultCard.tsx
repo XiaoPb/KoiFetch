@@ -7,12 +7,14 @@ import { useDownloadsStore } from '../../stores/downloadsStore';
 import type { ParseResult } from '../../types/api';
 import { VideoPlayer, type PlayableSource } from './VideoPlayer';
 import { ImageCarousel, COVER_FALLBACK } from './ImageCarousel';
+import { LivePhotoViewer } from './LivePhotoViewer';
 
 /** Small translucent badge on the cover corner identifying the media type. */
 const TYPE_BADGE: Record<string, JSX.Element> = {
   video: <VideoCameraOutlined />,
   music: <AudioOutlined />,
   image: <PictureOutlined />,
+  live_photo: <PictureOutlined />,
 };
 
 /** Options passed to the download action (format + the single quality slot). */
@@ -101,11 +103,20 @@ export function ResultCard({
     onDownload(result, { format: result.format ?? null, quality: chosen });
   };
 
+  const livePhotoManifest =
+    result.type === 'live_photo' && result.manifest?.kind === 'live_photo' ? result.manifest : null;
+
   const cover = showPlayer ? (
     <VideoPlayer
       sources={playableSources}
       poster={result.cover}
       testId={`card-player-${result.task_id}`}
+    />
+  ) : livePhotoManifest ? (
+    <LivePhotoViewer
+      pairs={livePhotoManifest.live_photos}
+      title={result.title}
+      testId={`live-photo-${result.task_id}`}
     />
   ) : result.type === 'image' && albumImages.length > 0 ? (
     <ImageCarousel

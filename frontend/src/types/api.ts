@@ -163,6 +163,8 @@ export interface PreviewData {
   available_qualities: string[];
   available_bitrates: string[];
   streams: PreviewStream[];
+  /** Public same-origin media resources when the task has a manifest. */
+  manifest?: PublicMediaManifest | null;
 }
 
 // ---------------------------------------------------------------------------

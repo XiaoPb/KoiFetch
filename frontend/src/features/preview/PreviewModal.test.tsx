@@ -135,6 +135,55 @@ const imagePreview: PreviewData = {
   streams: [],
 };
 
+const liveTask: ParseResult = {
+  task_id: 't4',
+  url: 'https://example.com/live/d',
+  type: 'live_photo',
+  platform: 'douyin',
+  title: 'Live D',
+  cover: '/api/preview/t4/resources/live/0/image',
+  duration: null,
+  file_size_mb: 1.2,
+  format: 'heic',
+  available_qualities: [],
+  available_bitrates: [],
+  manifest: {
+    kind: 'live_photo',
+    live_photos: [
+      {
+        image_url: '/api/preview/t4/resources/live/0/image',
+        motion_url: '/api/preview/t4/resources/live/0/motion',
+      },
+    ],
+    warnings: [],
+  },
+};
+
+const livePreview: PreviewData = {
+  task_id: 't4',
+  preview_type: 'live_photo',
+  url: 'https://example.com/live/d',
+  platform: 'douyin',
+  title: 'Live D',
+  cover: '/api/preview/t4/resources/live/0/image',
+  duration: null,
+  format: 'heic',
+  file_size_mb: 1.2,
+  available_qualities: [],
+  available_bitrates: [],
+  streams: [],
+  manifest: {
+    kind: 'live_photo',
+    live_photos: [
+      {
+        image_url: '/api/preview/t4/resources/live/0/image',
+        motion_url: '/api/preview/t4/resources/live/0/motion',
+      },
+    ],
+    warnings: [],
+  },
+};
+
 describe('PreviewModal', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -257,6 +306,27 @@ describe('PreviewModal', () => {
 
     expect(await screen.findByTestId('preview-cover')).toBeInTheDocument();
     expect(screen.queryByTestId('preview-metadata-note')).not.toBeInTheDocument();
+  });
+
+  it('renders a Live Photo viewer from the public preview manifest', async () => {
+    (previewApi.getPreview as Mock).mockResolvedValue(livePreview);
+    usePreviewStore.setState({ activeTask: liveTask });
+    renderWithProviders(<PreviewModal />);
+
+    expect(await screen.findByTestId('preview-live-photo-t4')).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: 'Live D 1' })).toHaveAttribute(
+      'src',
+      '/api/preview/t4/resources/live/0/image',
+    );
+  });
+
+  it('falls back to the preview cover when a Live Photo manifest is unavailable', async () => {
+    (previewApi.getPreview as Mock).mockResolvedValue({ ...livePreview, manifest: null });
+    usePreviewStore.setState({ activeTask: { ...liveTask, manifest: null } });
+    renderWithProviders(<PreviewModal />);
+
+    expect(await screen.findByTestId('preview-cover')).toBeInTheDocument();
+    expect(screen.queryByTestId('preview-live-photo-t4')).not.toBeInTheDocument();
   });
 
   it('shows the backend error with a working retry', async () => {

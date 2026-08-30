@@ -312,6 +312,54 @@ body {
   border: none;
 }
 
+/* --- Live Photo still/motion viewer --- */
+
+.live-photo-viewer {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background: #f0f0f0;
+}
+
+.live-photo-media {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+}
+
+.live-photo-still,
+.live-photo-motion {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.live-photo-motion {
+  position: absolute;
+  inset: 0;
+}
+
+.live-photo-controls {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  left: 8px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.live-photo-count {
+  margin: 0 0 0 4px;
+}
+
 /* --- Animated media-mode switch --- */
 
 @keyframes koi-card-in {
