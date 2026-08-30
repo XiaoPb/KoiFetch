@@ -12,7 +12,7 @@ __all__ = ["LivePhotoPair", "MediaManifest", "MediaResource"]
 class MediaResource(BaseModel):
     """One upstream media resource in a private, persisted manifest."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     url: HttpUrl
     format: str = Field(min_length=1, max_length=16)
@@ -33,7 +33,7 @@ class MediaResource(BaseModel):
 class LivePhotoPair(BaseModel):
     """A still image and its optional motion resource."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     image: MediaResource
     motion: MediaResource | None = None
@@ -47,7 +47,7 @@ class MediaManifest(BaseModel):
     public proxy URL projection belongs to the API/application layer.
     """
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     version: Literal[1] = 1
     kind: Literal["video", "image_album", "live_photo"]

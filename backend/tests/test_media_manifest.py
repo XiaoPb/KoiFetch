@@ -110,6 +110,19 @@ def test_resource_size_bytes_must_be_non_negative():
     assert resource(size_bytes=0).size_bytes == 0
 
 
+@pytest.mark.parametrize("field", ["width", "height", "size_bytes"])
+@pytest.mark.parametrize("value", ["1", 1.0, True])
+def test_resource_numeric_fields_reject_coercion(field, value):
+    with pytest.raises(ValidationError):
+        resource(**{field: value})
+
+
+def test_manifest_contracts_enable_strict_validation():
+    assert MediaResource.model_config["strict"] is True
+    assert LivePhotoPair.model_config["strict"] is True
+    assert MediaManifest.model_config["strict"] is True
+
+
 def test_resource_and_manifest_reject_extra_fields_and_are_frozen():
     with pytest.raises(ValidationError):
         resource(unexpected="field")
