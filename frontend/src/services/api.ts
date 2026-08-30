@@ -88,7 +88,27 @@ function stringValue(value: unknown): string | null {
   return typeof value === 'string' ? value : null;
 }
 
-function normalizePublicManifest(value: unknown): PublicMediaManifest | null {
+function isSafeTaskId(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && !/[\\/?#]/.test(value);
+}
+
+function isPublicResourceUrl(
+  value: unknown,
+  taskId: string,
+  resourceKind: 'video' | 'image' | 'live',
+  suffix?: 'image' | 'motion',
+): value is string {
+  if (typeof value !== 'string') return false;
+  const prefix = `/api/preview/${taskId}/resources/`;
+  if (!value.startsWith(prefix)) return false;
+  const path = value.slice(prefix.length).split('/');
+  if (path.length !== (suffix === undefined ? 2 : 3)) return false;
+  if (path[0] !== resourceKind || !/^(0|[1-9]\d*)$/.test(path[1])) return false;
+  return suffix === undefined || path[2] === suffix;
+}
+
+function normalizePublicManifest(value: unknown, taskId: unknown): PublicMediaManifest | null {
+  if (!isSafeTaskId(taskId)) return null;
   if (!isRecord(value) || typeof value.kind !== 'string') return null;
 
   if (value.kind === 'video' && Array.isArray(value.videos) && value.videos.length > 0) {
@@ -97,7 +117,12 @@ function normalizePublicManifest(value: unknown): PublicMediaManifest | null {
       const url = stringValue(item.url);
       const format = stringValue(item.format);
       const quality = item.quality === null ? null : stringValue(item.quality);
-      return url !== null && format !== null && (item.quality === null || quality !== null)
+      return (
+        url !== null &&
+        isPublicResourceUrl(url, taskId, 'video') &&
+        format !== null &&
+        (item.quality === null || quality !== null)
+      )
         ? { url, format, quality }
         : null;
     });
@@ -110,7 +135,9 @@ function normalizePublicManifest(value: unknown): PublicMediaManifest | null {
       if (!isRecord(item)) return null;
       const url = stringValue(item.url);
       const format = stringValue(item.format);
-      return url !== null && format !== null ? { url, format } : null;
+      return url !== null && isPublicResourceUrl(url, taskId, 'image') && format !== null
+        ? { url, format }
+        : null;
     });
     if (!images.every((item): item is NonNullable<typeof item> => item !== null)) return null;
     return { kind: 'image_album', images };
@@ -126,7 +153,12 @@ function normalizePublicManifest(value: unknown): PublicMediaManifest | null {
       if (!isRecord(item)) return null;
       const imageUrl = stringValue(item.image_url);
       const motionUrl = item.motion_url === null ? null : stringValue(item.motion_url);
-      return imageUrl !== null && (item.motion_url === null || motionUrl !== null)
+      return (
+        imageUrl !== null &&
+        isPublicResourceUrl(imageUrl, taskId, 'live', 'image') &&
+        (item.motion_url === null ||
+          (motionUrl !== null && isPublicResourceUrl(motionUrl, taskId, 'live', 'motion')))
+      )
         ? { image_url: imageUrl, motion_url: motionUrl }
         : null;
     });
@@ -156,7 +188,7 @@ export function normalizeParseResult(result: unknown): ParseResult {
   );
   return {
     ...normalized,
-    manifest: normalizePublicManifest(source.manifest),
+    manifest: normalizePublicManifest(source.manifest, source.task_id),
   } as ParseResult;
 }
 
