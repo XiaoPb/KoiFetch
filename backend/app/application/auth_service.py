@@ -2,7 +2,8 @@
 
 Sits in the application layer between the API transport (``app.api``) and the
 persistence/adapters: it authenticates the admin against the ``users`` table
-with bcrypt and issues seven-day access tokens through the
+with bcrypt and issues access tokens with the configured lifetime (seven-day
+default) through the
 :class:`app.adapters.protocols.AccessTokenProvider` port — never touching
 PyJWT or bcrypt specifics in the handlers.
 
@@ -67,7 +68,8 @@ _DUMMY_HASH = (
 class LoginResult:
     """A successful login: the issued token plus what the client needs to show.
 
-    ``expires_at`` mirrors the token's ``exp`` claim (issued-at + seven days) so the
+    ``expires_at`` mirrors the token's ``exp`` claim (issued-at + configured
+    lifetime, seven-day default) so the
     API can return it without re-deriving the TTL.
     """
 
@@ -77,7 +79,8 @@ class LoginResult:
 
 
 class AuthService:
-    """Authenticate the admin and issue seven-day access tokens.
+    """Authenticate the admin and issue a configured lifetime access token
+    (seven-day default).
 
     ``token_provider`` is required (obtain it from
     ``app.adapters.factory.get_access_token_provider``). ``engine`` defaults to
@@ -120,7 +123,7 @@ class AuthService:
             return user
 
     def issue_access_token(self, user: User) -> str:
-        """Issue a seven-day access token for ``user`` via the configured provider."""
+        """Issue a configured-lifetime access token (seven-day default) for ``user``."""
         return self._token_provider.issue(
             user_id=user.id, username=user.username
         )

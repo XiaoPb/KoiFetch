@@ -165,7 +165,7 @@ services via `env_file: .env`.
 | Variable | Required / default | Purpose |
 | --- | --- | --- |
 | `ADMIN_PASSWORD` | **required** | Password used to seed the single admin (`admin`) at seed time (bcrypt). Fails fast when missing/blank or longer than 72 bytes (bcrypt truncates). Never log or commit the real value; changing it after the first seed does **not** update the stored hash — see §5.3 |
-| `SECRET_KEY` | **required** | JWT HS256 signing key for the seven-day access sessions and the 5-minute reusable file tokens. No strength floor is enforced, but use ≥ 32 random bytes; changing it invalidates every issued token |
+| `SECRET_KEY` | **required** | JWT HS256 signing key for configured access sessions (seven-day default) and 5-minute reusable file tokens. Settings rejects known placeholders and requires at least 32 UTF-8 bytes; use high-entropy random bytes. Changing it invalidates every issued token |
 | `ACCESS_TOKEN_TTL_DAYS` | `7` (`1-30`) | Lifetime of admin JWT access sessions in days. The frontend rotates one still-valid token once per page startup; this is not a file-token lifetime |
 | `VIDEO_STORAGE_PATH` / `IMAGE_STORAGE_PATH` / `MUSIC_STORAGE_PATH` | `data/pond/{video,image,music}` | Permanent **Pond** storage roots per media type (the NAS target). Relative → resolved against the process CWD; absolute (e.g. a NAS mount) passes through unchanged |
 | `TEMP_VIDEO_PATH` / `TEMP_IMAGE_PATH` / `TEMP_MUSIC_PATH` | `data/bubble/{video,image,music}` | Temporary **Bubble** staging roots for in-flight downloads; swept by cleanup |
@@ -183,8 +183,8 @@ services via `env_file: .env`.
 
 ### 3.1.1 Admin session lifecycle
 
-The login endpoint issues a stateless HS256 access token with a seven-day
-default lifetime (`ACCESS_TOKEN_TTL_DAYS`) and returns its `expires_at`. Once
+The login endpoint issues a stateless HS256 access token with the configured
+lifetime (seven-day default, `ACCESS_TOKEN_TTL_DAYS`) and returns its `expires_at`. Once
 the persisted auth state has finished hydrating, the frontend attempts exactly
 one refresh per page startup for a token that is still valid. Concurrent startup
 calls share one in-flight request, including React StrictMode re-renders, so a
@@ -426,7 +426,7 @@ poll round.
 | Worker exits immediately: `worker database ... missing required tables ... run migrations first` | Same — the `schema_ready` fail-fast fired | Run migrations, restart the worker |
 | Placeholder "Koi Fetch frontend not built" at `/` (API still works) | `FRONTEND_DIST_PATH` is missing, empty, or wrong — or the frontend was never built | Build it: `npm run build --prefix frontend`; check the startup log line (`serving frontend build from ...` vs `frontend build not found at ...`); in Docker, rebuild with `docker compose up --build` (the dist is baked at build time) |
 | Download progress "freezes" in the UI; percentages jump in ticks | v1's WS event hub is process-local and the worker is a separate process, so live progress events never cross processes | Expected behavior: the WS sends a DB-backed snapshot on connect and the client reconciles via 3-second HTTP polling. Verify with `curl http://127.0.0.1:8000/api/download/progress/<download_id>` |
-| `5003` (Token无效或已过期) when fetching a file link | Short-lived file tokens are valid for 5 minutes and reusable for playback, including repeated Range/HEAD requests; the link expired or the token parameter is missing (a missing token is also `5003`) | Re-fetch the link: in the UI use 刷新链接 (reconnects the WS for a fresh `complete` event); for curl, reconnect `ws://127.0.0.1:8000/ws/download/<download_id>` and read the new `complete` event |
+| `5003` (Token无效或已过期) when fetching a file link | Short-lived file tokens are valid for 5 minutes and reusable for playback, including repeated GET/Range requests; the link expired or the token parameter is missing (a missing token is also `5003`) | Re-fetch the link: in the UI use 刷新链接 (reconnects the WS for a fresh `complete` event); for curl, reconnect `ws://127.0.0.1:8000/ws/download/<download_id>` and read the new `complete` event |
 | Storage panel shows degraded; `/api/health` returns `code == 1` with a root in `"error"` | A storage root could not be created (permissions, read-only NAS mount, missing parent) | Check `storage_roots` in the health body and the six storage-root env vars; fix permissions/paths and restart. The app still boots; save/file endpoints fail with a clean storage error |
 | `database is locked` errors | Should be prevented by WAL + a 5-second busy timeout, so this points at something unusual: several processes opening the same DB file, or another tool holding a write lock | Confirm the server/worker/migrations share one CWD (mismatched CWDs use *different* DB files — a different failure); close SQLite browsers / other writers; retry |
 | Admin cannot log in after changing `ADMIN_PASSWORD` | The seed never re-hashes an existing admin row (idempotent upsert) | Reset the admin row (or the database) and re-seed, then use the new password. Note `ADMIN_PASSWORD` over 72 bytes is rejected at seed time |
@@ -505,5 +505,5 @@ carries its one-line rationale:
 - **File tokens are short-lived and reusable for 5 minutes** (bound to the
   download task and its stored filename; `tid`/`exp` live in the JWT, while
   legacy `token_id`/`token_expires_at` columns are currently unpopulated and
-  do not gate serving); repeated Range/HEAD playback requests are allowed and
+  do not gate serving); repeated GET/Range playback requests are allowed and
   expiry surfaces as `5003`.

@@ -30,10 +30,10 @@ Design decisions (documented once, relied on by Tasks 7-12):
   separate concerns with separate callers
   (auth service vs. download-file API), so they are two protocols. ``validate``
   is *pure*: it never consumes a token. The download-file API validates the
-  returned ``token_id``/expiry claims and binds ``download_id`` to the task's
-  stored filename; callers may associate ``tid`` with logs, but no database
-  write is implied and it does not
-  atomically consume the token; repeated Range/HEAD playback requests remain
+  returned ``tid``/``exp`` claims (which remain JWT-only) and binds
+  ``download_id`` to the task's stored filename; callers may associate ``tid``
+  with logs, but no database write is implied and it does not
+  atomically consume the token; repeated GET/Range playback requests remain
   valid until expiry. The adapter stays stateless so it can be shared and
   scaled freely.
 """
@@ -334,9 +334,10 @@ class AccessTokenProvider(Protocol):
 class OneTimeTokenClaims:
     """Decoded, validated short-lived download-token claims.
 
-    ``token_id`` uniquely identifies this issuance; callers may associate it
-    with the task/filename in logs for audit, but it is not an atomic-consumption
-    marker and does not imply database persistence.
+    ``token_id`` is decoded from the JWT's ``tid`` claim and uniquely identifies
+    this issuance. Callers may correlate it with task/filename logs, but it is
+    not an atomic-consumption marker and does not imply database persistence;
+    ``expires_at`` likewise comes only from the JWT's ``exp`` claim.
     """
 
     token_id: str
@@ -350,8 +351,8 @@ class OneTimeTokenProvider(Protocol):
     """Issue/validate 5-minute reusable download tokens.
 
     ``validate`` is stateless (see module docstring): valid tokens serve
-    repeated playback requests, including Range/HEAD, until expiry. The
-    returned ``token_id`` identifies the issuance for task binding/audit.
+    repeated GET/Range playback requests until expiry. The returned
+    ``token_id`` identifies the issuance for task binding when correlating logs.
     """
 
     def issue(self, *, download_id: str) -> str:

@@ -4,7 +4,7 @@ Two things live here (both are HTTP-layer concerns — all real work happens in
 :class:`app.application.auth_service.AuthService`):
 
 * ``POST /api/auth/login`` — validate admin credentials and issue a configured
-  access-token JWT (seven days by default). The endpoint never logs or echoes
+  access-token JWT (seven-day default). The endpoint never logs or echoes
   credentials.
 * :func:`require_admin` — a FastAPI dependency that validates the ``Bearer``
   access token (via the OpenAPI-documented ``HTTPBearer`` security scheme) and
@@ -185,7 +185,8 @@ def login(
     auth: Annotated[AuthService, Depends(get_auth_service)],
     limiter: Annotated[LoginLimiter, Depends(get_login_limiter)],
 ) -> dict:
-    """Authenticate the admin and issue a seven-day access token.
+    """Authenticate the admin and issue a configured lifetime access token
+    (seven-day default).
 
     Success: ``200`` with ``{token, username, expires_at}``. Failure: ``401``
     with a stable code — the response is identical for a wrong password and a

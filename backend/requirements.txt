@@ -42,9 +42,9 @@ sqlalchemy>=2.0
 alembic>=1.13
 bcrypt>=3.2,<5
 
-# Tokens: PyJWT signs configurable admin access tokens (seven days by default)
+# Tokens: PyJWT signs configurable admin access tokens (seven-day default)
 # and five-minute reusable file tokens issued by the download API; each token
-# binds a download task+filename and playback may send repeated Range/HEAD
+# binds a download task+filename and playback may send repeated GET/Range
 # requests (app/adapters/tokens_jwt.py).
 pyjwt>=2.13
 

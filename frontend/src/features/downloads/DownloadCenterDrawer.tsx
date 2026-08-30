@@ -120,7 +120,7 @@ export function DownloadCenterDrawer({ open, onClose }: DownloadCenterDrawerProp
     }
     // Direct navigation to the tokenized file URL; the backend serves the
     // bytes with a Content-Disposition attachment header. The short-lived
-    // reusable token remains valid for repeated playback/Range/HEAD requests.
+    // reusable token remains valid for repeated playback GET/Range requests.
     window.open(downloadApi.getFileUrl(item.download_url), '_blank', 'noopener');
   };
 

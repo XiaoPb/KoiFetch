@@ -1,4 +1,5 @@
-"""JWT token providers: access tokens (7d) and reusable download tokens (5 min).
+"""JWT token providers: configured-lifetime access tokens (7d default) and
+reusable download tokens (5 min).
 
 Implements :class:`app.adapters.protocols.AccessTokenProvider` and
 :class:`app.adapters.protocols.OneTimeTokenProvider` with PyJWT (HS256, shared
@@ -9,7 +10,7 @@ Claim layout (documented contract — the auth service of Task 7 and the
 download-file API of Task 9 consume these):
 
 * Access token: ``sub`` = user id as a string, ``username``, ``jti``, ``iat``,
-  ``exp`` (issued-at + 7d by default).
+  ``exp`` (issued-at + the configured lifetime, 7d by default).
 * Download token: ``tid`` = a fresh ``uuid4`` *token id*, ``dl`` = the
   download id the token authorizes, ``iat``, ``exp`` (issued-at + 5 min).
   The download-file service binds that task id to its stored filename before
@@ -18,20 +19,20 @@ download-file API of Task 9 consume these):
 **Design decision — validation is stateless and reusable.** ``validate`` is
 pure: it never consumes a token, and calling it repeatedly returns the same
 claims. The download-file API validates the ``dl``/``exp`` claims, binds the
-task to its stored filename, and may associate ``tid`` with logs for audit;
-the claims remain in the JWT and do not imply a database write. It does not
+task to its stored filename, and may associate the JWT-only ``tid`` with logs
+when correlating a request; the ``tid``/``exp`` claims do not imply a database
+write. It does not
 reject later requests carrying the same id.
 Keeping the adapter stateless lets the same provider scale freely; expiry is
-the security boundary and repeated Range/HEAD playback requests are allowed.
+the security boundary and repeated GET/Range playback requests are allowed.
 
 Errors: :meth:`validate` raises only :class:`app.adapters.protocols.TokenError`
 subclasses (``TokenExpiredError`` / ``InvalidTokenError``) so callers never
 catch PyJWT exceptions directly.
 
-**Secret strength:** ``Settings.secret_key`` has no strength floor (Task 2
-settings contract — do not add validation there). HS256 keys should be at
-least 32 random bytes; deployments must set a strong ``SECRET_KEY`` and local
-examples should keep their placeholder ≥32 characters.
+**Secret strength:** ``Settings.secret_key`` enforces at least 32 UTF-8 bytes
+and rejects known placeholders. Deployments must still use a high-entropy,
+deployment-specific ``SECRET_KEY``.
 """
 
 from __future__ import annotations
@@ -106,7 +107,7 @@ class _JwtProviderBase:
 
 
 class JwtAccessTokenProvider(_JwtProviderBase, AccessTokenProvider):
-    """HS256 access tokens valid for seven days by default."""
+    """HS256 access tokens with a configured lifetime (seven-day default)."""
 
     def __init__(
         self, secret_key: str, *, ttl: timedelta = _ACCESS_TTL

@@ -150,7 +150,7 @@ def get_one_time_token_provider(
     """Return the 5-minute reusable download-token provider (Task 9).
 
     The function/provider name is retained for API compatibility; the issued
-    token is short-lived and reusable for Range/HEAD playback until expiry.
+    token is short-lived and reusable for GET/Range playback until expiry.
     """
     settings = settings or get_settings()
     return JwtOneTimeTokenProvider(settings.secret_key)

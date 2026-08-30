@@ -27,11 +27,12 @@ Design decisions (stable contract for Tasks 10-12):
   map to the single PRD code ``5003``) and checks the token targets this
   download and its stored filename. The token is deliberately NOT consumed on
   first use: media playback issues multiple requests per session (initial load
-  plus Range/seek requests and HEAD probes); consuming it on first use would
+  plus repeated GET/Range/seek requests); consuming it on first use would
   401 the rest of a playing video. A valid, unexpired, correctly-bound token
   serves that task's stored filename any number of times until its 5-minute
-  expiry; expiry is the security boundary. The ``tid`` claim and expiry
-  accompany issuance for audit; the
+  expiry; expiry is the security boundary. The ``tid`` claim is only a unique
+  JWT identifier that logs may correlate; expiry exists only in the JWT ``exp``
+  claim. The
   nullable ``token_id``/``token_expires_at`` columns are legacy/reserved and
   are not populated by the issuance flow; they do not gate serving or
   atomically consume a token.
@@ -290,7 +291,7 @@ class DownloadService:
         (410), ``5002`` (400), ``5003`` (401) for an invalid/expired/mis-bound
         token, ``5001`` (404) for a missing/escaped bubble file. A valid token
         serves the file repeatedly until its 5-minute expiry (playback needs
-        multiple requests — Range/seek and HEAD probes).
+        multiple requests — repeated GET/Range/seek requests).
         """
         if not token or not token.strip():
             raise ApiError(
@@ -357,7 +358,7 @@ class DownloadService:
 
             # The token is SHORT-LIVED and reusable (5 minutes): a media
             # player issues multiple requests for one playback session (the
-            # initial load plus Range/seek requests, HEAD probes), so burning
+            # initial load plus repeated GET/Range/seek requests), so burning
             # the token on the first request would 401 the rest. A valid,
             # unexpired token bound to this download and its stored filename
             # therefore serves the file

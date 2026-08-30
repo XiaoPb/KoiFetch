@@ -51,7 +51,7 @@ real `.env`; the example file contains safe local-development values only.
 
 ### Admin session lifecycle
 
-Admin access sessions last seven days by default. After persisted auth state is
+Admin access sessions use the configured lifetime (seven-day default). After persisted auth state is
 hydrated, each page startup attempts one refresh for a still-valid token; the
 startup action is deduplicated, so React StrictMode or repeated startup calls do
 not issue extra refreshes. Refresh validates the current token before issuing a
@@ -65,9 +65,10 @@ ignored when a newer login/logout has already won the race; a refresh failure
 for the still-current session logs out.
 
 Download file tokens are short-lived (5 minutes) and reusable until expiry;
-media playback may issue repeated Range/HEAD requests. Each token is bound to
-its download task and the task's stored filename; `token_id` identifies the
-issuance inside the JWT and may be associated with logs for audit. The legacy
+media playback may issue repeated GET/Range requests. Each token is bound to
+its download task and the task's stored filename; `tid` (returned as
+`token_id`) is a unique identifier inside the JWT only, and logs may correlate
+it. The `exp` expiry is also a JWT claim only. The legacy
 database `token_id`/`token_expires_at` fields are currently unpopulated and do
 not consume or gate the token.
 

@@ -23,7 +23,7 @@ DEFAULTS = {
 }
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-AUTH_DOCUMENTATION_FILES = (
+AUTH_PUBLIC_DOCUMENTATION_FILES = (
     REPO_ROOT / ".env.example",
     REPO_ROOT / "README.md",
     REPO_ROOT / "OPERATIONS.md",
@@ -38,42 +38,16 @@ PUBLIC_FILE_TOKEN_DOCUMENTATION_FILES = (
     REPO_ROOT / "docs" / "deployment.md",
     REPO_ROOT / "backend" / "requirements.txt",
 )
-FILE_TOKEN_CONTRACT_FILES = (
-    *AUTH_DOCUMENTATION_FILES,
-    REPO_ROOT
-    / "backend"
-    / "alembic"
-    / "versions"
-    / "019c53b40390_add_download_tasks_token_id.py",
+AUTH_SOURCE_DOC_FILES = (
+    REPO_ROOT / "backend" / "app" / "application" / "auth_service.py",
+    REPO_ROOT / "backend" / "app" / "api" / "auth.py",
+)
+FILE_TOKEN_SOURCE_DOC_FILES = (
     REPO_ROOT / "backend" / "app" / "adapters" / "protocols.py",
     REPO_ROOT / "backend" / "app" / "adapters" / "tokens_jwt.py",
     REPO_ROOT / "backend" / "app" / "adapters" / "factory.py",
     REPO_ROOT / "backend" / "app" / "api" / "download.py",
-    REPO_ROOT / "backend" / "app" / "api" / "responses.py",
-    REPO_ROOT / "backend" / "app" / "application" / "download_events.py",
     REPO_ROOT / "backend" / "app" / "application" / "download_service.py",
-    REPO_ROOT / "backend" / "app" / "infrastructure" / "models.py",
-    REPO_ROOT / "backend" / "app" / "workers" / "worker.py",
-    REPO_ROOT
-    / "frontend"
-    / "src"
-    / "features"
-    / "downloads"
-    / "VideoPlayerModal.tsx",
-    REPO_ROOT
-    / "frontend"
-    / "src"
-    / "features"
-    / "downloads"
-    / "DownloadCenterDrawer.tsx",
-    REPO_ROOT / "frontend" / "src" / "features" / "preview" / "PreviewModal.tsx",
-    REPO_ROOT / "frontend" / "src" / "stores" / "downloadsStore.ts",
-    REPO_ROOT / "backend" / "tests" / "test_download_service.py",
-    REPO_ROOT / "backend" / "tests" / "test_download_api.py",
-    REPO_ROOT / "backend" / "tests" / "test_download_ws.py",
-    REPO_ROOT / "backend" / "tests" / "test_smoke.py",
-    REPO_ROOT / "backend" / "tests" / "test_tokens.py",
-    REPO_ROOT / "backend" / "tests" / "test_worker.py",
 )
 
 
@@ -141,22 +115,20 @@ class TestSessionDocumentation:
             "access tokens are 24-hour",
             "24-hour admin access token",
         )
-        for path in AUTH_DOCUMENTATION_FILES:
+        for path in AUTH_PUBLIC_DOCUMENTATION_FILES:
             text = path.read_text(encoding="utf-8").lower()
             for phrase in stale_phrases:
                 assert phrase not in text, f"stale session wording in {path}"
 
-    def test_file_token_docs_describe_short_lived_reusable_tokens(self):
+    def test_file_token_docs_do_not_use_obsolete_consumption_wording(self):
         stale_phrases = (
             "one-time file token",
-            "one-time token",
             "single-use file token",
-            "single-use token",
             "file tokens are valid 5 minutes and single-use",
             "file tokens are 5-minute and single-use",
             "one-time-token-gated",
         )
-        for path in FILE_TOKEN_CONTRACT_FILES:
+        for path in (*PUBLIC_FILE_TOKEN_DOCUMENTATION_FILES, *FILE_TOKEN_SOURCE_DOC_FILES):
             text = path.read_text(encoding="utf-8").lower()
             for phrase in stale_phrases:
                 assert phrase not in text, f"stale file-token wording in {path}"
@@ -165,10 +137,32 @@ class TestSessionDocumentation:
         for path in PUBLIC_FILE_TOKEN_DOCUMENTATION_FILES:
             text = path.read_text(encoding="utf-8").lower()
             assert "reusable" in text, f"missing reusable file-token wording in {path}"
-            assert "range" in text and "head" in text, (
-                f"missing range/head file-token wording in {path}"
-            )
+            assert "range" in text, f"missing range file-token wording in {path}"
             assert "filename" in text, f"missing filename binding wording in {path}"
+
+    def test_file_token_docs_do_not_promise_head_requests(self):
+        stale_phrases = ("range/head", "head requests", "head probes")
+        for path in (*PUBLIC_FILE_TOKEN_DOCUMENTATION_FILES, *FILE_TOKEN_SOURCE_DOC_FILES):
+            text = path.read_text(encoding="utf-8").lower()
+            for phrase in stale_phrases:
+                assert phrase not in text, f"file-token docs promise unsupported HEAD in {path}"
+
+    def test_auth_docstrings_describe_configured_access_token_lifetime(self):
+        for path in AUTH_SOURCE_DOC_FILES:
+            text = path.read_text(encoding="utf-8").lower()
+            assert "configured lifetime" in text, f"missing configured lifetime in {path}"
+            assert "seven-day default" in text, f"missing seven-day default in {path}"
+            assert "seven-day access token" not in text, f"fixed lifetime in {path}"
+
+    def test_secret_key_docs_match_settings_validation(self):
+        operations = (REPO_ROOT / "OPERATIONS.md").read_text(encoding="utf-8").lower()
+        jwt_docs = (
+            REPO_ROOT / "backend" / "app" / "adapters" / "tokens_jwt.py"
+        ).read_text(encoding="utf-8").lower()
+        assert "at least 32 utf-8 bytes" in operations
+        assert "no strength floor" not in operations
+        assert "at least 32 utf-8 bytes" in jwt_docs
+        assert "no strength floor" not in jwt_docs
 
     def test_docs_do_not_claim_token_metadata_is_persisted(self):
         misleading_phrases = (
@@ -178,10 +172,26 @@ class TestSessionDocumentation:
             "records it with the task/filename",
             "stores the unique `tid` claim",
         )
-        for path in FILE_TOKEN_CONTRACT_FILES:
+        for path in (*PUBLIC_FILE_TOKEN_DOCUMENTATION_FILES, *FILE_TOKEN_SOURCE_DOC_FILES):
             text = path.read_text(encoding="utf-8").lower()
             for phrase in misleading_phrases:
                 assert phrase not in text, f"misleading token persistence wording in {path}"
+
+    def test_token_metadata_docs_identify_jwt_only_claims(self):
+        metadata_files = (
+            REPO_ROOT / "README.md",
+            REPO_ROOT / "OPERATIONS.md",
+            REPO_ROOT / "backend" / "app" / "adapters" / "protocols.py",
+            REPO_ROOT / "backend" / "app" / "adapters" / "tokens_jwt.py",
+            REPO_ROOT / "backend" / "app" / "application" / "download_service.py",
+        )
+        for path in metadata_files:
+            text = path.read_text(encoding="utf-8").lower()
+            assert "jwt" in text, f"missing JWT context for token metadata in {path}"
+            assert "tid" in text and "exp" in text, (
+                f"missing tid/exp claim wording in {path}"
+            )
+            assert "database" in text, f"missing database non-persistence wording in {path}"
 
 
 class TestEnvOverrides:

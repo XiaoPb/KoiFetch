@@ -1,10 +1,10 @@
 """Tests for the JWT token providers (``app/adapters/tokens_jwt.py``).
 
-Covers: issue/validate round-trips, the seven-day access-token expiry, the 5-minute
+Covers: issue/validate round-trips, the seven-day default access-token expiry, the 5-minute
 short-lived file-token expiry, invalid-signature/garbage/tampered-token
 rejection, and the documented design decision that file-token validation is
-reusable and stateless: ``validate`` returns a unique ``token_id`` the caller
-can record for task binding and audit.
+reusable and stateless: ``validate`` returns a unique JWT ``token_id`` that
+callers may correlate with logs when binding a task.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -150,7 +150,7 @@ class TestJwtOneTimeTokenProvider:
         token = provider.issue(download_id=DOWNLOAD_ID)
         claims = provider.validate(token)
         assert claims.download_id == DOWNLOAD_ID
-        assert claims.token_id  # non-empty unique issuance id for audit
+        assert claims.token_id  # non-empty unique id from the JWT ``tid`` claim
         assert claims.expires_at > claims.issued_at
 
     def test_download_token_lasts_5_minutes(self):
@@ -185,7 +185,7 @@ class TestJwtOneTimeTokenProvider:
     def test_validate_is_stateless_reuse_is_caller_concern(self):
         # Documented design decision: the adapter never marks a token used;
         # validate() may be called repeatedly and returns the same claims.
-        # The file endpoint treats the token as SHORT-LIVED (5 minutes), not
+        # The file endpoint treats the token as short-lived (5 minutes) and
         # reusable, so playback's repeated requests all validate.
         provider = JwtOneTimeTokenProvider(SECRET)
         token = provider.issue(download_id=DOWNLOAD_ID)

@@ -11,9 +11,9 @@ Covers :class:`app.application.download_service.DownloadService`:
 * ``get_progress`` — a snapshot with ``remaining_time`` computed from speed
   while downloading; unknown download → ``3001``.
 * ``get_file`` — token rules: missing/invalid/expired/mis-targeted
-  token → ``5003`` (401); the token is short-lived (5 minutes), NOT
-  reusable — repeated/range playback requests all serve until expiry.
-  (same token twice → 5003, a fresh token still works); status rules: not
+  token → ``5003`` (401); the token is short-lived (5 minutes) and
+  reusable — repeated GET/Range playback requests all serve until expiry.
+  (same token twice remains valid, a fresh token also works); status rules: not
   completed → ``5002``, expired → ``5004`` (410); the bubble file must exist
   inside the bubble root (missing/absent path → ``5001`` (404), traversal
   attempt → ``5001``).
@@ -452,7 +452,7 @@ class TestGetFile:
 
     def test_token_is_short_lived_and_reusable(self, service, engine, storage):
         # Playback compatibility: a media player issues multiple requests per
-        # session (initial load + Range/seek + HEAD probes), so a valid token
+        # session (initial load plus repeated GET/Range/seek requests), so a valid token
         # must serve the file repeatedly until its 5-minute expiry.
         task_id = seed_parse_task(engine)
         download_id = seed_completed_with_file(engine, storage, task_id=task_id)
