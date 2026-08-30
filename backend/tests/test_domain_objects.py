@@ -176,10 +176,9 @@ class TestParseResult:
         assert loaded == r
         assert loaded.media_type is MediaType.MUSIC
 
-    def test_unknown_media_type_rejected(self):
-        # live_photo is not in the v1 MediaType enum (documented limitation).
-        with pytest.raises(ValidationError):
-            self._minimal(media_type="live_photo")
+    def test_live_photo_media_type_is_supported(self):
+        result = self._minimal(media_type="live_photo")
+        assert result.media_type is MediaType.LIVE_PHOTO
 
     def test_extra_fields_rejected(self):
         with pytest.raises(ValidationError):

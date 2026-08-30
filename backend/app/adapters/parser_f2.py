@@ -96,7 +96,15 @@ from app.adapters.engine_errors import (
 )
 from app.adapters.engine_utils import extension_of, probe_file_size_mb
 from app.adapters.protocols import CookieProvider, ParserAdapter
-from app.domain import MediaType, ParseCommand, ParseResult, format_duration
+from app.domain import (
+    LivePhotoPair,
+    MediaManifest,
+    MediaResource,
+    MediaType,
+    ParseCommand,
+    ParseResult,
+    format_duration,
+)
 
 __all__ = ["F2ParserAdapter", "_route", "_translate_f2_error"]
 
@@ -333,25 +341,95 @@ class F2ParserAdapter:
             raise CookieInvalidError(_MESSAGE_INVALID_COOKIE)
         if data.nickname is None:
             raise EngineParseError(_MESSAGE_NO_MEDIA)
-        play_urls = [
-            url_entry for url_entry in (data.video_play_addr or [])
-            if isinstance(url_entry, str) and url_entry
-        ]
-        video_url = play_urls[0] if play_urls else None
-        images = [
-            image_url for image_url in (data.images or [])
-            if isinstance(image_url, str) and image_url
-        ]
+        manifest = self._douyin_manifest(data)
         return self._build_result(
             url=url,
             platform="douyin",
             title=(data.desc or "").strip() or "douyin",
             cover=data.cover or None,
             duration_ms=data.duration,
-            video_url=video_url,
-            images=images,
+            manifest=manifest,
             author={"uid": data.uid, "name": data.nickname, "avatar": None},
         )
+
+    @staticmethod
+    def _usable_urls(values) -> list[str]:
+        """Return ordered, trimmed absolute HTTP(S) URLs from an f2 list."""
+        if not values or isinstance(values, (str, bytes)):
+            return []
+        usable: list[str] = []
+        for value in values:
+            if not isinstance(value, str):
+                continue
+            cleaned = value.strip()
+            parts = urlsplit(cleaned)
+            if (
+                cleaned
+                and not any(character.isspace() for character in cleaned)
+                and parts.scheme in ("http", "https")
+                and parts.netloc
+            ):
+                usable.append(cleaned)
+        return usable
+
+    @staticmethod
+    def _resource(url: str, default_format: str) -> MediaResource:
+        return MediaResource(url=url, format=extension_of(url) or default_format)
+
+    def _douyin_manifest(self, data) -> MediaManifest:
+        """Build the ordered video/image/live-photo manifest for a Douyin post."""
+        images = self._usable_urls(getattr(data, "images", []) or [])
+        motions = self._usable_urls(getattr(data, "images_video", []) or [])
+        play_urls = self._usable_urls(getattr(data, "video_play_addr", []) or [])
+        try:
+            aweme_type = int(getattr(data, "aweme_type", 0) or 0)
+        except (TypeError, ValueError):
+            aweme_type = 0
+
+        if aweme_type == 68 or motions:
+            # A Live Photo is a still/motion pair. Never construct a malformed
+            # live-photo manifest from motion-only upstream data.
+            if not images:
+                if play_urls:
+                    return MediaManifest(
+                        kind="video",
+                        videos=tuple(self._resource(item, "mp4") for item in play_urls),
+                    )
+                raise EngineParseError(_MESSAGE_NO_MEDIA)
+
+            pairs = tuple(
+                LivePhotoPair(
+                    image=self._resource(image, "webp"),
+                    motion=(
+                        self._resource(motions[index], "mp4")
+                        if index < len(motions)
+                        else None
+                    ),
+                )
+                for index, image in enumerate(images)
+            )
+            warnings: list[str] = []
+            missing = len(images) - min(len(images), len(motions))
+            if missing:
+                warnings.append(f"{missing} 张实况照片缺少动态视频")
+            extra = max(0, len(motions) - len(images))
+            if extra:
+                warnings.append(f"{extra} 个动态视频没有对应静态图片")
+            return MediaManifest(
+                kind="live_photo", live_photos=pairs, warnings=tuple(warnings)
+            )
+
+        if play_urls:
+            return MediaManifest(
+                kind="video",
+                videos=tuple(self._resource(item, "mp4") for item in play_urls),
+            )
+        if images:
+            return MediaManifest(
+                kind="image_album",
+                images=tuple(self._resource(item, "webp") for item in images),
+            )
+        raise EngineParseError(_MESSAGE_NO_MEDIA)
 
     def _map_weibo(self, data, url: str) -> ParseResult:
         """Map a weibo WeiboDetailFilter onto a ParseResult (Task 7).
@@ -442,31 +520,71 @@ class F2ParserAdapter:
         title: str,
         cover: str | None,
         duration_ms: int | float | None,
-        video_url: str | None,
-        images: list[str],
+        video_url: str | None = None,
+        images: list[str] | None = None,
+        manifest: MediaManifest | None = None,
         author: dict,
     ) -> ParseResult:
         """Map the extracted fields onto a :class:`ParseResult`.
 
-        A playable video URL wins → VIDEO; otherwise an image album → IMAGE
-        (format from the first image's extension); neither raises a typed
-        parse failure. ``duration`` is converted from f2's milliseconds to the
-        PRD ``MM:SS`` display form. Field normalization: a blank ``title``
-        falls back to the platform name (``ParseResult.title`` is non-blank),
-        an empty ``cover`` becomes ``None`` (``ParseResult.cover`` has
-        ``min_length=1``), and non-string image URLs are dropped so a bad
-        element cannot crash ``extension_of`` or flow into the downloader.
+        A manifest kind selects the ParseResult type, primary format, probe URL
+        and compatibility metadata. When no manifest is supplied, the legacy
+        video/images arguments are normalized into one, so callers cannot make
+        the compatibility fields disagree with the persisted manifest.
         """
-        if video_url:
+        if manifest is None:
+            play_urls = self._usable_urls([video_url] if video_url else [])
+            image_urls = self._usable_urls(images or [])
+            if play_urls:
+                manifest = MediaManifest(
+                    kind="video",
+                    videos=tuple(self._resource(item, "mp4") for item in play_urls),
+                )
+            elif image_urls:
+                manifest = MediaManifest(
+                    kind="image_album",
+                    images=tuple(self._resource(item, "jpg") for item in image_urls),
+                )
+            else:
+                raise EngineParseError(_MESSAGE_NO_MEDIA)
+
+        manifest_json = manifest.model_dump(mode="json")
+        if manifest.kind == "video":
             media_type = MediaType.VIDEO
+            primary = manifest.videos[0]
+            video_url = str(primary.url)
+            legacy_images = []
             size_url = video_url
-            media_format = extension_of(video_url) or "mp4"
-        elif images:
+            media_format = primary.format
+        elif manifest.kind == "image_album":
             media_type = MediaType.IMAGE
-            size_url = images[0]
-            media_format = extension_of(images[0]) or "jpg"
+            primary = manifest.images[0]
+            video_url = None
+            legacy_images = [
+                {"url": str(item.url), "live_photo_url": None}
+                for item in manifest.images
+            ]
+            size_url = str(primary.url)
+            media_format = primary.format
         else:
-            raise EngineParseError(_MESSAGE_NO_MEDIA)
+            media_type = MediaType.LIVE_PHOTO
+            primary_pair = manifest.live_photos[0]
+            primary = primary_pair.image
+            video_url = None
+            legacy_images = [
+                {
+                    "url": str(pair.image.url),
+                    "live_photo_url": (
+                        str(pair.motion.url) if pair.motion is not None else None
+                    ),
+                }
+                for pair in manifest.live_photos
+            ]
+            # The static resource is the stable preview/filename format; when
+            # present, the motion resource gives the most useful size probe.
+            size_url = str(primary_pair.motion.url) if primary_pair.motion else str(primary.url)
+            media_format = primary.format
+            cover = cover or str(primary.url)
         return ParseResult(
             task_id=str(uuid.uuid4()),
             url=url,
@@ -488,12 +606,9 @@ class F2ParserAdapter:
             available_bitrates=[],
             metadata={
                 "engine": "f2",
+                "manifest": manifest_json,
                 "video_url": video_url,
-                "images": [
-                    {"url": image_url, "live_photo_url": None}
-                    for image_url in images
-                    if isinstance(image_url, str)
-                ],
+                "images": legacy_images,
                 "author": author,
             },
             error=None,

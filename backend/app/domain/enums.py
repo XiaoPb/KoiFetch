@@ -29,6 +29,7 @@ class MediaType(str, enum.Enum):
 
     VIDEO = "video"
     IMAGE = "image"
+    LIVE_PHOTO = "live_photo"
     MUSIC = "music"
 
 
