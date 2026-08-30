@@ -1,14 +1,19 @@
 import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { StrictMode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { App } from './App';
 import { authApi } from '../services/api';
-import { useAuthStore } from '../stores/authStore';
+import { AUTH_STORAGE_KEY, useAuthStore, type AuthState } from '../stores/authStore';
 import { useDownloadsStore, type DownloadItem } from '../stores/downloadsStore';
+import { ApiError } from '../types/api';
 
 vi.mock('../services/api', () => ({
-  authApi: { login: vi.fn() },
+  authApi: {
+    login: vi.fn(),
+    refresh: vi.fn().mockResolvedValue({ token: 'refreshed', username: 'admin', expires_at: '2099-01-01T00:00:00Z' }),
+  },
   healthApi: { getHealth: vi.fn().mockResolvedValue({ status: 'ok', services: {}, storage_roots: {} }) },
   // The home page renders the parser workspace, whose stores import these;
   // provide them so a future render-time access cannot crash on undefined.
@@ -20,12 +25,19 @@ vi.mock('../services/api', () => ({
   musicApi: { search: vi.fn().mockResolvedValue({ totals: { all: 0, song: 0, artist: 0, album: 0, playlist: 0 }, songs: [], artists: [], albums: [], playlists: [], hasMore: false }), importSong: vi.fn(), getHotKeywords: vi.fn() },
 }));
 
-function renderAt(route: string): void {
-  render(
+function renderAt(route: string, strict = false): ReturnType<typeof render> {
+  const app = strict ? <StrictMode><App /></StrictMode> : <App />;
+  return render(
     <MemoryRouter initialEntries={[route]}>
-      <App />
+      {app}
     </MemoryRouter>,
   );
+}
+
+async function seedPersistedAuth(session: Pick<AuthState, 'token' | 'username' | 'expiresAt'>): Promise<void> {
+  localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({ state: session, version: 2 }));
+  await useAuthStore.persist.rehydrate();
+  vi.clearAllMocks();
 }
 
 function seedDownloadItem(partial: Partial<DownloadItem> & Pick<DownloadItem, 'download_id' | 'task_id' | 'status'>): DownloadItem {
@@ -150,5 +162,65 @@ describe('router', () => {
     // shows the honest no-results body for an unknown/empty re-search.
     expect(await screen.findByTestId('music-entity-page')).toBeInTheDocument();
     expect(screen.getByTestId('app-header')).toBeInTheDocument();
+  });
+
+  it('refreshes one valid persisted session after hydration, including StrictMode', async () => {
+    await seedPersistedAuth({ token: 'old', username: 'admin', expiresAt: '2099-01-01T00:00:00Z' });
+    (authApi.refresh as Mock).mockResolvedValue({
+      token: 'fresh',
+      username: 'admin',
+      expires_at: '2099-01-02T00:00:00Z',
+    });
+
+    renderAt('/', true);
+
+    await waitFor(() => expect(authApi.refresh).toHaveBeenCalledTimes(1));
+    expect(authApi.refresh).toHaveBeenCalledWith('old');
+    expect(useAuthStore.getState().token).toBe('fresh');
+  });
+
+  it('logs out and redirects to login when startup refresh is rejected', async () => {
+    await seedPersistedAuth({ token: 'old', username: 'admin', expiresAt: '2099-01-01T00:00:00Z' });
+    (authApi.refresh as Mock).mockRejectedValue(new ApiError('expired', 2004, 401));
+
+    renderAt('/nas', true);
+
+    expect(await screen.findByTestId('login-page')).toBeInTheDocument();
+    await waitFor(() => expect(useAuthStore.getState().token).toBeNull());
+    expect(authApi.refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not request refresh for a locally expired persisted session', async () => {
+    await seedPersistedAuth({ token: 'expired', username: 'admin', expiresAt: '2020-01-01T00:00:00Z' });
+
+    renderAt('/nas');
+
+    expect(await screen.findByTestId('login-page')).toBeInTheDocument();
+    expect(authApi.refresh).not.toHaveBeenCalled();
+  });
+
+  it('does not request refresh for a malformed persisted expiry and redirects to login', async () => {
+    await seedPersistedAuth({ token: 'malformed', username: 'admin', expiresAt: 'not-a-date' });
+
+    renderAt('/nas');
+
+    expect(await screen.findByTestId('login-page')).toBeInTheDocument();
+    await waitFor(() => expect(useAuthStore.getState().token).toBeNull());
+    expect(authApi.refresh).not.toHaveBeenCalled();
+  });
+
+  it('does not log out after an in-flight startup refresh rejects post-unmount', async () => {
+    await seedPersistedAuth({ token: 'old', username: 'admin', expiresAt: '2099-01-01T00:00:00Z' });
+    let rejectRefresh!: (reason: unknown) => void;
+    (authApi.refresh as Mock).mockReturnValue(new Promise((_resolve, reject) => { rejectRefresh = reject; }));
+
+    const rendered = renderAt('/');
+    await waitFor(() => expect(authApi.refresh).toHaveBeenCalledTimes(1));
+    rendered.unmount();
+
+    rejectRefresh(new ApiError('expired', 2004, 401));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(useAuthStore.getState().token).toBe('old');
   });
 });

@@ -2,6 +2,36 @@ import { useAuthStore } from '../stores/authStore';
 import { useDownloadsStore } from '../stores/downloadsStore';
 
 /**
+ * Resolve only after Zustand has finished loading the persisted auth state.
+ * Sync localStorage normally makes this an immediate resolution, while the
+ * subscription path also supports asynchronous storage adapters.
+ */
+export function waitForAuthHydration(): Promise<void> {
+  const persist = useAuthStore.persist;
+  if (persist.hasHydrated()) return Promise.resolve();
+
+  return new Promise((resolve) => {
+    let unsubscribe: (() => void) | undefined;
+    let finished = false;
+    const finish = (): void => {
+      if (finished) return;
+      finished = true;
+      unsubscribe?.();
+      resolve();
+    };
+
+    unsubscribe = persist.onFinishHydration(finish);
+    // Close the small check/subscribe race, and also handle adapters that
+    // invoke the listener synchronously while it is being registered.
+    if (finished) {
+      unsubscribe();
+    } else if (persist.hasHydrated()) {
+      finish();
+    }
+  });
+}
+
+/**
  * Single logout entry point: clear the auth session AND tear down the
  * session-local download state (live sockets, poll timer, task list).
  *
