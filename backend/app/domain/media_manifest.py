@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import (
     BaseModel,
@@ -89,6 +89,22 @@ class MediaManifest(BaseModel):
     warnings: tuple[_WARNING_TEXT, ...] = Field(
         default_factory=tuple, max_length=_MAX_WARNING_COUNT
     )
+
+    @field_validator("videos", "images", "live_photos", "warnings", mode="before")
+    @classmethod
+    def _normalize_json_collections(cls, value: Any) -> Any:
+        """Accept JSON/ORM lists while retaining strict tuple contracts.
+
+        Python callers may provide either a tuple (already immutable) or a
+        list (the shape produced by JSON decoding). Other iterables are not
+        accepted, so sets/generators/strings cannot silently change ordering
+        or bypass the tuple contract.
+        """
+        if isinstance(value, list):
+            return tuple(value)
+        if isinstance(value, tuple):
+            return value
+        raise ValueError("manifest collections must be lists or tuples")
 
     @field_validator("warnings")
     @classmethod

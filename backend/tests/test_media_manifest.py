@@ -159,6 +159,58 @@ def test_manifest_warnings_are_bounded_and_clean():
     assert len(manifest.warnings) == 32
 
 
+def test_manifest_accepts_list_payloads_and_normalizes_them_to_tuples():
+    manifest = MediaManifest(
+        kind="video",
+        videos=[resource()],
+        warnings=["warning"],
+    )
+
+    assert isinstance(manifest.videos, tuple)
+    assert isinstance(manifest.warnings, tuple)
+
+
+def test_manifest_validates_sqlalchemy_json_list_payloads():
+    manifest = MediaManifest(kind="video", videos=(resource(),))
+
+    loaded = MediaManifest.model_validate(manifest.model_dump(mode="json"))
+
+    assert loaded == manifest
+    assert isinstance(loaded.videos, tuple)
+
+
+@pytest.mark.parametrize(
+    ("field", "kind", "item"),
+    [
+        ("videos", "video", resource()),
+        ("images", "image_album", resource()),
+        ("live_photos", "live_photo", LivePhotoPair(image=resource())),
+        ("warnings", "video", "warning"),
+    ],
+)
+def test_manifest_rejects_non_list_or_tuple_collection_inputs(field, kind, item):
+    with pytest.raises(ValidationError):
+        MediaManifest(kind=kind, **{field: {item}})
+    with pytest.raises(ValidationError):
+        MediaManifest(kind=kind, **{field: (value for value in [item])})
+    with pytest.raises(ValidationError):
+        MediaManifest(kind=kind, **{field: "not-a-collection"})
+
+
+def test_list_boundary_keeps_nested_elements_strict():
+    with pytest.raises(ValidationError):
+        MediaManifest(
+            kind="video",
+            videos=[
+                {
+                    "url": "https://cdn.example/a.mp4",
+                    "format": "mp4",
+                    "width": "1920",
+                }
+            ],
+        )
+
+
 @pytest.mark.parametrize("field", ["width", "height", "size_bytes"])
 @pytest.mark.parametrize("value", ["1", 1.0, True])
 def test_resource_numeric_fields_reject_coercion(field, value):
