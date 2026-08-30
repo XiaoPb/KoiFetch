@@ -47,6 +47,13 @@ jobs:
       - name: Audit Python dependencies
         run: python -m pip_audit
 
+      # This opt-in contract creates a separate temporary venv, reruns the
+      # unified installer, and performs pip-check plus real application imports.
+      - name: Verify clean dependency installation
+        env:
+          KOIFETCH_RUN_LIVE_INSTALL: "1"
+        run: python -m pytest backend/tests/test_compatible_wheels.py -m integration -q
+
       - name: Run backend test suite
         run: python -m pytest backend/tests -q
 

@@ -28,8 +28,10 @@ MUSICDL_CRYPTOGRAPHY_REQUIREMENT = "cryptography<51,>=50.0.1"
 _F2_COMPAT_REQUIREMENTS = {
     "aiofiles": "aiofiles>=24.1.0",
     "aiosqlite": "aiosqlite>=0.20.0",
+    "browser-cookie3": "browser-cookie3>=0.20.1",
     "click": "click<9,>=8.1.7",
     "cryptography": "cryptography<51,>=50.0.1",
+    "gmssl": "gmssl>=3.2.2",
     "httpx": "httpx>=0.27",
     "importlib-resources": "importlib-resources>=6.4.5",
     "jsonpath-ng": "jsonpath-ng>=1.6.1",
@@ -41,7 +43,9 @@ _F2_COMPAT_REQUIREMENTS = {
     "qrcode": "qrcode>=8.0",
     "rich": "rich<15,>=13.9.3",
     "websockets-proxy": "websockets-proxy>=0.1.2",
+    "websockets": "websockets>=12.0",
 }
+_F2_DEV_REQUIREMENTS = {"babel", "black", "pytest", "pytest-asyncio"}
 
 
 @dataclass(frozen=True)
@@ -108,9 +112,13 @@ def _rewrite_metadata(package: str, raw: bytes) -> bytes:
             dependency_name = re.split(r"[<>=!~;\s]", requirement, maxsplit=1)[0].lower()
             replacement = _F2_COMPAT_REQUIREMENTS.get(dependency_name)
             if replacement is None:
-                # Dev-only requirements (black, pytest, pytest-asyncio, babel)
-                # are intentionally absent from the runtime compatibility wheel.
-                continue
+                if dependency_name in _F2_DEV_REQUIREMENTS:
+                    # Development-only requirements are intentionally absent
+                    # from the runtime compatibility wheel.
+                    continue
+                raise RuntimeError(
+                    f"unreviewed f2 runtime dependency: {dependency_name}"
+                )
             line = f"Requires-Dist: {replacement}\n"
         if package == "musicdl" and line.startswith("Requires-Dist: cryptography"):
             ending = "\r\n" if line.endswith("\r\n") else "\n"

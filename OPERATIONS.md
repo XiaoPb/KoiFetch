@@ -217,7 +217,9 @@ python backend/scripts/encrypt_platform_cookies.py
 
 The script loads `.env` from the current working directory and prints the
 number of legacy rows encrypted. Verify that count against the backup, then
-run the same command a second time: the second run must report 0. The
+run the same command a second time: the second run must report 0. Already
+encrypted rows with an unknown key never fall back to plaintext; only legacy
+plaintext rows are compatibility-read until this migration completes. The
 migration is transactional, so a failure rolls back all rows. In Compose use
 `docker compose exec backend python backend/scripts/encrypt_platform_cookies.py`
 with the service's `.env` already loaded. Do not rotate the key without a

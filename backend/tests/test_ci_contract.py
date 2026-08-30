@@ -63,6 +63,12 @@ def test_ci_keeps_engine_self_test_and_backend_gate_without_masking_failures():
     assert "|| true" not in text
 
 
+def test_ci_runs_the_opt_in_clean_install_contract_separately():
+    workflow = CI_FILE.read_text(encoding="utf-8")
+    assert "KOIFETCH_RUN_LIVE_INSTALL: \"1\"" in workflow
+    assert "python -m pytest backend/tests/test_compatible_wheels.py -m integration -q" in workflow
+
+
 def test_operations_runbook_covers_cookie_migration_and_security_boundaries():
     text = OPERATIONS_FILE.read_text(encoding="utf-8")
     text = re.sub(r"\s+", " ", text)
