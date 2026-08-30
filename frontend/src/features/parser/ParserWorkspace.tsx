@@ -77,21 +77,6 @@ export function ParserWorkspace(): JSX.Element {
 
   const handleParse = async () => {
     await parse();
-    // 解析结束后默认自动下载视频（fire-and-forget）：下载完成后预览可直接
-    // 播放，下载中心/角标同步展示进度。重复/已完成等冲突静默忽略。
-    const parsed = useParserStore.getState().results;
-    for (const result of parsed) {
-      if (result.type !== 'video') continue;
-      void submitDownload(result.task_id, {
-        format: result.format ?? undefined,
-        quality: result.available_qualities[0] ?? undefined,
-        title: result.title,
-      }).catch(() => {
-        // 3002 (already downloading) / 3003 (identical variant completed) and
-        // transient errors are expected — the drawer and the explicit
-        // download button remain the recovery path.
-      });
-    }
   };
 
   const handleReset = () => {
@@ -128,7 +113,7 @@ export function ParserWorkspace(): JSX.Element {
   const handleDownload = async (result: ParseResult, options: DownloadOptions) => {
     // 下载 = 前端下载到本地: if the file is already downloaded server-side
     // with a valid link, open it directly (the browser saves it locally) —
-    // the auto-download after parse usually makes this the instant path.
+    // an earlier explicit download may make this the instant path.
     const item = useDownloadsStore
       .getState()
       .items.find(

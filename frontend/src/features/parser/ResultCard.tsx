@@ -57,8 +57,8 @@ export function ResultCard({
   const [bitrate, setBitrate] = useState<string | null>(result.available_bitrates[0] ?? null);
   const [activeImage, setActiveImage] = useState(0);
 
-  // A completed download's still-valid file link for this task — the LAST
-  // playback fallback for videos (the auto-download keeps making it appear).
+  // A completed download's still-valid file link for this task — the final
+  // playback fallback for videos after manifest/legacy engine sources.
   const completedUrl = useDownloadsStore((state) => {
     const item = state.items.find(
       (i) => i.task_id === result.task_id && i.status === 'completed' && i.download_url != null,
@@ -72,11 +72,16 @@ export function ResultCard({
   const hasBitrate = result.available_bitrates.length > 0;
   const sizeText = result.file_size_mb != null ? `${result.file_size_mb} MB` : '—';
 
-  // Ordered playback candidates: stream proxy first (same-origin, robust),
-  // then the engine's direct CDN URL, then the completed local file.
+  // Ordered playback candidates: public manifest routes first, then legacy
+  // engine URLs and completed local files for compatibility with old rows.
   const playableSources: PlayableSource[] = useMemo(() => {
     if (result.type !== 'video') return [];
     const sources: PlayableSource[] = [];
+    if (result.manifest?.kind === 'video') {
+      for (const item of result.manifest.videos) {
+        sources.push({ url: item.url, format: item.format });
+      }
+    }
     if (result.video_url) {
       sources.push({ url: mediaApi.streamUrl(result.task_id), format: result.format });
       sources.push({ url: result.video_url, format: result.format });
@@ -89,9 +94,13 @@ export function ResultCard({
 
   const showPlayer = result.type === 'video' && playableSources.length > 0;
 
-  // Album slide URLs: the engine's list, else the single cover.
+  // Album slide URLs: public manifest routes, then legacy engine list, else
+  // the single cover.
   const albumImages: string[] = useMemo(() => {
     if (result.type !== 'image') return [];
+    if (result.manifest?.kind === 'image_album') {
+      return result.manifest.images.map((item) => item.url);
+    }
     if (result.images && result.images.length > 0) return result.images;
     return result.cover ? [result.cover] : [];
   }, [result]);

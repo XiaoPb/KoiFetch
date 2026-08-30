@@ -106,6 +106,27 @@ exists. In the `backend/` layout the default resolves to
 `FRONTEND_DIST_PATH` is served verbatim at `/` — never point it at `.` or the
 repo root, which would expose the whole tree as static files.
 
+### 1.6 Parse and preview media contract
+
+`POST /api/parse` fetches and persists metadata only. A successful parse creates
+one `ParseTask` row, but does not create a `DownloadTask`, enqueue work, or
+write a Bubble file. Bubble storage and downloads begin only after an explicit
+download submission from the client.
+
+The f2 parser currently accepts Douyin, Weibo, and TikTok URLs. Douyin and
+TikTok require a configured cookie; Weibo public posts can parse without one,
+though a post that reports a cookie-required error still fails. Live Photos are
+currently recognized only from Douyin's still/motion fields (`aweme_type == 68`
+or paired motion resources). Weibo and TikTok are video/image parsers and do
+not synthesize live-photo pairs.
+
+Parser responses expose media through same-origin manifest routes such as
+`/api/preview/{task_id}/resources/video/0` and
+`/api/preview/{task_id}/resources/live/0/image`. The legacy `video_url` and
+`images` fields, when present in persisted metadata, are compatibility-only
+private upstream values; public clients must use `manifest` routes and must not
+render or log those upstream URLs.
+
 ---
 
 ## 2. Compose commands

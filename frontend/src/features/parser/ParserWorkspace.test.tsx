@@ -7,7 +7,7 @@ import { parseApi, downloadApi } from '../../services/api';
 import { ApiError } from '../../types/api';
 import type { ParseResult } from '../../types/api';
 import { useAppStore } from '../../stores/appStore';
-import { selectActiveCount, useDownloadsStore } from '../../stores/downloadsStore';
+import { useDownloadsStore } from '../../stores/downloadsStore';
 import { useParserStore, PARSER_EMPTY_INPUT_MESSAGE, PARSER_TOO_MANY_URLS_MESSAGE } from './parserStore';
 import { usePreviewStore } from './previewStore';
 import { useCookieStore } from '../cookies/cookieStore';
@@ -79,9 +79,10 @@ const videoResult: ParseResult = {
   format: 'mp4',
   available_qualities: ['1080p', '720p'],
   available_bitrates: [],
-  manifest: null,
-  video_url: null,
-  images: [],
+  manifest: {
+    kind: 'video',
+    videos: [{ url: '/api/preview/t1/resources/video/0', format: 'mp4', quality: '1080p' }],
+  },
 };
 
 const musicResult: ParseResult = {
@@ -97,8 +98,6 @@ const musicResult: ParseResult = {
   available_qualities: [],
   available_bitrates: ['320kbps', 'FLAC'],
   manifest: null,
-  video_url: null,
-  images: [],
 };
 
 const imageResult: ParseResult = {
@@ -107,34 +106,63 @@ const imageResult: ParseResult = {
   type: 'image',
   platform: 'xiaohongshu',
   title: 'Post C',
-  cover: 'https://example.com/c.jpg',
+  cover: '/api/preview/t3/resources/image/0',
   duration: null,
   file_size_mb: 0.8,
   format: 'jpg',
   available_qualities: [],
   available_bitrates: [],
-  manifest: null,
-  video_url: null,
-  images: ['https://cdn.example.com/1.jpg', 'https://cdn.example.com/2.jpg'],
+  manifest: {
+    kind: 'image_album',
+    images: [
+      { url: '/api/preview/t3/resources/image/0', format: 'jpg' },
+      { url: '/api/preview/t3/resources/image/1', format: 'jpg' },
+    ],
+  },
 };
 
 // Engine-style video: the backend resolved a direct playable URL, so the card
 // plays it inline via the stream proxy without waiting for a download.
-const videoWithUrlResult: ParseResult = {
+const manifestVideoResult: ParseResult = {
   task_id: 't4',
   url: 'https://v.douyin.com/xyz/',
   type: 'video',
   platform: 'douyin',
   title: 'Video D',
-  cover: 'https://cdn.example.com/d.jpg',
+  cover: null,
   duration: null,
   file_size_mb: 5.2,
   format: 'mp4',
   available_qualities: [],
   available_bitrates: [],
-  manifest: null,
-  video_url: 'https://cdn.example.com/d.mp4',
-  images: [],
+  manifest: {
+    kind: 'video',
+    videos: [{ url: '/api/preview/t4/resources/video/0', format: 'mp4', quality: null }],
+  },
+};
+
+const livePhotoResult: ParseResult = {
+  task_id: 't5',
+  url: 'https://example.com/live/e',
+  type: 'live_photo',
+  platform: 'douyin',
+  title: 'Live E',
+  cover: '/api/preview/t5/resources/live/0/image',
+  duration: null,
+  file_size_mb: null,
+  format: 'heic',
+  available_qualities: [],
+  available_bitrates: [],
+  manifest: {
+    kind: 'live_photo',
+    live_photos: [
+      {
+        image_url: '/api/preview/t5/resources/live/0/image',
+        motion_url: '/api/preview/t5/resources/live/0/motion',
+      },
+    ],
+    warnings: [],
+  },
 };
 
 // --- helpers ---
@@ -238,7 +266,7 @@ describe('ParserWorkspace', () => {
     expect(within(card).getByTestId('platform-t1')).toHaveTextContent('douyin');
     expect(within(card).getByText('mp4')).toBeInTheDocument();
     expect(within(card).getByText('12.5 MB')).toBeInTheDocument();
-    expect(within(card).getByTestId('duration-t1')).toHaveTextContent('01:23');
+    expect(within(card).getByTestId('card-player-t1')).toBeInTheDocument();
     expect(screen.queryByTestId('result-card-t2')).not.toBeInTheDocument();
 
     expect(screen.getByTestId('parser-failed')).toHaveTextContent('平台不支持');
@@ -444,34 +472,18 @@ describe('ParserWorkspace', () => {
     expect(usePreviewStore.getState().activeTask).toEqual(musicResult);
   });
 
-  it('auto-downloads video results after parse and bumps the badge', async () => {
-    (parseApi.parse as Mock).mockResolvedValue({ results: [videoResult], failed: [] });
-    (downloadApi.submit as Mock).mockResolvedValue({
-      download_id: 'd1',
-      task_id: 't1',
-      status: 'pending',
-      created_at: '2026-01-01T00:00:00Z',
-    });
+  it('renders manifest-backed video and live-photo previews without downloading on parse', async () => {
+    (parseApi.parse as Mock).mockResolvedValue({ results: [videoResult, livePhotoResult], failed: [] });
     renderWithProviders(<ParserWorkspace />);
-    await submitUrl('https://example.com/v/a');
+    await parseSeeded('https://example.com/v/a\nhttps://example.com/live/e');
 
-    // 解析结束默认自动下载: the badge bumps without any click.
-    await waitFor(() => expect(selectActiveCount(useDownloadsStore.getState())).toBe(1));
-    expect(downloadApi.submit).toHaveBeenCalledWith('t1', {
-      format: 'mp4',
-      quality: '1080p',
-    });
-    expect(useDownloadsStore.getState().items[0]).toMatchObject({
-      download_id: 'd1',
-      task_id: 't1',
-      status: 'pending',
-      format: 'mp4',
-      quality: '1080p',
-      title: 'Video A',
-    });
+    expect(await screen.findByTestId('card-player-t1')).toBeInTheDocument();
+    expect(await screen.findByTestId('live-photo-t5')).toBeInTheDocument();
+    expect(downloadApi.submit).not.toHaveBeenCalled();
+    expect(useDownloadsStore.getState().items).toHaveLength(0);
   });
 
-  it('does not auto-download music results (v1 engine limitation)', async () => {
+  it('does not submit downloads for music results while parsing', async () => {
     (parseApi.parse as Mock).mockResolvedValue({ results: [musicResult], failed: [] });
     renderWithProviders(<ParserWorkspace />);
     await submitUrl('https://example.com/m/b');
@@ -503,14 +515,13 @@ describe('ParserWorkspace', () => {
     expect(screen.queryByTestId('duration-t1')).not.toBeInTheDocument();
   });
 
-  it('plays an engine video inline via the stream proxy, with only a download action', async () => {
-    (parseApi.parse as Mock).mockResolvedValue({ results: [videoWithUrlResult], failed: [] });
+  it('plays a manifest video inline through its same-origin resource route', async () => {
+    (parseApi.parse as Mock).mockResolvedValue({ results: [manifestVideoResult], failed: [] });
     renderWithProviders(<ParserWorkspace />);
     await submitUrl('https://v.douyin.com/xyz/');
 
     const player = await screen.findByTestId('card-player-t4');
-    // The proxy URL is the first playback candidate.
-    expect(player).toHaveAttribute('data-sources', '/api/preview/t4/stream,https://cdn.example.com/d.mp4');
+    expect(player).toHaveAttribute('data-sources', '/api/preview/t4/resources/video/0');
     // [预览] is gone; [下载] remains.
     expect(screen.queryByTestId('preview-t4')).not.toBeInTheDocument();
     expect(screen.getByTestId('download-t4')).toBeInTheDocument();
