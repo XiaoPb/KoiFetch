@@ -26,8 +26,8 @@ Structured WS events (PRD §5.5), documented contract:
   (约 2分钟) is the frontend's formatting concern.
 * ``{"type": "complete", "data": {..., "download_url":
   "/api/download/file/{id}?token=...", "token_expire_at": "<ISO-8601>"}}`` —
-  completed; the URL carries a fresh one-time token minted at send time and
-  ``token_expire_at`` its 5-minute validity. The field is named ``download_url``
+  completed; the URL carries a fresh short-lived reusable token minted at send
+  time and ``token_expire_at`` its 5-minute validity. The field is named ``download_url``
   (the plan's wording) — the PRD wavers between ``download_url`` and
   ``file_url``; keep ``download_url``.
 * ``{"type": "error", "data": {code, message, ...state}}`` — one uniform error
@@ -397,7 +397,8 @@ def _event_for(progress: DownloadProgress, service: DownloadService) -> dict:
     """Build the structured snapshot event for a task state (PRD §5.5).
 
     ``progress`` for pending/downloading; ``complete`` for completed (with a
-    fresh one-time ``download_url`` and its ``token_expire_at``); ``error``
+    fresh short-lived reusable ``download_url`` and its ``token_expire_at``);
+    ``error``
     for failed/expired — one uniform error shape carrying ``code``/``message``
     plus the state fields (failed → 5002, expired → 5004).
     """

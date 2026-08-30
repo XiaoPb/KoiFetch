@@ -37,7 +37,8 @@ Design decisions (stable contract for Task 11):
 Security note: the WS endpoint (``app.api.download.download_ws``) is
 deliberately unauthenticated in v1 — a random ``download_id`` UUID is the only
 gate, and events only leak progress for an id the caller already knows. This
-contrasts with the file endpoint, which is gated by the one-time token.
+contrasts with the file endpoint, which is gated by a short-lived reusable
+file token.
 """
 
 from __future__ import annotations

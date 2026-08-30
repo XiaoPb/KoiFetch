@@ -41,9 +41,9 @@ code          meaning                 HTTP        notes
                                                     COMPLETED status, including
                                                     expired)
 5003          Token无效或已过期       401         download file: missing, malformed,
-                                                    expired, mis-targeted, or reused
-                                                    one-time token (single code per
-                                                    PRD — no 2003/2004 split here)
+                                                    expired, or mis-targeted file
+                                                    token (single code per PRD — no
+                                                    2003/2004 split here)
 5004          文件已过期              410         download file: task expired
 2001          未登录 / Not logged in  401         missing/malformed Authorization
 2002          权限不足 / Forbidden    403         reserved for a future role

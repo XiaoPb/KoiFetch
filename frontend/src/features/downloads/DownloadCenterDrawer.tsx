@@ -24,8 +24,8 @@ const FAILED_STATUSES = ['failed', 'expired'] as const;
  * rendering, WS/polling progress, and the completed-file handoff.
  *
  * Affordances (documented, only what the backend supports):
- * - completed → [获取文件] opens the tokenized `download_url` (one-time token,
- *   5-minute validity). If the link was missed (polling-only path) or its
+ * - completed → [获取文件] opens the tokenized `download_url` (short-lived
+ *   reusable token, 5-minute validity). If the link was missed (polling-only path) or its
  *   token expired, the drawer shows an honest hint + [刷新链接] which briefly
  *   reconnects the socket to capture a fresh `complete` event (the backend
  *   has NO HTTP endpoint that mints a link token).
@@ -119,8 +119,8 @@ export function DownloadCenterDrawer({ open, onClose }: DownloadCenterDrawerProp
       return;
     }
     // Direct navigation to the tokenized file URL; the backend serves the
-    // bytes with a Content-Disposition attachment header. One-time token:
-    // a reused link fails server-side with 5003 — the refresh action covers it.
+    // bytes with a Content-Disposition attachment header. The short-lived
+    // reusable token remains valid for repeated playback/Range/HEAD requests.
     window.open(downloadApi.getFileUrl(item.download_url), '_blank', 'noopener');
   };
 

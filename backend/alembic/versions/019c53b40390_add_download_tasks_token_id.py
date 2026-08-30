@@ -1,8 +1,8 @@
 """add download_tasks.token_id
 
-Stores the one-time token ``tid`` claim on the row that first served the
-bubble file, so the download-file API (Task 9) can enforce single use
-atomically without an external registry.
+Adds a nullable column for the download token ``tid`` claim, allowing the
+download-file API (Task 9) to bind a short-lived link to the task/filename and
+retain an audit identifier without an external registry.
 
 Revision ID: 019c53b40390
 Revises: 56320d63278e

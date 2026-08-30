@@ -155,9 +155,9 @@ the same `DATABASE_URL`/storage vars.
   (musicdl is a keyword-search engine; the musicdl download path is built but
   reachable only via persisted `song_info` metadata — playlist/music-search
   support is a v1.1 item).
-- **File tokens are short-lived (5 min), not single-use** — required for
-  playback (repeated/range requests). Expired links 401; the UI's 刷新链接
-  re-mints one.
+- **File tokens are short-lived (5 min) and reusable** — bound to the download
+  task and its stored filename, and required for playback (repeated/range/
+  HEAD requests). Expired links 401; the UI's 刷新链接 re-mints one.
 - **Retention.** Bubble files (not saved to NAS) are swept after
   `BUBBLE_EXPIRE_HOURS` (default 24h); pond files are permanent. NAS save
   moves a completed bubble file into the pond.

@@ -1,10 +1,10 @@
 """Tests for the JWT token providers (``app/adapters/tokens_jwt.py``).
 
 Covers: issue/validate round-trips, the seven-day access-token expiry, the 5-minute
-one-time token expiry, invalid-signature/garbage/tampered-token rejection, and
-the documented design decision that one-time token *single-use* enforcement
-lives in the caller (the API layer of Task 9), not in the adapter: ``validate``
-is stateless and returns a ``token_id`` the caller can record to detect reuse.
+short-lived file-token expiry, invalid-signature/garbage/tampered-token
+rejection, and the documented design decision that file-token validation is
+reusable and stateless: ``validate`` returns a unique ``token_id`` the caller
+can record for task binding and audit.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -150,10 +150,10 @@ class TestJwtOneTimeTokenProvider:
         token = provider.issue(download_id=DOWNLOAD_ID)
         claims = provider.validate(token)
         assert claims.download_id == DOWNLOAD_ID
-        assert claims.token_id  # non-empty, used by the caller for single-use
+        assert claims.token_id  # non-empty unique issuance id for audit
         assert claims.expires_at > claims.issued_at
 
-    def test_one_time_token_lasts_5_minutes(self):
+    def test_download_token_lasts_5_minutes(self):
         provider = JwtOneTimeTokenProvider(SECRET)
         claims = provider.validate(provider.issue(download_id=DOWNLOAD_ID))
         assert claims.expires_at - claims.issued_at == timedelta(minutes=5)
@@ -186,7 +186,7 @@ class TestJwtOneTimeTokenProvider:
         # Documented design decision: the adapter never marks a token used;
         # validate() may be called repeatedly and returns the same claims.
         # The file endpoint treats the token as SHORT-LIVED (5 minutes), not
-        # single-use, so playback's repeated requests all validate.
+        # reusable, so playback's repeated requests all validate.
         provider = JwtOneTimeTokenProvider(SECRET)
         token = provider.issue(download_id=DOWNLOAD_ID)
         first = provider.validate(token)

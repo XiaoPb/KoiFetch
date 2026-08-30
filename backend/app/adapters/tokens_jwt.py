@@ -1,4 +1,4 @@
-"""JWT token providers: access tokens (7d) and one-time download tokens (5 min).
+"""JWT token providers: access tokens (7d) and reusable download tokens (5 min).
 
 Implements :class:`app.adapters.protocols.AccessTokenProvider` and
 :class:`app.adapters.protocols.OneTimeTokenProvider` with PyJWT (HS256, shared
@@ -10,16 +10,18 @@ download-file API of Task 9 consume these):
 
 * Access token: ``sub`` = user id as a string, ``username``, ``jti``, ``iat``,
   ``exp`` (issued-at + 7d by default).
-* One-time token: ``tid`` = a fresh ``uuid4`` *token id*, ``dl`` = the
+* Download token: ``tid`` = a fresh ``uuid4`` *token id*, ``dl`` = the
   download id the token authorizes, ``iat``, ``exp`` (issued-at + 5 min).
+  The download-file service binds that task id to its stored filename before
+  serving the file; the filename is not a free-form client-controlled target.
 
-**Design decision — single use is the caller's job.** ``validate`` is pure:
-it never marks a token consumed, and calling it repeatedly returns the same
-claims. The download-file API (Task 9) enforces single-use semantics by
-recording the returned ``token_id`` (atomically, before serving the file) and
-rejecting any later request carrying an already-recorded id. Keeping the
-adapter stateless lets the same provider scale freely; an in-memory/DB
-consumption registry is a Task 9 concern, not a token-format concern.
+**Design decision — validation is stateless and reusable.** ``validate`` is
+pure: it never consumes a token, and calling it repeatedly returns the same
+claims. The download-file API records the returned ``token_id`` and expiry for
+task+filename binding/audit, but does not reject later requests carrying the
+same id.
+Keeping the adapter stateless lets the same provider scale freely; expiry is
+the security boundary and repeated Range/HEAD playback requests are allowed.
 
 Errors: :meth:`validate` raises only :class:`app.adapters.protocols.TokenError`
 subclasses (``TokenExpiredError`` / ``InvalidTokenError``) so callers never
@@ -157,7 +159,7 @@ class JwtAccessTokenProvider(_JwtProviderBase, AccessTokenProvider):
 
 
 class JwtOneTimeTokenProvider(_JwtProviderBase, OneTimeTokenProvider):
-    """HS256 one-time download tokens valid for 5 minutes."""
+    """HS256 download tokens reusable for 5 minutes."""
 
     def __init__(
         self, secret_key: str, *, ttl: timedelta = _ONE_TIME_TTL

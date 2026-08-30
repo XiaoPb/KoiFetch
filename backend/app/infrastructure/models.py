@@ -241,10 +241,10 @@ class DownloadTask(Base):
     error_message: Mapped[str | None] = mapped_column(Text)
     bubble_path: Mapped[str | None] = mapped_column(Text)
     pond_path: Mapped[str | None] = mapped_column(Text)
-    # One-time download-link bookkeeping (Task 9): ``token_id`` records the
-    # ``tid`` claim of the first (and only) token that served this file, so
-    # single use is enforced atomically at the row level; ``token_expires_at``
-    # mirrors that token's ``exp`` claim for inspection.
+    # Download-link metadata (Task 9): ``token_id`` identifies a unique ``tid``
+    # issuance and ``token_expires_at`` mirrors that token's ``exp`` claim.
+    # These nullable fields support task+filename audit/expiry inspection; they
+    # do not atomically consume a token or gate repeated serving.
     token_id: Mapped[str | None] = mapped_column(String(36))
     token_expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     created_at: Mapped[datetime] = mapped_column(

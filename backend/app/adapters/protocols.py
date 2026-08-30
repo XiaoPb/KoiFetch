@@ -26,12 +26,14 @@ Design decisions (documented once, relied on by Tasks 7-12):
   open/write time (TOCTOU note, Task 5). Traversal attempts raise
   :class:`app.domain.paths.PathOutsideRootError`.
 * **Tokens: two protocols, stateless validate.** JWT access tokens (seven days
-  by default, configurable) and one-time file tokens (5 min) are separate
-  concerns with separate callers
+  by default, configurable) and short-lived reusable file tokens (5 min) are
+  separate concerns with separate callers
   (auth service vs. download-file API), so they are two protocols. ``validate``
-  is *pure*: it never marks a token used. Single-use enforcement for one-time
-  tokens is the caller's job (Task 9 records the returned ``token_id`` before
-  serving the file); the adapter stays stateless so it can be shared and
+  is *pure*: it never consumes a token. The download-file API records the
+  returned ``token_id`` and expiry for task+filename binding and audit, but it
+  does not
+  atomically consume the token; repeated Range/HEAD playback requests remain
+  valid until expiry. The adapter stays stateless so it can be shared and
   scaled freely.
 """
 
@@ -329,10 +331,11 @@ class AccessTokenProvider(Protocol):
 
 @dataclass(frozen=True)
 class OneTimeTokenClaims:
-    """Decoded, validated one-time download-token claims.
+    """Decoded, validated short-lived download-token claims.
 
     ``token_id`` uniquely identifies this issuance; the download-file API
-    (Task 9) records it to enforce single use.
+    records it with the task/filename and expiry for audit, not for atomic
+    consumption.
     """
 
     token_id: str
@@ -343,14 +346,15 @@ class OneTimeTokenClaims:
 
 @runtime_checkable
 class OneTimeTokenProvider(Protocol):
-    """Issue/validate 5-minute single-use download tokens.
+    """Issue/validate 5-minute reusable download tokens.
 
-    ``validate`` is stateless (see module docstring): single-use enforcement
-    is the caller's job via the returned ``token_id``.
+    ``validate`` is stateless (see module docstring): valid tokens serve
+    repeated playback requests, including Range/HEAD, until expiry. The
+    returned ``token_id`` identifies the issuance for task binding/audit.
     """
 
     def issue(self, *, download_id: str) -> str:
-        """Create a signed one-time token for a download."""
+        """Create a signed short-lived token for a download."""
         ...
 
     def validate(self, token: str) -> OneTimeTokenClaims:

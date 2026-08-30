@@ -147,6 +147,10 @@ def get_access_token_provider(
 def get_one_time_token_provider(
     settings: Settings | None = None,
 ) -> OneTimeTokenProvider:
-    """Return the 5-minute one-time download-token provider (Task 9)."""
+    """Return the 5-minute reusable download-token provider (Task 9).
+
+    The function/provider name is retained for API compatibility; the issued
+    token is short-lived and reusable for Range/HEAD playback until expiry.
+    """
     settings = settings or get_settings()
     return JwtOneTimeTokenProvider(settings.secret_key)

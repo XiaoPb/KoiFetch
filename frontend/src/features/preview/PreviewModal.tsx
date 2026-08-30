@@ -62,8 +62,8 @@ export function PreviewModal(): JSX.Element {
   // Recovery: after a page reload the session-local download list is empty,
   // so a completed download is invisible to the preview. Ask the backend for
   // the task's NEWEST download; if it already completed, re-attach it to the
-  // store and refresh its file link (the WS mints a fresh one-time token →
-  // `complete` event → the player appears). In-session flows (auto-download
+  // store and refresh its file link (the WS mints a fresh short-lived reusable
+  // token → `complete` event → the player appears). In-session flows (auto-download
   // after parse) never need this: the store already has the item.
   useEffect(() => {
     if (!taskId || data?.preview_type !== 'video' || completedUrl) return;

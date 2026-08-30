@@ -4,7 +4,7 @@ The worker is the *execution* side of the download pipeline: it polls for
 ``pending`` tasks, atomically claims them (``pending -> downloading``), drives
 the downloader adapter with a progress callback that persists byte-level
 progress and publishes WebSocket events through the event hub, and records
-either completion (bubble file written, one-time token issued) or failure
+either completion (bubble file written, short-lived file token issued) or failure
 (retry budget, capped at :data:`MAX_RETRIES`).
 
 Design decisions (stable contract for Tasks 12+):
@@ -461,7 +461,7 @@ def _progress_event(progress: DownloadProgress) -> dict:
 
 
 def _complete_event(result: DownloadResult, issued: IssuedDownloadToken) -> dict:
-    """The WS ``complete`` event with a fresh one-time download link."""
+    """The WS ``complete`` event with a fresh reusable download link."""
     return {
         "type": "complete",
         "data": {

@@ -37,7 +37,7 @@ NAS save.
 real WebSocket ``complete`` event (snapshot-on-connect for the completed
 download) — the exact ``download_url`` a frontend client would click — and then
 used against ``GET /api/download/file/{id}?token=...``; the token is verified
-short-lived (5 minutes), NOT single-use, by replaying the same token (playback
+short-lived (5 minutes), reusable by replaying the same token (playback
 needs repeated/range requests). The worker's
 ``complete`` event (also carrying ``download_url`` + ``token_expire_at``) is
 asserted from the hub capture and its *own* minted token is fetched too,
@@ -240,7 +240,7 @@ class TestEndToEndSmoke:
             # The WebSocket snapshot for a completed download mints a fresh
             # link — the exact event a frontend client receives — so the smoke
             # uses its token for the file endpoint, then replays the same
-            # token: the token is SHORT-LIVED (5 minutes), not single-use, so
+            # token: the token is SHORT-LIVED (5 minutes), reusable, so
             # playback's repeated/range requests all keep serving.
             with client.websocket_connect(f"/ws/download/{download_id}") as ws:
                 ws_event = ws.receive_json()
@@ -262,7 +262,7 @@ class TestEndToEndSmoke:
 
             # The token the WORKER minted into its complete event also serves
             # the file (the last hop of the worker-minted link, distinct from
-            # the WS-minted link above — single use is per issuance).
+            # the WS-minted link above — each issuance has its own token id).
             worker_link = client.get(
                 f"/api/download/file/{download_id}?token={worker_token}"
             )

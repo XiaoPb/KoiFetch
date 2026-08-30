@@ -258,7 +258,7 @@ class TestRunOnce:
         assert downloaded.path.read_bytes() == expected_stub_bytes(
             download_id, "示例视频", STUB_TOTAL
         )
-        # Short-lived, not single-use: playback issues repeated requests.
+        # Short-lived and reusable: playback issues repeated requests.
         again = service.get_file(download_id, token)
         assert again.path.read_bytes() == expected_stub_bytes(
             download_id, "示例视频", STUB_TOTAL

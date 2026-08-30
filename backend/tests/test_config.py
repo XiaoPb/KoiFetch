@@ -31,6 +31,50 @@ AUTH_DOCUMENTATION_FILES = (
     REPO_ROOT / "docs" / "deployment.md",
     REPO_ROOT / "backend" / "requirements.txt",
 )
+PUBLIC_FILE_TOKEN_DOCUMENTATION_FILES = (
+    REPO_ROOT / "README.md",
+    REPO_ROOT / "OPERATIONS.md",
+    REPO_ROOT / "RELEASE-CHECKLIST.md",
+    REPO_ROOT / "docs" / "deployment.md",
+    REPO_ROOT / "backend" / "requirements.txt",
+)
+FILE_TOKEN_CONTRACT_FILES = (
+    *AUTH_DOCUMENTATION_FILES,
+    REPO_ROOT
+    / "backend"
+    / "alembic"
+    / "versions"
+    / "019c53b40390_add_download_tasks_token_id.py",
+    REPO_ROOT / "backend" / "app" / "adapters" / "protocols.py",
+    REPO_ROOT / "backend" / "app" / "adapters" / "tokens_jwt.py",
+    REPO_ROOT / "backend" / "app" / "adapters" / "factory.py",
+    REPO_ROOT / "backend" / "app" / "api" / "download.py",
+    REPO_ROOT / "backend" / "app" / "api" / "responses.py",
+    REPO_ROOT / "backend" / "app" / "application" / "download_events.py",
+    REPO_ROOT / "backend" / "app" / "application" / "download_service.py",
+    REPO_ROOT / "backend" / "app" / "infrastructure" / "models.py",
+    REPO_ROOT / "backend" / "app" / "workers" / "worker.py",
+    REPO_ROOT
+    / "frontend"
+    / "src"
+    / "features"
+    / "downloads"
+    / "VideoPlayerModal.tsx",
+    REPO_ROOT
+    / "frontend"
+    / "src"
+    / "features"
+    / "downloads"
+    / "DownloadCenterDrawer.tsx",
+    REPO_ROOT / "frontend" / "src" / "features" / "preview" / "PreviewModal.tsx",
+    REPO_ROOT / "frontend" / "src" / "stores" / "downloadsStore.ts",
+    REPO_ROOT / "backend" / "tests" / "test_download_service.py",
+    REPO_ROOT / "backend" / "tests" / "test_download_api.py",
+    REPO_ROOT / "backend" / "tests" / "test_download_ws.py",
+    REPO_ROOT / "backend" / "tests" / "test_smoke.py",
+    REPO_ROOT / "backend" / "tests" / "test_tokens.py",
+    REPO_ROOT / "backend" / "tests" / "test_worker.py",
+)
 
 
 @pytest.fixture
@@ -105,15 +149,26 @@ class TestSessionDocumentation:
     def test_file_token_docs_describe_short_lived_reusable_tokens(self):
         stale_phrases = (
             "one-time file token",
+            "one-time token",
             "single-use file token",
+            "single-use token",
             "file tokens are valid 5 minutes and single-use",
             "file tokens are 5-minute and single-use",
             "one-time-token-gated",
         )
-        for path in AUTH_DOCUMENTATION_FILES:
+        for path in FILE_TOKEN_CONTRACT_FILES:
             text = path.read_text(encoding="utf-8").lower()
             for phrase in stale_phrases:
                 assert phrase not in text, f"stale file-token wording in {path}"
+
+    def test_public_file_token_contract_documents_binding_and_reuse(self):
+        for path in PUBLIC_FILE_TOKEN_DOCUMENTATION_FILES:
+            text = path.read_text(encoding="utf-8").lower()
+            assert "reusable" in text, f"missing reusable file-token wording in {path}"
+            assert "range" in text and "head" in text, (
+                f"missing range/head file-token wording in {path}"
+            )
+            assert "filename" in text, f"missing filename binding wording in {path}"
 
 
 class TestEnvOverrides:

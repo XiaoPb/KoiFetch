@@ -350,9 +350,9 @@ Applies the two migration revisions:
 
 1. `56320d63278e` — initial schema: `users`, `parse_tasks`, `download_tasks`
    (+ indexes).
-2. `019c53b40390` — adds `download_tasks.token_id`, storing the one-time token
-   `tid` claim that first served the bubble file so the file endpoint can
-   enforce single use atomically.
+2. `019c53b40390` — adds nullable `download_tasks.token_id` metadata for the
+   unique `tid` claim of a short-lived file link, allowing task+filename audit;
+   it is not an atomic-consumption marker and does not gate serving.
 
 `backend/alembic/env.py` resolves the database URL from the `DATABASE_URL`
 environment variable when set, otherwise from the typed settings; it creates
@@ -501,6 +501,7 @@ carries its one-line rationale:
 - **Cleanup CLI daemon mode duplicates the pass** if run alongside the worker
   (idempotent, so harmless) — prefer `--once` or the worker's built-in
   scheduler.
-- **File tokens are short-lived and reusable for 5 minutes** (the `token_id` is
-  recorded on the row for audit, but does not gate serving); repeated
-  Range/HEAD playback requests are allowed and expiry surfaces as `5003`.
+- **File tokens are short-lived and reusable for 5 minutes** (bound to the
+  download task and its stored filename; the `token_id` is recorded on the row
+  for audit, but does not gate serving); repeated Range/HEAD playback requests
+  are allowed and expiry surfaces as `5003`.

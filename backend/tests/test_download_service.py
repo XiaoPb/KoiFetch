@@ -12,7 +12,7 @@ Covers :class:`app.application.download_service.DownloadService`:
   while downloading; unknown download → ``3001``.
 * ``get_file`` — token rules: missing/invalid/expired/mis-targeted
   token → ``5003`` (401); the token is short-lived (5 minutes), NOT
-  single-use — repeated/range playback requests all serve until expiry.
+  reusable — repeated/range playback requests all serve until expiry.
   (same token twice → 5003, a fresh token still works); status rules: not
   completed → ``5002``, expired → ``5004`` (410); the bubble file must exist
   inside the bubble root (missing/absent path → ``5001`` (404), traversal
@@ -450,7 +450,7 @@ class TestGetFile:
         exc = api_error(excinfo.value)
         assert exc.code == CODE_FILE_TOKEN_INVALID
 
-    def test_token_is_short_lived_not_single_use(self, service, engine, storage):
+    def test_token_is_short_lived_and_reusable(self, service, engine, storage):
         # Playback compatibility: a media player issues multiple requests per
         # session (initial load + Range/seek + HEAD probes), so a valid token
         # must serve the file repeatedly until its 5-minute expiry.
@@ -472,7 +472,7 @@ class TestGetFile:
         assert service.get_file(download_id, second).path.is_file()
 
     def test_concurrent_requests_with_same_token_all_serve(self, service, engine, storage):
-        # No atomic single-use claim anymore: concurrent playback requests
+        # No atomic consumption claim: concurrent playback requests
         # (e.g. a video element issuing several Range requests at once) all
         # serve as long as the token is valid and correctly bound.
         task_id = seed_parse_task(engine)

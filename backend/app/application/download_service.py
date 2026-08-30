@@ -20,18 +20,20 @@ Design decisions (stable contract for Tasks 10-12):
   constraint exists by design); SQLite WAL serializes writes, so a duplicate
   pair can only slip through an exact same-instant race — documented, accepted
   for v1, and worth a partial unique index if it ever matters.
-* **Short-lived (not single-use) file token.** The client obtains a token
+* **Short-lived reusable file token.** The client obtains a token
   from the WebSocket ``complete`` event (``download_url``) or by calling
   ``issue_download_token`` — never from the file endpoint itself, which
   *requires* a token. ``get_file`` validates it (``TokenError`` subclasses all
   map to the single PRD code ``5003``) and checks the token targets this
-  download. The token is deliberately NOT consumed on first use: media
-  playback issues multiple requests per session (initial load plus
-  Range/seek requests and HEAD probes), so single-use would 401 the rest of a
-  playing video. A valid, unexpired, correctly-bound token serves the file
-  any number of times until its 5-minute expiry; expiry is the security
-  boundary. The ``tid``/``token_expires_at`` columns remain recorded on
-  issuance (the WS complete event) for audit, but no longer gate serving.
+  download and its stored filename. The token is deliberately NOT consumed on
+  first use: media playback issues multiple requests per session (initial load
+  plus Range/seek requests and HEAD probes); consuming it on first use would
+  401 the rest of a playing video. A valid, unexpired, correctly-bound token
+  serves that task's stored filename any number of times until its 5-minute
+  expiry; expiry is the security boundary. The ``tid`` claim and expiry
+  accompany issuance for audit; the
+  nullable ``token_id``/``token_expires_at`` metadata columns do not gate
+  serving or atomically consume a token.
 * **Error precedence in ``get_file`` (documented).** a blank/missing token
   short-circuits to ``5003`` (401) *before* any task/status lookup (a request
   with no credential reveals nothing about the task); otherwise: task missing →
@@ -47,8 +49,9 @@ Design decisions (stable contract for Tasks 10-12):
   :meth:`app.adapters.protocols.StorageAdapter.exists` re-verifies containment
   right before the API serves — the Task 5 TOCTOU rule applied to serving, not
   just writing.
-* **DI over globals.** The constructor takes the one-time token provider and
-  downloader (defaulting to ``app.adapters.factory``), an explicit storage
+* **DI over globals.** The constructor takes the short-lived file-token
+  provider and downloader (defaulting to ``app.adapters.factory``), an
+  explicit storage
   adapter (``None`` = degraded-storage mode, see :meth:`DownloadService.__init__`),
   and an optional ``engine``; ``create_app`` wires the production instance and
   tests pin a temp database + temp storage roots.
@@ -338,8 +341,9 @@ class DownloadService:
                     _MESSAGE_FILE_TOKEN_INVALID,
                 )
 
-            # Resolve + verify the bubble file BEFORE consuming the token, so a
-            # failed attempt (e.g. file swept by cleanup) does not burn the link.
+            # Resolve + verify the bubble file BEFORE serving the tokenized file,
+            # so a failed attempt (e.g. file swept by cleanup) does not burn the
+            # link.
             if not row.bubble_path:
                 raise ApiError(
                     HTTP_404_NOT_FOUND, CODE_FILE_NOT_FOUND, _MESSAGE_FILE_NOT_FOUND
@@ -350,11 +354,12 @@ class DownloadService:
                     HTTP_404_NOT_FOUND, CODE_FILE_NOT_FOUND, _MESSAGE_FILE_NOT_FOUND
                 )
 
-            # The token is SHORT-LIVED (5 minutes), not single-use: a media
+            # The token is SHORT-LIVED and reusable (5 minutes): a media
             # player issues multiple requests for one playback session (the
             # initial load plus Range/seek requests, HEAD probes), so burning
             # the token on the first request would 401 the rest. A valid,
-            # unexpired token bound to this download therefore serves the file
+            # unexpired token bound to this download and its stored filename
+            # therefore serves the file
             # any number of times until it expires; expiry/invalidation is the
             # security boundary. (The task was already verified COMPLETED and
             # the bubble file exists above — re-reading the row here is not
@@ -372,7 +377,7 @@ class DownloadService:
         This is how clients obtain a file/playback link (the WS ``complete``
         event calls it); ``3001`` (400) unknown download, ``5002`` (400) not
         yet completed. The token stays valid until expiry — see
-        :meth:`get_file` (short-lived, not single-use, so playback works).
+        :meth:`get_file` (short-lived and reusable, so playback works).
         """
         with session_scope(self._engine) as session:
             row = session.get(DownloadTask, download_id)

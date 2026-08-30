@@ -43,8 +43,9 @@ alembic>=1.13
 bcrypt>=3.2,<5
 
 # Tokens: PyJWT signs configurable admin access tokens (seven days by default)
-# and five-minute reusable file tokens issued by the download API; playback may
-# send repeated Range/HEAD requests (app/adapters/tokens_jwt.py).
+# and five-minute reusable file tokens issued by the download API; each token
+# binds a download task+filename and playback may send repeated Range/HEAD
+# requests (app/adapters/tokens_jwt.py).
 pyjwt>=2.13
 
 # Scheduling: APScheduler runs the worker daemon's periodic bubble-cleanup /
