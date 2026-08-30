@@ -63,22 +63,22 @@ export const parseApi = {
     const { data } = await apiClient.post<ParseData>('/parse', { urls });
     return {
       ...data,
-      results: data.results.map(normalizeParseResult),
+      results: data.results
+        .map(normalizeParseResult)
+        .filter((result): result is ParseResult => result !== null),
     };
   },
 };
 
-/** Values that were historically populated with private upstream media URLs. */
-const LEGACY_MEDIA_FIELDS = new Set([
-  'video_url',
-  'images',
-  'upstream_url',
-  'upstream_urls',
-  'cdn_url',
-  'cdn_urls',
-  'media_url',
-  'media_urls',
-]);
+/** Bounds applied to untrusted parse response values before renderer state. */
+const MAX_TASK_ID_LENGTH = 128;
+const MAX_URL_LENGTH = 4096;
+const MAX_LABEL_LENGTH = 256;
+const MAX_FORMAT_LENGTH = 64;
+const MAX_PUBLIC_TEXT_LENGTH = 256;
+const MAX_OPTION_COUNT = 128;
+const CONTROL_CHARACTER = /[\u0000-\u001f\u007f]/;
+const UNSAFE_PUBLIC_TEXT = /(?:[a-z][a-z0-9+.-]{1,31}:\/\/|\/\/[^\s]+|(?:access[_-]?token|auth|expires|key|secret|sig(?:nature)?|token)=)/i;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -88,8 +88,25 @@ function stringValue(value: unknown): string | null {
   return typeof value === 'string' ? value : null;
 }
 
+function parseResultType(value: unknown): ParseResult['type'] | null {
+  switch (value) {
+    case 'video':
+    case 'image':
+    case 'live_photo':
+    case 'music':
+      return value;
+    default:
+      return null;
+  }
+}
+
 function isSafeTaskId(value: unknown): value is string {
-  return typeof value === 'string' && value.length > 0 && !/[\\/?#]/.test(value);
+  return (
+    typeof value === 'string' &&
+    value.length > 0 &&
+    value.length <= MAX_TASK_ID_LENGTH &&
+    /^[A-Za-z0-9_-]+$/.test(value)
+  );
 }
 
 function isPublicResourceUrl(
@@ -107,11 +124,38 @@ function isPublicResourceUrl(
   return suffix === undefined || path[2] === suffix;
 }
 
-function normalizePublicManifest(value: unknown, taskId: unknown): PublicMediaManifest | null {
-  if (!isSafeTaskId(taskId)) return null;
-  if (!isRecord(value) || typeof value.kind !== 'string') return null;
+function isSafeString(value: unknown, maxLength: number): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= maxLength && !CONTROL_CHARACTER.test(value);
+}
 
-  if (value.kind === 'video' && Array.isArray(value.videos) && value.videos.length > 0) {
+function isSafePublicText(value: unknown): value is string {
+  return isSafeString(value, MAX_PUBLIC_TEXT_LENGTH) && !UNSAFE_PUBLIC_TEXT.test(value);
+}
+
+function isSafeStringArray(value: unknown, maxLength: number): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.length <= MAX_OPTION_COUNT &&
+    value.every((item) => isSafeString(item, maxLength))
+  );
+}
+
+function normalizePublicManifest(
+  value: unknown,
+  taskId: string,
+  resultType: string,
+): PublicMediaManifest | null {
+  if (!isRecord(value) || typeof value.kind !== 'string') return null;
+  if (resultType === 'music' || value.kind !== (resultType === 'image' ? 'image_album' : resultType)) {
+    return null;
+  }
+
+  if (
+    value.kind === 'video' &&
+    Array.isArray(value.videos) &&
+    value.videos.length > 0 &&
+    value.videos.length <= MAX_OPTION_COUNT
+  ) {
     const videos = value.videos.map((item) => {
       if (!isRecord(item)) return null;
       const url = stringValue(item.url);
@@ -120,8 +164,8 @@ function normalizePublicManifest(value: unknown, taskId: unknown): PublicMediaMa
       return (
         url !== null &&
         isPublicResourceUrl(url, taskId, 'video') &&
-        format !== null &&
-        (item.quality === null || quality !== null)
+        isSafeString(format, MAX_FORMAT_LENGTH) &&
+        (item.quality === null || (quality !== null && isSafePublicText(quality)))
       )
         ? { url, format, quality }
         : null;
@@ -130,12 +174,17 @@ function normalizePublicManifest(value: unknown, taskId: unknown): PublicMediaMa
     return { kind: 'video', videos };
   }
 
-  if (value.kind === 'image_album' && Array.isArray(value.images) && value.images.length > 0) {
+  if (
+    value.kind === 'image_album' &&
+    Array.isArray(value.images) &&
+    value.images.length > 0 &&
+    value.images.length <= MAX_OPTION_COUNT
+  ) {
     const images = value.images.map((item) => {
       if (!isRecord(item)) return null;
       const url = stringValue(item.url);
       const format = stringValue(item.format);
-      return url !== null && isPublicResourceUrl(url, taskId, 'image') && format !== null
+      return url !== null && isPublicResourceUrl(url, taskId, 'image') && isSafeString(format, MAX_FORMAT_LENGTH)
         ? { url, format }
         : null;
     });
@@ -147,6 +196,7 @@ function normalizePublicManifest(value: unknown, taskId: unknown): PublicMediaMa
     value.kind === 'live_photo' &&
     Array.isArray(value.live_photos) &&
     value.live_photos.length > 0 &&
+    value.live_photos.length <= MAX_OPTION_COUNT &&
     Array.isArray(value.warnings)
   ) {
     const livePhotos = value.live_photos.map((item) => {
@@ -163,7 +213,7 @@ function normalizePublicManifest(value: unknown, taskId: unknown): PublicMediaMa
         : null;
     });
     if (!livePhotos.every((item): item is NonNullable<typeof item> => item !== null)) return null;
-    if (!value.warnings.every((item) => typeof item === 'string')) return null;
+    if (value.warnings.length > MAX_OPTION_COUNT || !value.warnings.every(isSafePublicText)) return null;
     return {
       kind: 'live_photo',
       live_photos: livePhotos,
@@ -181,15 +231,61 @@ function normalizePublicManifest(value: unknown, taskId: unknown): PublicMediaMa
  * legacy URL-bearing compatibility fields are intentionally dropped so a
  * private CDN URL cannot reach renderer state or JSON serialization.
  */
-export function normalizeParseResult(result: unknown): ParseResult {
-  const source = isRecord(result) ? result : {};
-  const normalized = Object.fromEntries(
-    Object.entries(source).filter(([key]) => !LEGACY_MEDIA_FIELDS.has(key)),
-  );
+export function normalizeParseResult(result: unknown): ParseResult | null {
+  if (!isRecord(result)) return null;
+  const taskId = result.task_id;
+  const normalizedType = parseResultType(result.type);
+  if (!isSafeTaskId(taskId) || !isSafeString(result.url, MAX_URL_LENGTH) || normalizedType === null) {
+    return null;
+  }
+  const url = result.url;
+  const platform = result.platform;
+  const title = result.title;
+  if (!isSafeString(platform, MAX_LABEL_LENGTH) || !isSafeString(title, MAX_LABEL_LENGTH)) return null;
+  const cover = result.cover === null ? null : stringValue(result.cover);
+  if (cover === null && result.cover !== null) return null;
+  if (
+    cover !== null &&
+    !(
+      (normalizedType === 'image' && isPublicResourceUrl(cover, taskId, 'image')) ||
+      (normalizedType === 'live_photo' && isPublicResourceUrl(cover, taskId, 'live', 'image'))
+    )
+  ) {
+    return null;
+  }
+  const duration = result.duration === null ? null : stringValue(result.duration);
+  if (duration === null && result.duration !== null) return null;
+  const fileSizeMb = result.file_size_mb;
+  if (
+    fileSizeMb !== null &&
+    (typeof fileSizeMb !== 'number' || !Number.isFinite(fileSizeMb) || fileSizeMb < 0)
+  ) {
+    return null;
+  }
+  const format = result.format === null ? null : stringValue(result.format);
+  if (format === null && result.format !== null) return null;
+  const availableQualities = result.available_qualities;
+  const availableBitrates = result.available_bitrates;
+  if (!isSafeStringArray(availableQualities, MAX_LABEL_LENGTH)) return null;
+  if (!isSafeStringArray(availableBitrates, MAX_LABEL_LENGTH)) return null;
+  const manifest =
+    result.manifest === null || result.manifest === undefined
+      ? null
+      : normalizePublicManifest(result.manifest, taskId, normalizedType);
   return {
-    ...normalized,
-    manifest: normalizePublicManifest(source.manifest, source.task_id),
-  } as ParseResult;
+    task_id: taskId,
+    url,
+    type: normalizedType,
+    platform,
+    title,
+    cover,
+    duration,
+    file_size_mb: fileSizeMb,
+    format,
+    available_qualities: [...availableQualities],
+    available_bitrates: [...availableBitrates],
+    manifest,
+  };
 }
 
 export const previewApi = {
