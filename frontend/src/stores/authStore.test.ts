@@ -122,6 +122,28 @@ describe('authStore', () => {
     expect(store.getState().token).toBe('login-token');
   });
 
+  it('swallows a refresh rejection after a newer login has started', async () => {
+    let rejectRefresh!: (reason: unknown) => void;
+    let resolveLogin!: (data: LoginData) => void;
+    (authApi.refresh as Mock).mockReturnValue(new Promise<LoginData>((_resolve, reject) => {
+      rejectRefresh = reject;
+    }));
+    (authApi.login as Mock).mockReturnValue(new Promise<LoginData>((resolve) => {
+      resolveLogin = resolve;
+    }));
+    const store = createAuthStore();
+    store.setState({ token: 'old', username: 'admin', expiresAt: FUTURE });
+
+    const refresh = store.getState().refreshSession();
+    const login = store.getState().login('admin', 'pw');
+    rejectRefresh(new Error('expired'));
+    await refresh;
+    resolveLogin({ token: 'login-token', username: 'admin', expires_at: FUTURE });
+    await login;
+
+    expect(store.getState().token).toBe('login-token');
+  });
+
   it('lets a login started after refresh win even when refresh returns first', async () => {
     let resolveRefresh!: (data: LoginData) => void;
     let resolveLogin!: (data: LoginData) => void;

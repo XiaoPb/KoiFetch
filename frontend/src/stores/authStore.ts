@@ -90,6 +90,13 @@ export function createAuthStore() {
               if (sessionRevision !== startedRevision || get().token !== startedToken) return;
               set({ token: data.token, username: data.username, expiresAt: data.expires_at });
             })
+            .catch((error: unknown) => {
+              // A newer login/logout supersedes this refresh even when it has
+              // not committed a new token yet. Do not let its rejection reach
+              // startup, where it would incorrectly clear the newer session.
+              if (sessionRevision !== startedRevision || get().token !== startedToken) return;
+              throw error;
+            })
             .finally(() => {
               inFlightRefresh = null;
             });
