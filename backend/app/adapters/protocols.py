@@ -29,9 +29,10 @@ Design decisions (documented once, relied on by Tasks 7-12):
   by default, configurable) and short-lived reusable file tokens (5 min) are
   separate concerns with separate callers
   (auth service vs. download-file API), so they are two protocols. ``validate``
-  is *pure*: it never consumes a token. The download-file API records the
-  returned ``token_id`` and expiry for task+filename binding and audit, but it
-  does not
+  is *pure*: it never consumes a token. The download-file API validates the
+  returned ``token_id``/expiry claims and binds ``download_id`` to the task's
+  stored filename; callers may associate ``tid`` with logs, but no database
+  write is implied and it does not
   atomically consume the token; repeated Range/HEAD playback requests remain
   valid until expiry. The adapter stays stateless so it can be shared and
   scaled freely.
@@ -333,9 +334,9 @@ class AccessTokenProvider(Protocol):
 class OneTimeTokenClaims:
     """Decoded, validated short-lived download-token claims.
 
-    ``token_id`` uniquely identifies this issuance; the download-file API
-    records it with the task/filename and expiry for audit, not for atomic
-    consumption.
+    ``token_id`` uniquely identifies this issuance; callers may associate it
+    with the task/filename in logs for audit, but it is not an atomic-consumption
+    marker and does not imply database persistence.
     """
 
     token_id: str

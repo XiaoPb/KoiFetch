@@ -17,9 +17,10 @@ download-file API of Task 9 consume these):
 
 **Design decision — validation is stateless and reusable.** ``validate`` is
 pure: it never consumes a token, and calling it repeatedly returns the same
-claims. The download-file API records the returned ``token_id`` and expiry for
-task+filename binding/audit, but does not reject later requests carrying the
-same id.
+claims. The download-file API validates the ``dl``/``exp`` claims, binds the
+task to its stored filename, and may associate ``tid`` with logs for audit;
+the claims remain in the JWT and do not imply a database write. It does not
+reject later requests carrying the same id.
 Keeping the adapter stateless lets the same provider scale freely; expiry is
 the security boundary and repeated Range/HEAD playback requests are allowed.
 

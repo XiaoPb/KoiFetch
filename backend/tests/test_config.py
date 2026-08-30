@@ -170,6 +170,19 @@ class TestSessionDocumentation:
             )
             assert "filename" in text, f"missing filename binding wording in {path}"
 
+    def test_docs_do_not_claim_token_metadata_is_persisted(self):
+        misleading_phrases = (
+            "token_id` is recorded on the row",
+            "token_id is recorded on the row",
+            "records the returned ``token_id``",
+            "records it with the task/filename",
+            "stores the unique `tid` claim",
+        )
+        for path in FILE_TOKEN_CONTRACT_FILES:
+            text = path.read_text(encoding="utf-8").lower()
+            for phrase in misleading_phrases:
+                assert phrase not in text, f"misleading token persistence wording in {path}"
+
 
 class TestEnvOverrides:
     def test_env_vars_override_defaults(self, clean_env, monkeypatch):

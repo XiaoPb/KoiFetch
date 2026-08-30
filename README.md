@@ -67,7 +67,9 @@ for the still-current session logs out.
 Download file tokens are short-lived (5 minutes) and reusable until expiry;
 media playback may issue repeated Range/HEAD requests. Each token is bound to
 its download task and the task's stored filename; `token_id` identifies the
-issuance for audit and does not consume the token.
+issuance inside the JWT and may be associated with logs for audit. The legacy
+database `token_id`/`token_expires_at` fields are currently unpopulated and do
+not consume or gate the token.
 
 ## Smoke testing
 

@@ -350,9 +350,10 @@ Applies the two migration revisions:
 
 1. `56320d63278e` — initial schema: `users`, `parse_tasks`, `download_tasks`
    (+ indexes).
-2. `019c53b40390` — adds nullable `download_tasks.token_id` metadata for the
-   unique `tid` claim of a short-lived file link, allowing task+filename audit;
-   it is not an atomic-consumption marker and does not gate serving.
+2. `019c53b40390` — adds nullable legacy/reserved `download_tasks.token_id`
+   metadata for a possible `tid` claim association. The current token issuance
+   flow does not populate it: `tid`/`exp` remain JWT claims, and the file
+   endpoint binds the task to its stored filename without atomic consumption.
 
 `backend/alembic/env.py` resolves the database URL from the `DATABASE_URL`
 environment variable when set, otherwise from the typed settings; it creates
@@ -502,6 +503,7 @@ carries its one-line rationale:
   (idempotent, so harmless) — prefer `--once` or the worker's built-in
   scheduler.
 - **File tokens are short-lived and reusable for 5 minutes** (bound to the
-  download task and its stored filename; the `token_id` is recorded on the row
-  for audit, but does not gate serving); repeated Range/HEAD playback requests
-  are allowed and expiry surfaces as `5003`.
+  download task and its stored filename; `tid`/`exp` live in the JWT, while
+  legacy `token_id`/`token_expires_at` columns are currently unpopulated and
+  do not gate serving); repeated Range/HEAD playback requests are allowed and
+  expiry surfaces as `5003`.

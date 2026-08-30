@@ -32,8 +32,9 @@ Design decisions (stable contract for Tasks 10-12):
   serves that task's stored filename any number of times until its 5-minute
   expiry; expiry is the security boundary. The ``tid`` claim and expiry
   accompany issuance for audit; the
-  nullable ``token_id``/``token_expires_at`` metadata columns do not gate
-  serving or atomically consume a token.
+  nullable ``token_id``/``token_expires_at`` columns are legacy/reserved and
+  are not populated by the issuance flow; they do not gate serving or
+  atomically consume a token.
 * **Error precedence in ``get_file`` (documented).** a blank/missing token
   short-circuits to ``5003`` (401) *before* any task/status lookup (a request
   with no credential reveals nothing about the task); otherwise: task missing →

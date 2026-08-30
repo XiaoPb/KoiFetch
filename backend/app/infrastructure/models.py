@@ -241,10 +241,10 @@ class DownloadTask(Base):
     error_message: Mapped[str | None] = mapped_column(Text)
     bubble_path: Mapped[str | None] = mapped_column(Text)
     pond_path: Mapped[str | None] = mapped_column(Text)
-    # Download-link metadata (Task 9): ``token_id`` identifies a unique ``tid``
-    # issuance and ``token_expires_at`` mirrors that token's ``exp`` claim.
-    # These nullable fields support task+filename audit/expiry inspection; they
-    # do not atomically consume a token or gate repeated serving.
+    # Legacy/reserved download-link metadata (Task 9): the JWT ``tid`` and
+    # ``exp`` claims identify an issuance and its expiry, but the current token
+    # issuance flow does not populate these nullable columns. They do not
+    # atomically consume a token or gate repeated serving.
     token_id: Mapped[str | None] = mapped_column(String(36))
     token_expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     created_at: Mapped[datetime] = mapped_column(

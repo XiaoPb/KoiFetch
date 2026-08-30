@@ -1,8 +1,9 @@
 """add download_tasks.token_id
 
-Adds a nullable column for the download token ``tid`` claim, allowing the
-download-file API (Task 9) to bind a short-lived link to the task/filename and
-retain an audit identifier without an external registry.
+Adds a nullable legacy/reserved column for a download token ``tid`` claim. The
+current token issuance flow does not populate it; the JWT claim itself binds
+the short-lived link to the task, whose stored filename is served, without an
+external registry.
 
 Revision ID: 019c53b40390
 Revises: 56320d63278e
