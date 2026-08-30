@@ -101,15 +101,9 @@ export interface ParseResult {
   available_bitrates: string[];
   /** Public same-origin media resources; null for legacy rows without one. */
   manifest: PublicMediaManifest | null;
-  /**
-   * Real playable media URL resolved by the engine at parse time (douyin/
-   * bilibili/... CDN). Null in stub mode — the card then shows the cover and
-   * only becomes playable once a download completes.
-   */
-  /** @deprecated Private upstream URL; omitted by API normalization. */
+  /** @deprecated Private upstream URL retained for server-side compatibility; never render. */
   video_url?: string | null;
-  /** Album image URLs (图集/动图). Empty in stub mode — fall back to `cover`. */
-  /** @deprecated Private upstream URLs; omitted by API normalization. */
+  /** @deprecated Private upstream image URLs retained for compatibility; never render. */
   images?: string[];
 }
 

@@ -2,12 +2,18 @@ import { useMemo, useState } from 'react';
 import { Button, Card, Image, Select, Space, Tag, Typography } from 'antd';
 import { AudioOutlined, DownloadOutlined, EyeOutlined, PictureOutlined, VideoCameraOutlined } from '@ant-design/icons';
 import { useTranslation } from '../../services/i18n';
-import { downloadApi, mediaApi } from '../../services/api';
+import { downloadApi } from '../../services/api';
 import { useDownloadsStore } from '../../stores/downloadsStore';
 import type { ParseResult } from '../../types/api';
 import { VideoPlayer, type PlayableSource } from './VideoPlayer';
 import { ImageCarousel, COVER_FALLBACK } from './ImageCarousel';
 import { LivePhotoViewer } from './LivePhotoViewer';
+
+const PUBLIC_PREVIEW_ROUTE = /^\/api\/preview\/[A-Za-z0-9_-]+\/resources\/(?:video|image)\/(?:0|[1-9]\d*)$|^\/api\/preview\/[A-Za-z0-9_-]+\/resources\/live\/(?:0|[1-9]\d*)\/(?:image|motion)$/;
+
+function isPublicPreviewRoute(value: string | null | undefined): value is string {
+  return typeof value === 'string' && PUBLIC_PREVIEW_ROUTE.test(value);
+}
 
 /** Small translucent badge on the cover corner identifying the media type. */
 const TYPE_BADGE: Record<string, JSX.Element> = {
@@ -38,9 +44,9 @@ export interface ResultCardProps {
 
 /**
  * One result-card grid item (PRD §4.2.2): media is visible in place — a video
- * plays inline via xgplayer as soon as the engine resolved a playable URL
- * (same-origin proxy → direct CDN → completed download file), and an image
- * album renders as a Swiper carousel with [下载当前]/[下载全部]. Music keeps the
+ * plays inline via xgplayer when a public manifest route or completed download
+ * file is available, and an image album renders as a Swiper carousel with
+ * [下载当前]/[下载全部]. Music keeps the
  * cover + [预览]/[下载]. Video cards keep ONLY [下载] (the old [预览] modal is
  * gone for video/image).
  */
@@ -58,7 +64,7 @@ export function ResultCard({
   const [activeImage, setActiveImage] = useState(0);
 
   // A completed download's still-valid file link for this task — the final
-  // playback fallback for videos after manifest/legacy engine sources.
+  // playback fallback for videos after manifest sources.
   const completedUrl = useDownloadsStore((state) => {
     const item = state.items.find(
       (i) => i.task_id === result.task_id && i.status === 'completed' && i.download_url != null,
@@ -71,9 +77,10 @@ export function ResultCard({
   const hasQuality = result.available_qualities.length > 0;
   const hasBitrate = result.available_bitrates.length > 0;
   const sizeText = result.file_size_mb != null ? `${result.file_size_mb} MB` : '—';
+  const publicCover = isPublicPreviewRoute(result.cover) ? result.cover : null;
 
-  // Ordered playback candidates: public manifest routes first, then legacy
-  // engine URLs and completed local files for compatibility with old rows.
+  // Ordered playback candidates: public manifest routes first, then a
+  // completed local file. Legacy upstream URLs are intentionally ignored.
   const playableSources: PlayableSource[] = useMemo(() => {
     if (result.type !== 'video') return [];
     const sources: PlayableSource[] = [];
@@ -81,10 +88,6 @@ export function ResultCard({
       for (const item of result.manifest.videos) {
         sources.push({ url: item.url, format: item.format });
       }
-    }
-    if (result.video_url) {
-      sources.push({ url: mediaApi.streamUrl(result.task_id), format: result.format });
-      sources.push({ url: result.video_url, format: result.format });
     }
     if (completedUrl) {
       sources.push({ url: downloadApi.getFileUrl(completedUrl), format: result.format });
@@ -94,16 +97,15 @@ export function ResultCard({
 
   const showPlayer = result.type === 'video' && playableSources.length > 0;
 
-  // Album slide URLs: public manifest routes, then legacy engine list, else
-  // the single cover.
+  // Album slide URLs: public manifest routes, else the single cover. Legacy
+  // upstream image lists are intentionally ignored.
   const albumImages: string[] = useMemo(() => {
     if (result.type !== 'image') return [];
     if (result.manifest?.kind === 'image_album') {
       return result.manifest.images.map((item) => item.url);
     }
-    if (result.images && result.images.length > 0) return result.images;
-    return result.cover ? [result.cover] : [];
-  }, [result]);
+    return publicCover ? [publicCover] : [];
+  }, [publicCover, result]);
 
   const handleDownload = () => {
     // Music uses the bitrate picker, video the quality picker; both map to the
@@ -118,7 +120,7 @@ export function ResultCard({
   const cover = showPlayer ? (
     <VideoPlayer
       sources={playableSources}
-      poster={result.cover}
+      poster={publicCover}
       testId={`card-player-${result.task_id}`}
     />
   ) : livePhotoManifest ? (
@@ -134,8 +136,8 @@ export function ResultCard({
       onIndexChange={setActiveImage}
       testId={`carousel-${result.task_id}`}
     />
-  ) : result.cover ? (
-    <Image src={result.cover} alt={result.title} preview={false} fallback={COVER_FALLBACK} />
+  ) : publicCover ? (
+    <Image src={publicCover} alt={result.title} preview={false} fallback={COVER_FALLBACK} />
   ) : (
     <div className="result-card-cover-empty" aria-label={result.title} />
   );

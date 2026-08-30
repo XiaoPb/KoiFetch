@@ -5,7 +5,16 @@ import { renderWithProviders } from '../../test/utils';
 import type { ParseResult } from '../../types/api';
 
 vi.mock('./VideoPlayer', () => ({
-  VideoPlayer: () => <div data-testid="mock-video-player" />,
+  VideoPlayer: ({ sources }: { sources: Array<{ url: string }> }) => (
+    <div data-testid="mock-video-player" data-sources={sources.map((source) => source.url).join(',')} />
+  ),
+}));
+
+vi.mock('./ImageCarousel', () => ({
+  ImageCarousel: ({ images }: { images: string[] }) => (
+    <div data-testid="mock-image-carousel" data-images={images.join(',')} />
+  ),
+  COVER_FALLBACK: 'data:image/svg+xml;utf8,fallback',
 }));
 
 const liveResult: ParseResult = {
@@ -67,5 +76,70 @@ describe('ResultCard Live Photo integration', () => {
 
     expect(screen.queryByTestId('live-photo-task-live')).not.toBeInTheDocument();
     expect(screen.getByAltText('Live moment')).toBeInTheDocument();
+  });
+});
+
+describe('ResultCard legacy URL isolation', () => {
+  it('does not render raw legacy video or image URLs', () => {
+    const legacyVideo: ParseResult = {
+      task_id: 'legacy-video',
+      url: 'https://example.com/video',
+      type: 'video',
+      platform: 'douyin',
+      title: 'Legacy video',
+      cover: '/api/preview/legacy-video/resources/image/0',
+      duration: null,
+      file_size_mb: null,
+      format: 'mp4',
+      available_qualities: [],
+      available_bitrates: [],
+      manifest: null,
+      video_url: 'https://cdn.example/private-token-video.mp4?token=secret',
+    };
+    const legacyImage: ParseResult = {
+      task_id: 'legacy-image',
+      url: 'https://example.com/image',
+      type: 'image',
+      platform: 'xiaohongshu',
+      title: 'Legacy image',
+      cover: '/api/preview/legacy-image/resources/image/0',
+      duration: null,
+      file_size_mb: null,
+      format: 'jpg',
+      available_qualities: [],
+      available_bitrates: [],
+      manifest: null,
+      images: ['https://cdn.example/private-token-image.jpg?token=secret'],
+    };
+    const props = {
+      downloading: false,
+      onPreview: vi.fn(),
+      onDownload: vi.fn(),
+      onDownloadImage: vi.fn(),
+      onDownloadAlbum: vi.fn(),
+    };
+
+    const { rerender } = renderWithProviders(<ResultCard result={legacyVideo} {...props} />);
+    expect(screen.queryByTestId('mock-video-player')).not.toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent('cdn.example');
+    expect(document.body).not.toHaveTextContent('private-token');
+
+    rerender(<ResultCard result={legacyImage} {...props} />);
+    expect(screen.getByTestId('mock-image-carousel')).toHaveAttribute(
+      'data-images',
+      '/api/preview/legacy-image/resources/image/0',
+    );
+    expect(document.body).not.toHaveTextContent('cdn.example');
+    expect(document.body).not.toHaveTextContent('private-token');
+
+    rerender(
+      <ResultCard
+        result={{ ...legacyImage, cover: 'https://cdn.example/private-cover-token.jpg' }}
+        {...props}
+      />,
+    );
+    expect(screen.queryByTestId('mock-image-carousel')).not.toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent('cdn.example');
+    expect(document.body).not.toHaveTextContent('private-cover-token');
   });
 });
