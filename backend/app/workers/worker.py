@@ -116,6 +116,7 @@ from app.application.media_manifest import (
     load_manifest,
     validate_manifest_media_type,
 )
+from app.application.preview_service import _MAX_ALBUM_BYTES, _MAX_IMAGE_BYTES
 from app.domain.paths import slugify
 from app.infrastructure.database import session_scope
 from app.infrastructure.models import DownloadTask
@@ -132,6 +133,9 @@ logger = logging.getLogger(__name__)
 # attempt plus MAX_RETRIES - 1 re-queues). The domain graph's failed -> pending
 # edge is always legal; this constant is the worker's cap on top of it.
 MAX_RETRIES = 3
+_MAX_PACKAGE_MEMBER_BYTES = _MAX_IMAGE_BYTES
+_MAX_PACKAGE_TOTAL_BYTES = _MAX_ALBUM_BYTES
+_MAX_PACKAGE_MEMBERS = 128
 
 # The WS error event mirrors app.api.download's documented failed shape
 # (code 5002). Kept in sync by test_worker_retry.py's event-shape assertions.
@@ -414,11 +418,14 @@ def _download_package(
     zip_path = temp_dir / "package.zip"
     try:
         members = _package_members(parse_task, selector)
+        if len(members) > _MAX_PACKAGE_MEMBERS:
+            raise EngineDownloadError("下载失败 / Download failed")
         names = [name for name, _, _ in members]
         if len(names) != len(set(names)) or any(
             Path(name).name != name or name in {".", ".."} for name in names
         ):
             raise EngineDownloadError("下载失败 / Download failed")
+        total_written = 0
         with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_STORED) as archive:
             for name, resource, effective_type in members:
                 member_path = temp_dir / name
@@ -435,6 +442,15 @@ def _download_package(
                 else:
                     metadata["images"] = [{"url": str(resource.url)}]
                     metadata.pop("video_url", None)
+
+                def guard_progress(progress: DownloadProgress) -> None:
+                    downloaded = progress.downloaded_bytes
+                    if downloaded is not None and (
+                        downloaded > _MAX_PACKAGE_MEMBER_BYTES
+                        or downloaded > _MAX_PACKAGE_TOTAL_BYTES - total_written
+                    ):
+                        raise EngineDownloadError("下载失败 / Download failed")
+
                 member_request = DownloadRequest(
                     command=command,
                     download_id=request.download_id,
@@ -443,11 +459,18 @@ def _download_package(
                     media_type=effective_type,
                     source_url=request.source_url,
                     metadata=metadata,
-                    progress_callback=None,
+                    progress_callback=guard_progress,
                 )
                 downloader.download(member_request)
                 if not member_path.is_file():
                     raise EngineDownloadError("下载失败 / Download failed")
+                member_size = member_path.stat().st_size
+                if (
+                    member_size > _MAX_PACKAGE_MEMBER_BYTES
+                    or total_written + member_size > _MAX_PACKAGE_TOTAL_BYTES
+                ):
+                    raise EngineDownloadError("下载失败 / Download failed")
+                total_written += member_size
                 archive.write(member_path, arcname=name)
         os.replace(zip_path, target)
         size = target.stat().st_size

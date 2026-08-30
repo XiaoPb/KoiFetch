@@ -206,6 +206,95 @@ class TestClaiming:
 
 
 class TestRunOnce:
+    def test_package_member_limit_fails_before_network(self, engine, storage, token_provider, monkeypatch):
+        manifest = MediaManifest(
+            kind="image_album",
+            images=tuple(
+                MediaResource(url=f"https://cdn.example/{i}.jpg", format="jpg")
+                for i in range(2)
+            ),
+        )
+        task_id = seed_parse_task(
+            engine, media_type=MediaType.IMAGE,
+            metadata={"manifest": manifest.model_dump(mode="json")},
+        )
+        service = DownloadService(token_provider=token_provider, storage=storage, engine=engine)
+        download = service.submit(task_id, format="zip", selector=AssetSelector(kind="image", package="album_zip"))
+        monkeypatch.setattr(worker_module, "_MAX_PACKAGE_MEMBERS", 1)
+        calls = []
+
+        class NeverDownloader:
+            def download(self, request):
+                calls.append(request)
+                raise AssertionError("network must not be called")
+
+        run_once(engine, NeverDownloader(), storage, FakeHub(), token_provider=token_provider,
+                 download_service=service, max_retries=1)
+        assert calls == []
+        assert load_download(engine, download.download_id).status is DownloadStatus.FAILED
+
+    def test_package_callback_overflow_cleans_target(self, engine, storage, token_provider, monkeypatch):
+        manifest = MediaManifest(
+            kind="image_album",
+            images=(MediaResource(url="https://cdn.example/a.jpg", format="jpg"),),
+        )
+        task_id = seed_parse_task(engine, media_type=MediaType.IMAGE,
+                                  metadata={"manifest": manifest.model_dump(mode="json")})
+        service = DownloadService(token_provider=token_provider, storage=storage, engine=engine)
+        download = service.submit(task_id, format="zip", selector=AssetSelector(kind="image", package="album_zip"))
+        monkeypatch.setattr(worker_module, "_MAX_PACKAGE_MEMBER_BYTES", 8)
+
+        class CallbackOverflow:
+            def download(self, request):
+                request.target_path.parent.mkdir(parents=True, exist_ok=True)
+                if request.progress_callback:
+                    request.progress_callback(DownloadProgress(
+                        download_id=request.download_id, status=DownloadStatus.DOWNLOADING,
+                        progress=100.0, speed=1.0, downloaded_bytes=9, total_bytes=9,
+                    ))
+                request.target_path.write_bytes(b"overflow")
+                raise AssertionError("guard should interrupt the member")
+
+        run_once(engine, CallbackOverflow(), storage, FakeHub(), token_provider=token_provider,
+                 download_service=service, max_retries=1)
+        row = load_download(engine, download.download_id)
+        assert row.status is DownloadStatus.FAILED
+        assert row.bubble_path is None
+
+    def test_package_stat_and_cumulative_limits_clean_partial_output(
+        self, engine, storage, token_provider, monkeypatch
+    ):
+        manifest = MediaManifest(
+            kind="image_album",
+            images=tuple(
+                MediaResource(url=f"https://cdn.example/{i}.jpg", format="jpg")
+                for i in range(2)
+            ),
+        )
+        task_id = seed_parse_task(engine, media_type=MediaType.IMAGE,
+                                  metadata={"manifest": manifest.model_dump(mode="json")})
+        service = DownloadService(token_provider=token_provider, storage=storage, engine=engine)
+        download = service.submit(task_id, format="zip", selector=AssetSelector(kind="image", package="album_zip"))
+        monkeypatch.setattr(worker_module, "_MAX_PACKAGE_MEMBER_BYTES", 8)
+        monkeypatch.setattr(worker_module, "_MAX_PACKAGE_TOTAL_BYTES", 10)
+
+        class NoProgressWriter:
+            def download(self, request):
+                request.target_path.parent.mkdir(parents=True, exist_ok=True)
+                request.target_path.write_bytes(b"123456")
+                return DownloadResult(
+                    download_id=request.download_id, task_id=request.command.task_id,
+                    title=request.title, media_type=request.media_type,
+                    format=request.command.format, status=DownloadStatus.COMPLETED,
+                    progress=100.0, total_bytes=6, downloaded_bytes=6,
+                )
+
+        run_once(engine, NoProgressWriter(), storage, FakeHub(), token_provider=token_provider,
+                 download_service=service, max_retries=1)
+        row = load_download(engine, download.download_id)
+        assert row.status is DownloadStatus.FAILED
+        assert row.bubble_path is None
+
     def test_invalid_persisted_selector_fails_without_exposing_metadata(
         self, engine, storage, token_provider
     ):

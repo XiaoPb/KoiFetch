@@ -100,7 +100,7 @@ class TransferService:
                 resource = _music_resource(task, song_info)
                 if resource is None:
                     raise self._asset_error()
-                if not force_staged:
+                if not force_staged and not _is_streaming(resource):
                     return DirectTransfer(
                         url=_direct_url(task_id, selected),
                         filename=safe_attachment_filename(task.title, resource.format),

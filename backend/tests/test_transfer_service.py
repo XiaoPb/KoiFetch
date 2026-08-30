@@ -242,6 +242,38 @@ def test_prepare_music_plain_http_can_be_direct(engine):
     assert downloads.calls == []
 
 
+@pytest.mark.parametrize("url", [
+    "https://cdn.example/MANIFEST.M3U8?sig=private",
+    "http://cdn.example/manifest.MpD?sig=private",
+])
+def test_prepare_music_http_playlist_is_staged(engine, url):
+    task_id = str(uuid.uuid4())
+    with session_scope(engine) as session:
+        session.add(
+            ParseTask(
+                task_id=task_id,
+                url="musicdl://source/song",
+                platform="music",
+                media_type=MediaType.MUSIC,
+                title="Playlist",
+                format="mp3",
+                metadata_={
+                    "song_info": {
+                        "protocol": "HTTP",
+                        "download_url": url,
+                        "ext": "mp3",
+                    }
+                },
+            )
+        )
+    downloads = RecordingDownloadService()
+    result = TransferService(download_service=downloads, engine=engine).prepare(
+        task_id, AssetSelector(kind="music")
+    )
+    assert result.mode == "staged"
+    assert len(downloads.calls) == 1
+
+
 @pytest.mark.parametrize("song_info", [
     {"protocol": "HLS", "download_url": "https://cdn.example/t.m3u8", "ext": "mp3"},
     {"protocol": "HLS", "download_url": "https://cdn.example/t.mp3", "ext": "mp3"},
