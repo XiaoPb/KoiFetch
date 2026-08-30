@@ -7,8 +7,20 @@ import os
 import sys
 from pathlib import Path
 
-if __package__ in (None, ""):
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+def _bootstrap_app_import_path() -> None:
+    """Find the project root for both source and image directory layouts."""
+    if __package__ not in (None, ""):
+        return
+    script_path = Path(__file__).resolve()
+    for parent in script_path.parents:
+        if (parent / "app" / "application").is_dir():
+            sys.path.insert(0, str(parent))
+            return
+    raise RuntimeError("could not locate the Koi Fetch app package")
+
+
+_bootstrap_app_import_path()
 
 from dotenv import load_dotenv
 from sqlalchemy.orm import Session

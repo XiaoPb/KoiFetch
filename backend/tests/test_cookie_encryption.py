@@ -4,10 +4,12 @@ import base64
 import io
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import threading
 from contextlib import redirect_stdout
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -27,6 +29,7 @@ from scripts.encrypt_platform_cookies import migrate_platform_cookies
 
 KEY = base64.urlsafe_b64encode(bytes(range(32))).decode()
 WRONG_KEY = base64.urlsafe_b64encode(bytes(range(32, 64))).decode()
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_cookie_cipher_round_trip_and_unique_nonces():
@@ -221,6 +224,7 @@ def test_migration_cli_loads_dotenv_and_reports_count_only(tmp_path):
     env = os.environ.copy()
     env.pop("DATABASE_URL", None)
     env.pop("COOKIE_ENCRYPTION_KEY", None)
+    env.pop("PYTHONPATH", None)
     result = subprocess.run(
         [sys.executable, os.path.abspath(script)],
         cwd=tmp_path,
@@ -231,6 +235,39 @@ def test_migration_cli_loads_dotenv_and_reports_count_only(tmp_path):
     )
     assert result.stdout.strip() == "1"
     assert "secret=cli" not in result.stdout + result.stderr
+
+
+def test_migration_cli_imports_from_container_app_layout(tmp_path):
+    """The image puts the script under /app/backend and the app under /app."""
+    shutil.copytree(REPO_ROOT / "backend" / "app", tmp_path / "app")
+    script_dir = tmp_path / "backend" / "scripts"
+    script_dir.mkdir(parents=True)
+    shutil.copy(
+        REPO_ROOT / "backend" / "scripts" / "encrypt_platform_cookies.py",
+        script_dir / "encrypt_platform_cookies.py",
+    )
+
+    database_url = f"sqlite:///{tmp_path / 'container.db'}"
+    engine = build_engine(database_url)
+    Base.metadata.create_all(engine)
+    with session_scope(engine) as session:
+        session.add(PlatformCookie(platform="douyin", cookie="secret=container"))
+
+    environment = os.environ.copy()
+    environment.pop("PYTHONPATH", None)
+    environment["DATABASE_URL"] = database_url
+    environment["COOKIE_ENCRYPTION_KEY"] = KEY
+    result = subprocess.run(
+        [sys.executable, str(script_dir / "encrypt_platform_cookies.py")],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "1"
+    with session_scope(engine) as session:
+        assert session.get(PlatformCookie, "douyin").cookie.startswith("enc:v1:")
 
 
 def test_settings_requires_cookie_encryption_key():
