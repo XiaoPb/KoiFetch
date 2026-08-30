@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { App as AntdApp, ConfigProvider } from 'antd';
 import { useNavigate } from 'react-router-dom';
 import enUS from 'antd/locale/en_US';
@@ -18,17 +18,27 @@ import { logoutSession, waitForAuthHydration } from '../services/session';
 export function App(): JSX.Element {
   const language = useAppStore((state) => state.language);
   const navigate = useNavigate();
+  const [authHydrated, setAuthHydrated] = useState(() => useAuthStore.persist.hasHydrated());
 
   useEffect(() => {
     let cancelled = false;
+    const controller = new AbortController();
     const startSession = async (): Promise<void> => {
-      await waitForAuthHydration();
-      if (cancelled) return;
+      await waitForAuthHydration(controller.signal);
+      if (cancelled || controller.signal.aborted) return;
+      setAuthHydrated(true);
+
+      const startedSession = useAuthStore.getState();
 
       try {
-        await useAuthStore.getState().refreshSession();
+        await startedSession.refreshSession();
       } catch {
-        if (cancelled) return;
+        if (cancelled || controller.signal.aborted) return;
+        const currentSession = useAuthStore.getState();
+        const isSameSession = currentSession.token === startedSession.token
+          && currentSession.username === startedSession.username
+          && currentSession.expiresAt === startedSession.expiresAt;
+        if (!isSameSession) return;
         logoutSession();
         navigate('/login', { replace: true });
       }
@@ -37,6 +47,7 @@ export function App(): JSX.Element {
     void startSession();
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, []);
 
@@ -55,9 +66,13 @@ export function App(): JSX.Element {
       }}
     >
       <AntdApp>
-        <ErrorBoundary>
-          <AppRoutes />
-        </ErrorBoundary>
+        {authHydrated ? (
+          <ErrorBoundary>
+            <AppRoutes />
+          </ErrorBoundary>
+        ) : (
+          <div className="route-loading" data-testid="auth-hydration-loading" aria-busy="true" />
+        )}
       </AntdApp>
     </ConfigProvider>
   );

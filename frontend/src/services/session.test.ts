@@ -34,4 +34,17 @@ describe('waitForAuthHydration', () => {
     await hydration;
     expect(unsubscribe).toHaveBeenCalledTimes(1);
   });
+
+  it('unsubscribes when the hydration wait is aborted', async () => {
+    const controller = new AbortController();
+    const unsubscribe = vi.fn();
+    vi.spyOn(useAuthStore.persist, 'hasHydrated').mockReturnValue(false);
+    vi.spyOn(useAuthStore.persist, 'onFinishHydration').mockReturnValue(unsubscribe);
+
+    const hydration = waitForAuthHydration(controller.signal);
+    controller.abort();
+    await hydration;
+
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+  });
 });

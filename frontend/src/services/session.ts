@@ -6,26 +6,41 @@ import { useDownloadsStore } from '../stores/downloadsStore';
  * Sync localStorage normally makes this an immediate resolution, while the
  * subscription path also supports asynchronous storage adapters.
  */
-export function waitForAuthHydration(): Promise<void> {
+export function waitForAuthHydration(signal?: AbortSignal): Promise<void> {
   const persist = useAuthStore.persist;
-  if (persist.hasHydrated()) return Promise.resolve();
+  if (persist.hasHydrated() || signal?.aborted) return Promise.resolve();
 
   return new Promise((resolve) => {
     let unsubscribe: (() => void) | undefined;
     let finished = false;
+    let cleanupBeforeSubscribe = false;
+    const onAbort = (): void => finish();
+    const cleanup = (): void => {
+      if (unsubscribe) {
+        unsubscribe();
+      } else {
+        cleanupBeforeSubscribe = true;
+      }
+      signal?.removeEventListener('abort', onAbort);
+    };
     const finish = (): void => {
       if (finished) return;
       finished = true;
-      unsubscribe?.();
+      cleanup();
       resolve();
     };
 
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) {
+      finish();
+      return;
+    }
     unsubscribe = persist.onFinishHydration(finish);
-    // Close the small check/subscribe race, and also handle adapters that
-    // invoke the listener synchronously while it is being registered.
-    if (finished) {
+    // Handle adapters that invoke the listener synchronously while it is
+    // being registered, and close the check/subscribe race.
+    if (cleanupBeforeSubscribe) {
       unsubscribe();
-    } else if (persist.hasHydrated()) {
+    } else if (!finished && persist.hasHydrated()) {
       finish();
     }
   });

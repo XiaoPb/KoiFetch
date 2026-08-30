@@ -61,6 +61,7 @@ function seedDownloadItem(partial: Partial<DownloadItem> & Pick<DownloadItem, 'd
 
 describe('router', () => {
   beforeEach(() => {
+    vi.restoreAllMocks();
     localStorage.clear();
     useAuthStore.setState({ token: null, username: null, expiresAt: null });
     useDownloadsStore.setState({ items: [], submitting: {} });
@@ -179,6 +180,26 @@ describe('router', () => {
     expect(useAuthStore.getState().token).toBe('fresh');
   });
 
+  it('holds protected routes during hydration and restores the original location', async () => {
+    useAuthStore.setState({ token: 'old', username: 'admin', expiresAt: '2099-01-01T00:00:00Z' });
+    let finishHydration!: () => void;
+    const unsubscribe = vi.fn();
+    vi.spyOn(useAuthStore.persist, 'hasHydrated').mockReturnValue(false);
+    vi.spyOn(useAuthStore.persist, 'onFinishHydration').mockImplementation((listener) => {
+      finishHydration = () => listener(useAuthStore.getState());
+      return unsubscribe;
+    });
+
+    renderAt('/nas');
+
+    expect(screen.getByTestId('auth-hydration-loading')).toBeInTheDocument();
+    expect(screen.queryByTestId('login-page')).not.toBeInTheDocument();
+
+    finishHydration();
+    expect(await screen.findByText('NAS 管理')).toBeInTheDocument();
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+  });
+
   it('logs out and redirects to login when startup refresh is rejected', async () => {
     await seedPersistedAuth({ token: 'old', username: 'admin', expiresAt: '2099-01-01T00:00:00Z' });
     (authApi.refresh as Mock).mockRejectedValue(new ApiError('expired', 2004, 401));
@@ -188,6 +209,28 @@ describe('router', () => {
     expect(await screen.findByTestId('login-page')).toBeInTheDocument();
     await waitFor(() => expect(useAuthStore.getState().token).toBeNull());
     expect(authApi.refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not log out a newer login when the startup refresh rejects later', async () => {
+    await seedPersistedAuth({ token: 'old', username: 'admin', expiresAt: '2099-01-01T00:00:00Z' });
+    let rejectRefresh!: (reason: unknown) => void;
+    (authApi.refresh as Mock).mockReturnValue(new Promise((_resolve, reject) => { rejectRefresh = reject; }));
+    (authApi.login as Mock).mockResolvedValue({
+      token: 'login-token',
+      username: 'admin',
+      expires_at: '2099-01-03T00:00:00Z',
+    });
+
+    renderAt('/');
+    await waitFor(() => expect(authApi.refresh).toHaveBeenCalledTimes(1));
+    await useAuthStore.getState().login('admin', 'pw');
+
+    rejectRefresh(new ApiError('expired', 2004, 401));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(useAuthStore.getState().token).toBe('login-token');
+    expect(screen.queryByTestId('login-page')).not.toBeInTheDocument();
   });
 
   it('does not request refresh for a locally expired persisted session', async () => {
@@ -222,5 +265,21 @@ describe('router', () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(useAuthStore.getState().token).toBe('old');
+  });
+
+  it('unsubscribes hydration when App unmounts before hydration finishes', () => {
+    let finishHydration!: () => void;
+    const unsubscribe = vi.fn();
+    vi.spyOn(useAuthStore.persist, 'hasHydrated').mockReturnValue(false);
+    vi.spyOn(useAuthStore.persist, 'onFinishHydration').mockImplementation((listener) => {
+      finishHydration = () => listener(useAuthStore.getState());
+      return unsubscribe;
+    });
+
+    const rendered = renderAt('/');
+    rendered.unmount();
+
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+    finishHydration();
   });
 });
