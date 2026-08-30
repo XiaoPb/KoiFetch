@@ -45,7 +45,7 @@ import logging
 import re
 import zipfile
 from dataclasses import dataclass
-from typing import Callable, Iterator
+from typing import Callable, Iterator, NoReturn
 
 import httpx
 from sqlalchemy import Engine
@@ -63,12 +63,13 @@ from app.application.media_manifest import (
     load_manifest,
     public_cover,
     public_manifest,
+    validate_manifest_media_type,
 )
 from app.domain import MediaManifest, MediaResource, MediaType, format_duration
 from app.infrastructure.database import session_scope
 from app.infrastructure.models import ParseTask
 
-__all__ = ["MediaStream", "PreviewService"]
+__all__ = ["MediaStream", "PreviewService", "SafeMediaProxyError"]
 
 _MESSAGE_TASK_NOT_FOUND = "任务不存在 / Task not found"
 _MESSAGE_NOT_VIDEO = "该任务不是视频 / Task is not a video"
@@ -96,6 +97,32 @@ _EXT_UNSAFE = re.compile(r"[^a-z0-9]+")
 _MEDIA_CACHE_CONTROL = "private, no-store"
 
 logger = logging.getLogger(__name__)
+
+
+class SafeMediaProxyError(RuntimeError):
+    """Fixed-message internal failure safe to pass to the global handler."""
+
+
+def _raise_sanitized_proxy_error(
+    operation: str,
+    task_id: str,
+    kind: str,
+    index: int,
+    side: str | None,
+    exc: Exception,
+) -> NoReturn:
+    """Record only safe diagnostics, then discard the original exception."""
+    logger.error(
+        "media proxy internal failure operation=%s task_id=%s kind=%s "
+        "index=%s side=%s exception_class=%s",
+        operation,
+        task_id,
+        kind,
+        index,
+        side,
+        type(exc).__name__,
+    )
+    raise SafeMediaProxyError("media proxy internal failure") from None
 
 
 def _extension_of(url: str) -> str:
@@ -262,15 +289,10 @@ class PreviewService:
             raise ApiError(
                 HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_UPSTREAM
             ) from exc
-        except Exception:
-            logger.exception(
-                "unexpected media proxy failure task_id=%s kind=%s index=%s side=%s",
-                task_id,
-                kind,
-                index,
-                side,
+        except Exception as exc:
+            _raise_sanitized_proxy_error(
+                "stream_resource", task_id, kind, index, side, exc
             )
-            raise
 
     def head_resource(
         self,
@@ -316,38 +338,17 @@ class PreviewService:
             raise ApiError(
                 HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_UPSTREAM
             ) from exc
-        except Exception:
-            logger.exception(
-                "unexpected media HEAD failure task_id=%s kind=%s index=%s side=%s",
-                task_id,
-                kind,
-                index,
-                side,
+        except Exception as exc:
+            _raise_sanitized_proxy_error(
+                "head_resource", task_id, kind, index, side, exc
             )
-            raise
 
     def _resolve_resource(
         self, task_id: str, kind: str, index: int, side: str | None
     ) -> MediaResource:
         task = self._load_task(task_id)
-        try:
-            manifest = load_manifest(task)
-        except ManifestError as exc:
-            message = (
-                str(exc)
-                if str(exc) in {_MESSAGE_MANIFEST_MISSING, _MESSAGE_MANIFEST_INVALID}
-                else _MESSAGE_MANIFEST_INVALID
-            )
-            raise ApiError(HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, message) from exc
-        expected_type = {
-            "video": MediaType.VIDEO,
-            "image_album": MediaType.IMAGE,
-            "live_photo": MediaType.LIVE_PHOTO,
-        }[manifest.kind]
-        if task.media_type != expected_type:
-            raise ApiError(
-                HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_MANIFEST_INVALID
-            )
+        manifest = _validated_manifest(task, required=True)
+        assert manifest is not None
         if kind not in {"video", "image", "live"}:
             raise ApiError(
                 HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_RESOURCE_KIND
@@ -449,9 +450,10 @@ class PreviewService:
             raise ApiError(
                 HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_UPSTREAM
             ) from exc
-        except Exception:
-            logger.exception("unexpected legacy media proxy failure task_id=%s", task_id)
-            raise
+        except Exception as exc:
+            _raise_sanitized_proxy_error(
+                "stream_video", task_id, "video", -1, None, exc
+            )
 
     def _video_url(self, task_id: str) -> str:
         """The task's playable video URL, or a typed :class:`ApiError`."""
@@ -555,24 +557,36 @@ class PreviewService:
             ) from exc
 
 
-def _build_preview(task: ParseTask) -> dict:
-    """Map a :class:`ParseTask` row to the v1 preview response payload."""
+def _validated_manifest(task: ParseTask, *, required: bool) -> MediaManifest | None:
+    """Load a task manifest and enforce its kind/type discriminator."""
     metadata = task.metadata_
     if not isinstance(metadata, dict):
         raise ApiError(
             HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_MANIFEST_INVALID
         )
-    manifest = None
-    if metadata.get("manifest") is not None:
-        try:
-            manifest = load_manifest(task)
-        except ManifestError as exc:
-            message = (
-                str(exc)
-                if str(exc) in {_MESSAGE_MANIFEST_MISSING, _MESSAGE_MANIFEST_INVALID}
-                else _MESSAGE_MANIFEST_INVALID
+    if metadata.get("manifest") is None:
+        if required:
+            raise ApiError(
+                HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_MANIFEST_MISSING
             )
-            raise ApiError(HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, message) from exc
+        return None
+    try:
+        manifest = load_manifest(task)
+        return validate_manifest_media_type(manifest, task.media_type)
+    except ManifestError as exc:
+        message = (
+            str(exc)
+            if str(exc) in {_MESSAGE_MANIFEST_MISSING, _MESSAGE_MANIFEST_INVALID}
+            else _MESSAGE_MANIFEST_INVALID
+        )
+        raise ApiError(HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, message) from None
+
+
+def _build_preview(task: ParseTask) -> dict:
+    """Map a :class:`ParseTask` row to the v1 preview response payload."""
+    metadata = task.metadata_
+    manifest = _validated_manifest(task, required=False)
+    assert isinstance(metadata, dict)
     qualities = list(metadata.get("available_qualities") or [])
     bitrates = list(metadata.get("available_bitrates") or [])
     streams: list[dict] = []

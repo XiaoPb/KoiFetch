@@ -201,7 +201,7 @@ def _task_row(result: ParseResult) -> ParseTask:
     metadata: dict[str, Any] = dict(result.metadata)
     # Keep the compatibility URL fields private in persisted metadata while
     # normalizing the strict manifest to JSON arrays for SQLAlchemy JSON.
-    metadata = serialize_manifest(metadata)
+    metadata = serialize_manifest(metadata, media_type=result.media_type)
     metadata["file_size_mb"] = result.file_size_mb
     metadata["available_qualities"] = list(result.available_qualities)
     metadata["available_bitrates"] = list(result.available_bitrates)

@@ -19,6 +19,7 @@ __all__ = [
     "public_cover",
     "public_manifest",
     "serialize_manifest",
+    "validate_manifest_media_type",
 ]
 
 _MESSAGE_MANIFEST_MISSING = "媒体清单不存在 / Media manifest is missing"
@@ -29,7 +30,9 @@ class ManifestError(ValueError):
     """A persisted manifest is absent or fails its strict domain contract."""
 
 
-def serialize_manifest(metadata: dict[str, Any]) -> dict[str, Any]:
+def serialize_manifest(
+    metadata: dict[str, Any], *, media_type: Any | None = None
+) -> dict[str, Any]:
     """Normalize a manifest value to JSON-safe persisted data.
 
     Parsers may hand the service either a domain model or an already decoded
@@ -47,6 +50,8 @@ def serialize_manifest(metadata: dict[str, Any]) -> dict[str, Any]:
         )
     except (TypeError, ValueError, ValidationError) as exc:
         raise ManifestError from exc
+    if media_type is not None:
+        validate_manifest_media_type(manifest, media_type)
     metadata["manifest"] = manifest.model_dump(mode="json")
     return metadata
 
@@ -66,6 +71,19 @@ def load_manifest(task: Any) -> MediaManifest:
         return MediaManifest.model_validate(payload)
     except (TypeError, ValueError, ValidationError) as exc:
         raise ManifestError(_MESSAGE_MANIFEST_INVALID) from exc
+
+
+def validate_manifest_media_type(manifest: MediaManifest, media_type: Any) -> MediaManifest:
+    """Ensure persisted manifest kind and task media type cannot disagree."""
+    expected = {
+        "video": "video",
+        "image_album": "image",
+        "live_photo": "live_photo",
+    }[manifest.kind]
+    actual = getattr(media_type, "value", media_type)
+    if actual != expected:
+        raise ManifestError(_MESSAGE_MANIFEST_INVALID)
+    return manifest
 
 
 def public_manifest(task_id: str, manifest: MediaManifest) -> dict[str, Any]:
