@@ -245,6 +245,10 @@ def prepare_download(
         body.asset,
         force_staged=body.force_staged,
     )
+    return ok(
+        data=result.model_dump(mode="json"),
+        message="传输准备成功 / Transfer prepared",
+    )
 
 
 @router.get("/direct/{task_id}")
@@ -274,10 +278,6 @@ def direct_download(
         status_code=stream.status_code,
         headers={**stream.headers, "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
         media_type=stream.content_type,
-    )
-    return ok(
-        data=result.model_dump(mode="json"),
-        message="传输准备成功 / Transfer prepared",
     )
 
 

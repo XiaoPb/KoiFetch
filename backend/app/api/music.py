@@ -139,10 +139,22 @@ def get_music_service(request: Request) -> MusicService:
     return request.app.state.music_service
 
 
-def _serialize_search(result) -> dict:
+def _serialize_search(result, *, include_lyrics: bool = False) -> dict:
     return {
         "totals": result.totals,
-        "songs": [song.model_dump(exclude={"song_info", "source", "ext"}) for song in result.songs],
+        # Keep the historical wire shape stable when no lyrics are available,
+        # while exposing the optional lyric payload for providers that return it.
+        "songs": [
+            song.model_dump(
+                exclude={"song_info", "source", "ext"}
+                | ({"lyric"} if not include_lyrics else set()),
+                exclude_none=True,
+            )
+            | ({"cover": None} if song.cover is None else {})
+            | ({"duration": None} if song.duration is None else {})
+            | ({"play_url": None} if song.play_url is None else {})
+            | ({"bitrate": None} if song.bitrate is None else {})
+        for song in result.songs],
         "artists": [artist.model_dump() for artist in result.artists],
         "albums": [album.model_dump() for album in result.albums],
         "playlists": [playlist.model_dump() for playlist in result.playlists],
@@ -150,16 +162,17 @@ def _serialize_search(result) -> dict:
     }
 
 
-@router.get("/search", response_model=MusicSearchResponse)
+@router.get("/search", response_model=None)
 def music_search(
     service: Annotated[MusicService, Depends(get_music_service)],
     keyword: str = Query(min_length=1),
     category: MusicCategory = MusicCategory.ALL,
     page: int = Query(default=1, ge=1),
+    include_lyrics: bool = Query(default=False),
 ) -> dict:
     """Search one category; returns the wire-shaped result (see module docstring)."""
     result = service.search(keyword, category, page)
-    return ok(data=_serialize_search(result), message=_MESSAGE_SEARCH_OK)
+    return ok(data=_serialize_search(result, include_lyrics=include_lyrics), message=_MESSAGE_SEARCH_OK)
 
 
 @router.get("/{song_id}/stream")

@@ -486,7 +486,11 @@ export const cookieApi = {
 export const musicApi = {
   /** GET /api/music/search → MusicSearchResult (wire shape is the contract). */
   async search(params: MusicSearchParams): Promise<MusicSearchResult> {
-    const { data } = await apiClient.get<MusicSearchResult>('/music/search', { params });
+    // Lyrics are an optional payload; request them for the music player while
+    // keeping the legacy API shape unchanged for other callers.
+    const { data } = await apiClient.get<MusicSearchResult>('/music/search', {
+      params: { ...params, include_lyrics: true },
+    });
     return data;
   },
   /** POST /api/music/import {song_id} → {task_id} (download closure). */
