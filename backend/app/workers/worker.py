@@ -328,6 +328,24 @@ def _metadata_for_selector(
     """Resolve a persisted selector to exact downloader metadata."""
     metadata = dict(parse_task.metadata_ or {})
     if selector is None or selector.package is not None or selector.kind == "music":
+        # live_photo with no explicit selector: the download engine only
+        # handles VIDEO/MUSIC/IMAGE, and LIVE_PHOTO is a manifest container
+        # (image+motion pair), not a directly downloadable asset. Default
+        # to the first live_image (static image) so Worker downloads *some*
+        # file instead of raising "media type not supported by the engine".
+        if selector is None and media_type is MediaType.LIVE_PHOTO:
+            try:
+                manifest = validate_manifest_media_type(
+                    load_manifest(parse_task), media_type
+                )
+                if manifest.live_photos:
+                    pair = manifest.live_photos[0]
+                    if pair.image is not None:
+                        metadata["images"] = [{"url": str(pair.image.url)}]
+                        metadata.pop("video_url", None)
+                        return MediaType.IMAGE, metadata
+            except (ManifestError, TypeError, ValueError):
+                pass  # fall through to original behavior
         return media_type, metadata
     try:
         manifest = validate_manifest_media_type(load_manifest(parse_task), media_type)

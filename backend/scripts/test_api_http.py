@@ -541,28 +541,17 @@ def main() -> int:
             else:
                 time.sleep(3)  # 等 worker 初始化
 
-        # 6. 提交下载 + 轮询（用第一个任务，通常是视频）
+        # 6. 提交下载 + 轮询（对所有任务，验证各媒体类型 Worker 下载）
         bubble_download_id: str | None = None
         if tasks:
-            _, bubble_download_id = tester.test_submit_and_poll(tasks[0])
-
-            # 如果第一个任务下载失败（平台风控），尝试后续任务做 nas/save 验证
-            if bubble_download_id and not args.no_nas:
-                # 查询下载状态
-                resp = tester._request("GET", f"/api/download/progress/{bubble_download_id}")
-                if resp.status_code == 200:
-                    status = resp.json().get("data", {}).get("status", "?")
-                    if status != "completed":
-                        info(f"首任务下载状态: {status}，尝试后续任务做 NAS 验证")
-                        for t in tasks[1:]:
-                            ok2, did2 = tester.test_submit_and_poll(t)
-                            if did2:
-                                resp2 = tester._request("GET", f"/api/download/progress/{did2}")
-                                if resp2.status_code == 200:
-                                    if resp2.json().get("data", {}).get("status") == "completed":
-                                        bubble_download_id = did2
-                                        info(f"切换到成功的下载: {did2[:8]}...")
-                                        break
+            for task in tasks:
+                _, did = tester.test_submit_and_poll(task)
+                # 记录第一个成功的 download_id 用于 nas/save
+                if bubble_download_id is None and did:
+                    resp = tester._request("GET", f"/api/download/progress/{did}")
+                    if resp.status_code == 200 and resp.json().get("data", {}).get("status") == "completed":
+                        bubble_download_id = did
+                        info(f"首个成功下载: {did[:8]}...（用于 NAS 验证）")
 
         # 7. 直连下载（对每个任务尝试）
         if not args.no_download:
