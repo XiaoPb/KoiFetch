@@ -73,8 +73,22 @@ class TransferService:
         if selector.package is not None:
             raise self._asset_error()
         if task.media_type == MediaType.MUSIC:
-            raise self._asset_error()
-        resource = self._resolve_resource(task.media_type, self._load_manifest(task), selector)
+            # Music imports persist musicdl ``song_info`` rather than a
+            # MediaManifest. ``prepare()`` already vetted this asset as
+            # direct-eligible (HTTP protocol, non-streaming), so mirror that
+            # lookup here — otherwise prepare returns a direct URL that
+            # stream_direct then refuses to serve (HTTP 400).
+            if selector.kind != "music" or selector.index != 0:
+                raise self._asset_error()
+            metadata = task.metadata_ if isinstance(task.metadata_, dict) else {}
+            song_info = metadata.get("song_info") if isinstance(metadata, dict) else None
+            if not isinstance(song_info, dict):
+                raise self._asset_error()
+            resource = _music_resource(task, song_info)
+            if resource is None:
+                raise self._asset_error()
+        else:
+            resource = self._resolve_resource(task.media_type, self._load_manifest(task), selector)
         if _is_streaming(resource):
             raise self._asset_error()
         try:
