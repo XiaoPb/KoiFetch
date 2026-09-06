@@ -756,7 +756,7 @@ class F2ParserAdapter:
             ),
             file_size_mb=probe_file_size_mb(
                 size_url,
-                timeout_seconds=self._timeout,
+                timeout_seconds=min(self._timeout, 10.0),
                 proxy=self._proxy,
                 transport=self._transport,
             ),
