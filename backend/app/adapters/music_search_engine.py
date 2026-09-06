@@ -31,6 +31,7 @@ from __future__ import annotations
 import contextlib
 import io
 import uuid
+from pathlib import Path
 from typing import Any, Callable
 
 from musicdl import musicdl as _musicdl
@@ -47,6 +48,14 @@ __all__ = ["MusicdlMusicSearchAdapter"]
 
 _MESSAGE_BLANK_TITLE = "未知歌曲"
 _MESSAGE_BLANK_ARTIST = "未知歌手"
+
+# musicdl's source clients create ``<work_dir>/musicdl_outputs`` at init even
+# for search-only sessions. Without an explicit ``work_dir`` the library uses
+# ``os.getcwd()`` (the repo root under uvicorn), littering the project tree.
+# Route the staging dir under ``data/`` so a search session never escapes the
+# documented runtime-data boundary (the repo's ``.gitignore`` already covers
+# ``data/``).
+_SEARCH_WORK_DIR = Path("data/.musicdl_search")
 
 
 class MusicdlMusicSearchAdapter:
@@ -74,10 +83,16 @@ class MusicdlMusicSearchAdapter:
             if self._client_factory is not None:
                 self._client_cache = self._client_factory()
             else:
+                # Pin ``work_dir`` so musicdl places its ``musicdl_outputs``
+                # staging dir under ``data/`` (see ``_SEARCH_WORK_DIR`` note).
+                work_dir = str(_SEARCH_WORK_DIR)
                 self._client_cache = _musicdl.MusicClient(
                     music_sources=self._music_sources,
                     init_music_clients_cfg={
-                        source: {"search_size_per_source": self._size_per_source}
+                        source: {
+                            "search_size_per_source": self._size_per_source,
+                            "work_dir": work_dir,
+                        }
                         for source in self._music_sources
                     },
                     requests_overrides={

@@ -26,6 +26,8 @@
 from __future__ import annotations
 
 import argparse
+import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -320,6 +322,113 @@ class MusicApiTester:
         self.warnings += 1
         return True
 
+    # ── 步骤 8: Bubble 下载（submit + worker + 验证 data/bubble/music） ──
+    def test_bubble_download(self, task_id: str, song: dict) -> tuple[bool, str | None]:
+        """通过 submit API 触发 worker 下载到 bubble 临时存储。"""
+        title = song.get("title", "")[:30]
+        step(f"8. Bubble 下载  POST /api/download/submit  [{title}]")
+        resp = self._request("POST", "/api/download/submit", json={"task_id": task_id})
+        success, body = self._check(resp, "Submit [bubble]")
+        if not success or not body or not body.get("data"):
+            return False, None
+        data = body["data"]
+        download_id = data["download_id"]
+        info(f"download_id: {download_id}")
+        info(f"status: {data.get('status')}")
+
+        # 轮询直到 completed
+        step(f"8b. 轮询进度  GET /api/download/progress/{download_id[:8]}...")
+        max_polls = 40  # 40 * 3s = 120s
+        for i in range(max_polls):
+            resp = self._request("GET", f"/api/download/progress/{download_id}")
+            if resp.status_code != 200:
+                warn(f"进度查询 HTTP {resp.status_code}")
+                break
+            prog = resp.json().get("data", {})
+            status = prog.get("status", "?")
+            progress = prog.get("progress", 0)
+            speed = prog.get("speed")
+            if status == "completed":
+                ok(f"Worker 下载完成 (progress={progress:.1f}%)")
+                self.passed += 1
+                # 验证 bubble 目录有文件
+                return self._verify_bubble_file(download_id), download_id
+            if status == "failed":
+                warn(f"Worker 下载失败: {prog.get('error_message', '?')}")
+                self.warnings += 1
+                return True, download_id
+            speed_str = f"{speed / 1024 / 1024:.2f} MB/s" if speed else "—"
+            info(f"[{i + 1}/{max_polls}] status={status} progress={progress:.1f}% speed={speed_str}")
+            time.sleep(3)
+        warn(f"Worker 下载未在 {max_polls * 3}s 内完成")
+        self.warnings += 1
+        return True, download_id
+
+    def _verify_bubble_file(self, download_id: str) -> bool:
+        """验证 data/bubble/music/ 目录下存在下载的文件。"""
+        step("8c. 验证 Bubble 文件  data/bubble/music/")
+        bubble_dir = REPO_ROOT / "data" / "bubble" / "music"
+        if not bubble_dir.exists():
+            fail(f"Bubble 目录不存在: {bubble_dir}")
+            self.failed += 1
+            return False
+        files = list(bubble_dir.glob("*"))
+        # 过滤 .gitkeep 等隐藏文件
+        files = [f for f in files if not f.name.startswith(".")]
+        if not files:
+            fail(f"Bubble 目录为空: {bubble_dir}")
+            self.failed += 1
+            return False
+        total_size = sum(f.stat().st_size for f in files if f.is_file())
+        size_mb = total_size / (1024 * 1024)
+        file_names = [f.name for f in files[:5]]
+        ok(f"Bubble 文件验证通过: {len(files)} 个文件, {size_mb:.2f} MB")
+        info(f"文件: {', '.join(file_names)}")
+        self.passed += 1
+        return True
+
+    # ── 步骤 9: Pond 保存（nas/save + 验证 data/pond/music） ──
+    def test_pond_save(self, download_id: str) -> bool:
+        """通过 nas/save API 把 bubble 文件移动到 pond 永久存储。"""
+        step(f"9. Pond 保存  POST /api/nas/save  (download_id={download_id[:8]}...)")
+        resp = self._request("POST", "/api/nas/save", json={"download_id": download_id})
+        success, body = self._check(resp, "NAS Save [pond]")
+        if not success or not body or not body.get("data"):
+            return False
+        data = body["data"]
+        nas_path = data.get("nas_path", "?")
+        file_size = data.get("file_size", 0)
+        saved_at = data.get("saved_at", "?")
+        info(f"NAS 路径: {nas_path}")
+        info(f"文件大小: {file_size / (1024 * 1024):.2f} MB")
+        info(f"保存时间: {saved_at}")
+
+        # 验证 pond 目录有文件
+        return self._verify_pond_file(nas_path)
+
+    def _verify_pond_file(self, nas_path: str) -> bool:
+        """验证 data/pond/music/ 目录下存在保存的文件。"""
+        step(f"9b. 验证 Pond 文件  data/pond/music/")
+        pond_dir = REPO_ROOT / "data" / "pond" / "music"
+        if not pond_dir.exists():
+            fail(f"Pond 目录不存在: {pond_dir}")
+            self.failed += 1
+            return False
+        # 递归查找所有文件
+        files = [f for f in pond_dir.rglob("*") if f.is_file() and not f.name.startswith(".")]
+        if not files:
+            fail(f"Pond 目录为空: {pond_dir}")
+            self.failed += 1
+            return False
+        total_size = sum(f.stat().st_size for f in files)
+        size_mb = total_size / (1024 * 1024)
+        ok(f"Pond 文件验证通过: {len(files)} 个文件, {size_mb:.2f} MB")
+        for f in files[:5]:
+            rel = f.relative_to(pond_dir)
+            info(f"  {rel}  ({f.stat().st_size / (1024 * 1024):.2f} MB)")
+        self.passed += 1
+        return True
+
     # ── 汇总 ──
     def summary(self, elapsed: float) -> bool:
         total = self.passed + self.failed + self.warnings
@@ -336,6 +445,30 @@ class MusicApiTester:
         return all_ok
 
 
+def _start_worker() -> subprocess.Popen | None:
+    """启动 worker 子进程（后台运行），返回 Popen 对象。"""
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(REPO_ROOT / "backend")
+    env.setdefault("DATABASE_URL", f"sqlite:///{REPO_ROOT}/backend/data/db/koifetch.db")
+    py = str(REPO_ROOT / ".venv" / "Scripts" / "python.exe")
+    log_path = REPO_ROOT / "data" / "test_output" / "worker.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        log_file = open(log_path, "w", encoding="utf-8")
+        proc = subprocess.Popen(
+            [py, "-m", "app.workers.main"],
+            cwd=str(REPO_ROOT),
+            env=env,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+        )
+        print(f"  {C.INFO}Worker 已启动 (pid={proc.pid}, log={log_path.name}){C.RESET}")
+        return proc
+    except Exception as exc:
+        print(f"  {C.WARN}Worker 启动失败: {exc}{C.RESET}")
+        return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="KoiFetch 音乐搜索/下载 HTTP 端到端测试")
     parser.add_argument(
@@ -345,7 +478,10 @@ def main() -> int:
         "--keyword", default=None, help="搜索关键词 (默认取 .env HOT_KEYWORDS 第一项或 周杰伦)"
     )
     parser.add_argument(
-        "--no-download", action="store_true", help="跳过文件下载步骤"
+        "--no-download", action="store_true", help="跳过直连文件下载步骤"
+    )
+    parser.add_argument(
+        "--no-bubble", action="store_true", help="跳过 bubble/pond 存储验证步骤"
     )
     parser.add_argument(
         "--password", default=None, help="管理员密码 (默认从 .env 读取)"
@@ -357,12 +493,14 @@ def main() -> int:
     keyword = args.keyword or (hot_keywords[0] if hot_keywords else DEFAULT_KEYWORD)
 
     tester = MusicApiTester(args.host)
+    worker_proc = None
     start = time.time()
 
     print(f"\n{C.BOLD}╔══ KoiFetch 音乐搜索/下载 HTTP 端到端测试 ══╗{C.RESET}")
     print(f"  {C.INFO}目标: {args.host}{C.RESET}")
     print(f"  {C.INFO}关键词: {keyword}{C.RESET}")
-    print(f"  {C.INFO}下载: {'跳过' if args.no_download else '启用'}{C.RESET}")
+    print(f"  {C.INFO}直连下载: {'跳过' if args.no_download else '启用'}{C.RESET}")
+    print(f"  {C.INFO}Bubble/Pond: {'跳过' if args.no_bubble else '启用'}{C.RESET}")
 
     try:
         # 1. 健康检查
@@ -391,11 +529,28 @@ def main() -> int:
             fail("导入失败，终止下载流程")
             return tester.summary(time.time() - start)  # type: ignore[func-returns-value]
 
-        # 6+7. 下载（直连或分阶段）
+        # 6+7. 直连下载（prepare + direct）
         if not args.no_download:
             tester.test_direct_download(task_id, first_song)
         else:
-            info("已跳过下载 (--no-download)")
+            info("已跳过直连下载 (--no-download)")
+
+        # 8+9. Bubble/Pond 存储验证（需要 worker）
+        if not args.no_bubble:
+            step("启动 Worker 进程（用于 bubble 下载）")
+            worker_proc = _start_worker()
+            if worker_proc is None:
+                fail("Worker 启动失败，跳过 bubble/pond 验证")
+                tester.failed += 1
+            else:
+                time.sleep(3)  # 等 worker 初始化
+                # 8. Bubble 下载（submit + worker + 验证 data/bubble/music）
+                bubble_ok, download_id = tester.test_bubble_download(task_id, first_song)
+                # 9. Pond 保存（nas/save + 验证 data/pond/music）
+                if bubble_ok and download_id:
+                    tester.test_pond_save(download_id)
+        else:
+            info("已跳过 bubble/pond 验证 (--no-bubble)")
 
     except httpx.ConnectError:
         fail(f"无法连接 {args.host}，请确认服务已启动")
@@ -404,6 +559,14 @@ def main() -> int:
         fail(f"未预期异常: {exc}")
         tester.failed += 1
     finally:
+        # 停止 worker
+        if worker_proc is not None:
+            worker_proc.terminate()
+            try:
+                worker_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                worker_proc.kill()
+            print(f"  {C.INFO}Worker 已停止{C.RESET}")
         tester.close()
 
     return 0 if tester.summary(time.time() - start) else 1
