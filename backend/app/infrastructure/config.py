@@ -109,6 +109,12 @@ class Settings(BaseModel):
     # httpx; parse-video-py additionally reads PARSE_VIDEO_PROXY itself).
     # Empty/whitespace means direct.
     engine_proxy: str | None = None
+    # f2 ships with Bark push enabled by default (conf.yaml: enable_bark: true).
+    # Without a configured key/token, each parse blocks on a Bark HTTP call until
+    # the engine timeout fires. KoiFetch has no push feature, so the adapter
+    # patches f2's in-memory bark config to disable it at runtime (no .venv
+    # file edit that a reinstall would clobber). Set False to keep f2's default.
+    f2_disable_bark: bool = True
     # musicdl source client names for the engine downloader's music branch
     # (the five Mainland-China defaults musicdl ships with).
     musicdl_sources: list[str] = Field(

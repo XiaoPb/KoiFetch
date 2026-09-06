@@ -69,6 +69,7 @@ def get_parser(
             proxy=settings.engine_proxy,
             cookie_provider=cookie_provider,
             enable_legacy_fallback=settings.parser_legacy_fallback,
+            disable_bark=settings.f2_disable_bark,
         )
     return StubParserAdapter()
 

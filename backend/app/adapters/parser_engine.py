@@ -97,12 +97,14 @@ class EngineParserAdapter:
         cookie_provider: CookieProvider | None = None,
         enable_legacy_fallback: bool = True,
         transport: httpx.BaseTransport | None = None,
+        disable_bark: bool = True,
     ) -> None:
         self._timeout = timeout_seconds
         self._proxy = proxy
         self._cookie_provider = cookie_provider
         self._enable_legacy_fallback = enable_legacy_fallback
         self._transport = transport  # test seam; None = real network
+        self._disable_bark = disable_bark
         self._f2_adapter: F2ParserAdapter | None = None
         self._legacy_adapter: LegacyParserAdapter | None = None
 
@@ -130,6 +132,7 @@ class EngineParserAdapter:
                 proxy=self._proxy,
                 cookie_provider=self._cookie_provider,
                 transport=self._transport,
+                disable_bark=self._disable_bark,
             )
         return self._f2_adapter
 

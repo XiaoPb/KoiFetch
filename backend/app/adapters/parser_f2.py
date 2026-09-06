@@ -232,11 +232,49 @@ class F2ParserAdapter:
         proxy: str | None = None,
         cookie_provider: CookieProvider | None = None,
         transport: httpx.BaseTransport | None = None,
+        disable_bark: bool = True,
     ) -> None:
         self._timeout = timeout_seconds
         self._proxy = proxy
         self._cookie_provider = cookie_provider
         self._transport = transport  # test seam; None = real network
+        if disable_bark:
+            self._disable_f2_bark()
+
+    @staticmethod
+    def _disable_f2_bark() -> None:
+        """Patch f2's in-memory Bark config so ``enable_bark`` returns False.
+
+        f2 ships with Bark push enabled by default (``conf.yaml:
+        enable_bark: true``). Without a configured bark key/token, each
+        handler call (douyin/weibo/tiktok) still issues a Bark HTTP request
+        that blocks until the engine timeout fires — a 60 s hang per parse
+        with no useful effect. KoiFetch has no push feature, so the adapter
+        flips the cached ``client_conf`` dict at runtime. This is a class
+        attribute on ``f2.apps.bark.utils.ClientConfManager``, so one patch
+        covers every handler instance for the process lifetime; f2's
+        ``DouyinHandler._send_bark_notification`` already no-ops when
+        ``enable_bark`` is False, so no further changes are needed.
+
+        Done here (not in factory/wiring) to keep the f2-specific workaround
+        next to the adapter that owns it; the factory just forwards the flag.
+        Idempotent and safe to call before f2 is imported (the lazy import
+        below runs only when this is actually called). Failures (e.g. f2 not
+        installed) are logged at warning level — the parse itself still works,
+        just with Bark's original blocking behavior.
+        """
+        try:
+            from f2.apps.bark.utils import (
+                ClientConfManager as BarkClientConfManager,
+            )
+        except ImportError:
+            logger.warning(
+                "f2.apps.bark.utils 不可导入，无法禁用 Bark 推送；"
+                "解析可能因 Bark 超时而挂起"
+            )
+            return
+        BarkClientConfManager.client_conf["enable_bark"] = False
+        logger.info("已禁用 f2 Bark 推送 (runtime patch)")
 
     # -- protocol ----------------------------------------------------------
 
