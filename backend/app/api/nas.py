@@ -5,7 +5,7 @@ This router is deliberately thin — the use case lives in
 operation:
 
 * ``POST /api/nas/save`` — move a completed download's bubble file into the
-  pond at a NAS-style target directory. Protected by :func:`require_admin`
+  pond at a generated platform/date/author/work path. Protected by :func:`require_admin`
   (``app.api.auth``); success returns the PRD §5.7 envelope
   ``{code: 0, message, data: {nas_path, file_size, saved_at}}``.
 
@@ -58,11 +58,11 @@ _MESSAGE_SAVE_OK = "文件已存入NAS / File saved to NAS"
 
 
 class NasSaveRequest(BaseModel):
-    """A NAS save request (PRD §5.7): the completed download plus the target.
+    """A NAS save request containing the completed download.
 
-    ``target_path`` is a NAS-style logical path relative to the pond root
-    (leading ``/`` allowed, e.g. ``"/视频/抖音"``); it is stripped of
-    surrounding whitespace here and validated further by the service.
+    ``target_path`` remains optional for old clients. New clients omit it and
+    receive the generated platform/date/author/work path; when supplied, the
+    service retains the legacy target behavior for compatibility.
     ``extra="forbid"`` (the project convention): an unknown body field — e.g.
     a v1.1 ``rename``/``overwrite`` flag — is rejected with a generic 400
     rather than silently dropped.
@@ -71,13 +71,16 @@ class NasSaveRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     download_id: UuidStr
-    target_path: str = Field(min_length=1, max_length=1024)
+    target_path: str | None = Field(default=None, max_length=1024)
 
     @field_validator("target_path", mode="before")
     @classmethod
     def _strip_target_path(cls, value: object) -> object:
         if isinstance(value, str):
-            return value.strip()
+            value = value.strip()
+            if not value:
+                raise ValueError("target_path must not be blank")
+            return value
         return value
 
 
@@ -112,10 +115,10 @@ def nas_save(
     service: Annotated[NasService, Depends(get_nas_service)],
     claims: Annotated[AccessTokenClaims, Depends(require_admin)],
 ) -> dict:
-    """Move a completed download's file into the pond at ``target_path``.
+    """Move a completed download's file into its generated pond path.
 
     Success: ``200`` with ``{nas_path, file_size, saved_at}``. Errors per the
-    service: generic ``400`` invalid target; ``3001`` unknown download;
+    service: ``3001`` unknown download;
     ``5002`` not completed; ``5001`` missing bubble file; ``9001`` degraded
     storage. ``claims`` is the authorization gate itself (v1 single admin).
     """

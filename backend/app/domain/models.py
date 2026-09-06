@@ -155,10 +155,9 @@ class ParseResult(BaseModel):
     """Parsed metadata for one source URL (PRD §3.1.4).
 
     ``media_type`` is the domain enum (:class:`app.domain.enums.MediaType`);
-    v1 covers video/image/music — ``live_photo`` is not in the enum yet and is
-    rejected (extend the enum when live-photo parsing lands). ``duration`` is
-    the PRD display form (``"03:20"``); the ORM stores seconds, so services
-    convert. ``metadata`` carries extra platform-specific detail.
+    v1 covers video/image/music/live-photo. ``duration`` is the PRD display
+    form (``"03:20"``); the ORM stores seconds, so the persistence mapper
+    converts it. ``metadata`` carries extra platform-specific detail.
     """
 
     model_config = ConfigDict(extra="forbid")

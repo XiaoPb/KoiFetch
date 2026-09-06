@@ -12,7 +12,8 @@ Platform contract (verified against f2 0.0.1.7, 2026-08-26):
   (``/video/{id}``, ``/note/{id}``, short ``v.douyin.com/...``) then
   ``DouyinHandler(kwargs).fetch_one_video(aweme_id)`` returns a
   ``PostDetailFilter`` with ``desc``/``cover``/``duration`` (ms)/
-  ``video_play_addr`` (URL list)/``images`` (图文 URL list)/``nickname``.
+  ``video_play_addr`` (URL list)/``images`` (图文 URL list)/
+  ``music_play_url`` (background music URL)/``nickname``.
   A cookie is REQUIRED (f2's crawler reads ``kwargs["cookie"]``; douyin
   rejects requests without a valid one).
 * **weibo** — ``WeiboIdFetcher.get_weibo_id(url)`` then
@@ -78,8 +79,11 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import logging
+import re
 import unicodedata
 import uuid
+from datetime import date, datetime, timezone
 from urllib.parse import urlsplit
 
 import httpx
@@ -109,6 +113,8 @@ from app.domain import (
 )
 
 __all__ = ["F2ParserAdapter", "_route", "_translate_f2_error"]
+
+logger = logging.getLogger(__name__)
 
 _MESSAGE_UNSUPPORTED = "该平台暂不支持链接解析 / Platform URL parsing unsupported"
 _MESSAGE_MISSING_COOKIE = (
@@ -248,13 +254,13 @@ class F2ParserAdapter:
             raise CookieMissingError(_MESSAGE_MISSING_COOKIE)
         try:
             if platform == "douyin":
-                data = self._run(self._fetch_douyin(url, cookie or ""))
-                return self._map_douyin(data, url)
+                source_id, data = self._run(self._fetch_douyin(url, cookie or ""))
+                return self._map_douyin(data, url, source_id=source_id)
             if platform == "weibo":
-                data = self._run(self._fetch_weibo(url, cookie or ""))
-                return self._map_weibo(data, url)
-            data = self._run(self._fetch_tiktok(url, cookie or ""))
-            return self._map_tiktok(data, url)
+                source_id, data = self._run(self._fetch_weibo(url, cookie or ""))
+                return self._map_weibo(data, url, source_id=source_id)
+            source_id, data = self._run(self._fetch_tiktok(url, cookie or ""))
+            return self._map_tiktok(data, url, source_id=source_id)
         except EngineError:
             raise
         except Exception as exc:
@@ -281,6 +287,10 @@ class F2ParserAdapter:
         """Await an f2 coroutine with the configured timeout in a fresh loop."""
         return asyncio.run(asyncio.wait_for(coro, timeout=self._timeout))
 
+    def _extract_uifid(self, cookie: str) -> str:
+        match = re.search(r"UIFID=([^;]+)", cookie)
+        return match.group(1) if match else None
+
     def _kwargs(self, platform: str, cookie: str) -> dict:
         """Build the f2 handler kwargs (headers/cookie/proxies)."""
         proxies = (
@@ -288,8 +298,18 @@ class F2ParserAdapter:
             if self._proxy
             else {"http://": None, "https://": None}
         )
+        try:
+            uifid = self._extract_uifid(cookie)
+        except Exception as exc:
+            logger.error(f"Error occurred while extracting UIFID from cookie: {exc}")
+            uifid = None
         return {
-            "headers": {"User-Agent": _USER_AGENT, "Referer": _REFERERS[platform]},
+            "headers": {
+                "User-Agent": _USER_AGENT,
+                "Referer": _REFERERS[platform],
+                "uifid": uifid,
+                "x-tt-argus": "1",
+            },
             "cookie": cookie,
             "proxies": proxies,
         }
@@ -307,9 +327,10 @@ class F2ParserAdapter:
             self._import_f2, "f2.apps.douyin.handler", "DouyinHandler"
         )
         aweme_id = await AwemeIdFetcher.get_aweme_id(url)
-        return await DouyinHandler(self._kwargs("douyin", cookie)).fetch_one_video(
+        data = await DouyinHandler(self._kwargs("douyin", cookie)).fetch_one_video(
             aweme_id
         )
+        return aweme_id, data
 
     async def _fetch_weibo(self, url: str, cookie: str):
         # Imports run in a worker thread: f2's module import can block on its
@@ -322,9 +343,10 @@ class F2ParserAdapter:
             self._import_f2, "f2.apps.weibo.handler", "WeiboHandler"
         )
         weibo_id = await WeiboIdFetcher.get_weibo_id(url)
-        return await WeiboHandler(self._kwargs("weibo", cookie)).fetch_one_weibo(
+        data = await WeiboHandler(self._kwargs("weibo", cookie)).fetch_one_weibo(
             weibo_id
         )
+        return weibo_id, data
 
     async def _fetch_tiktok(self, url: str, cookie: str):
         # Imports run in a worker thread: f2's module import can block on its
@@ -337,13 +359,16 @@ class F2ParserAdapter:
             self._import_f2, "f2.apps.tiktok.handler", "TiktokHandler"
         )
         item_id = await TiktokAwemeIdFetcher.get_aweme_id(url)
-        return await TiktokHandler(self._kwargs("tiktok", cookie)).fetch_one_video(
+        data = await TiktokHandler(self._kwargs("tiktok", cookie)).fetch_one_video(
             itemId=item_id
         )
+        return item_id, data
 
     # -- per-platform mapping (Tasks 7-8) ----------------------------------
 
-    def _map_douyin(self, data, url: str) -> ParseResult:
+    def _map_douyin(
+        self, data, url: str, *, source_id: object | None = None
+    ) -> ParseResult:
         """Map a douyin PostDetailFilter onto a ParseResult (Task 7).
 
         A non-zero ``api_status_code`` with a configured cookie means the
@@ -357,6 +382,9 @@ class F2ParserAdapter:
         if data.nickname is None:
             raise EngineParseError(_MESSAGE_NO_MEDIA)
         manifest = self._douyin_manifest(data)
+        music_urls = self._usable_urls(
+            [getattr(data, "music_play_url", None)]
+        )
         return self._build_result(
             url=url,
             platform="douyin",
@@ -365,6 +393,10 @@ class F2ParserAdapter:
             duration_ms=data.duration,
             manifest=manifest,
             author={"uid": data.uid, "name": data.nickname, "avatar": None},
+            extra_metadata={
+                "background_music_urls": music_urls,
+                **self._stable_metadata(data, source_id=source_id),
+            },
         )
 
     @staticmethod
@@ -504,7 +536,9 @@ class F2ParserAdapter:
             )
         raise EngineParseError(_MESSAGE_NO_MEDIA)
 
-    def _map_weibo(self, data, url: str) -> ParseResult:
+    def _map_weibo(
+        self, data, url: str, *, source_id: object | None = None
+    ) -> ParseResult:
         """Map a weibo WeiboDetailFilter onto a ParseResult (Task 7).
 
         ``error_code == 20112`` is weibo's own "无查看权限，请配置Cookie" signal →
@@ -529,6 +563,7 @@ class F2ParserAdapter:
             video_url=video_url,
             images=images,
             author={"uid": data.uid, "name": data.nickname, "avatar": None},
+            extra_metadata=self._stable_metadata(data, source_id=source_id),
         )
 
     @staticmethod
@@ -560,7 +595,9 @@ class F2ParserAdapter:
                 urls.append(image_url)
         return urls
 
-    def _map_tiktok(self, data, url: str) -> ParseResult:
+    def _map_tiktok(
+        self, data, url: str, *, source_id: object | None = None
+    ) -> ParseResult:
         """Map a tiktok PostDetailFilter onto a ParseResult (Task 8).
 
         Non-zero ``api_status_code`` → CookieInvalidError (best-effort, see
@@ -581,7 +618,50 @@ class F2ParserAdapter:
             video_url=data.video_playAddr,
             images=[],
             author={"uid": data.uid, "name": data.nickname, "avatar": None},
+            extra_metadata=self._stable_metadata(data, source_id=source_id),
         )
+
+    @staticmethod
+    def _stable_metadata(data, *, source_id: object | None = None) -> dict[str, str]:
+        """Extract platform-neutral path fields from an f2 response."""
+        source = source_id
+        if source is None:
+            source = F2ParserAdapter._first_value(
+                data, ("aweme_id", "item_id", "post_id", "id")
+            )
+        published = F2ParserAdapter._first_value(
+            data, ("published_at", "create_time", "publish_time", "created_at")
+        )
+        metadata: dict[str, str] = {}
+        if source is not None and str(source).strip():
+            metadata["source_id"] = str(source).strip()
+        published_value = F2ParserAdapter._format_published_at(published)
+        if published_value is not None:
+            metadata["published_at"] = published_value
+        return metadata
+
+    @staticmethod
+    def _first_value(data, names: tuple[str, ...]):
+        for name in names:
+            value = getattr(data, name, None)
+            if value is not None and str(value).strip():
+                return value
+        return None
+
+    @staticmethod
+    def _format_published_at(value: object | None) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        if text.isdigit() and len(text) in (10, 13):
+            timestamp = int(text[:10])
+            return datetime.fromtimestamp(timestamp, tz=timezone.utc).date().isoformat()
+        try:
+            return date.fromisoformat(text[:10]).isoformat()
+        except ValueError:
+            return None
 
     # -- shared result builder ----------------------------------------------
 
@@ -597,6 +677,7 @@ class F2ParserAdapter:
         images: list[str] | None = None,
         manifest: MediaManifest | None = None,
         author: dict,
+        extra_metadata: dict[str, object] | None = None,
     ) -> ParseResult:
         """Map the extracted fields onto a :class:`ParseResult`.
 
@@ -658,6 +739,11 @@ class F2ParserAdapter:
             size_url = str(primary_pair.motion.url) if primary_pair.motion else str(primary.url)
             media_format = primary.format
             cover = cover or str(primary.url)
+        self._log_media_links(
+            platform=platform,
+            manifest=manifest,
+            extra_metadata=extra_metadata,
+        )
         return ParseResult(
             task_id=str(uuid.uuid4()),
             url=url,
@@ -678,6 +764,7 @@ class F2ParserAdapter:
             available_qualities=[],
             available_bitrates=[],
             metadata={
+                **(extra_metadata or {}),
                 "engine": "f2",
                 "manifest": manifest_json,
                 "video_url": video_url,
@@ -685,4 +772,28 @@ class F2ParserAdapter:
                 "author": author,
             },
             error=None,
+        )
+
+    @staticmethod
+    def _log_media_links(
+        *,
+        platform: str,
+        manifest: MediaManifest,
+        extra_metadata: dict[str, object] | None,
+    ) -> None:
+        """Log resolved media links before the normalized result is persisted."""
+        music_urls = (extra_metadata or {}).get("background_music_urls", [])
+        if not isinstance(music_urls, list):
+            music_urls = []
+        def safe_url(value: object) -> str:
+            return str(value).split("?", 1)[0].split("#", 1)[0]
+        logger.info(
+            "f2 解析资源链接 platform=%s videos=%s images=%s "
+            "live_images=%s live_motions=%s background_music=%s",
+            platform,
+            [safe_url(item.url) for item in manifest.videos],
+            [safe_url(item.url) for item in manifest.images],
+            [safe_url(pair.image.url) for pair in manifest.live_photos],
+            [safe_url(pair.motion.url) for pair in manifest.live_photos if pair.motion],
+            [safe_url(value) for value in music_urls],
         )

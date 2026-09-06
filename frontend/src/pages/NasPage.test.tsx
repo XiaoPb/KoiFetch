@@ -158,13 +158,13 @@ describe('NasPage', () => {
     expect(screen.queryByTestId('nas-save-d2')).not.toBeInTheDocument();
   });
 
-  it('saves a completed item: modal opens with an empty target field, submits the path, reports the nas_path and removes the item', async () => {
+  it('saves a completed item using the generated path and removes the item', async () => {
     const user = userEvent.setup();
     useDownloadsStore.setState({
       items: [seedItem({ download_id: 'd1', task_id: 't1', status: 'completed', title: 'Video A' })],
     });
     (nasApi.save as Mock).mockResolvedValue({
-      nas_path: '/视频/抖音/2026-01-01_x.mp4',
+      nas_path: '/douyin/2026-01-01/author/work/author_Video-A.mp4',
       file_size: 1024,
       saved_at: '2026-01-02T00:00:00Z',
     });
@@ -174,16 +174,11 @@ describe('NasPage', () => {
 
     const modal = await screen.findByTestId('nas-save-modal');
     expect(modal).toBeInTheDocument();
-    // PRD §3.4.3 says default "/", but the backend rejects a root-only
-    // target — the field opens empty with an example placeholder instead.
-    expect(screen.getByTestId('nas-target-input')).toHaveValue('');
-
-    await user.type(screen.getByTestId('nas-target-input'), '/视频/抖音');
     await user.click(screen.getByTestId('nas-save-confirm'));
 
-    await waitFor(() => expect(nasApi.save).toHaveBeenCalledWith('d1', '/视频/抖音'));
+    await waitFor(() => expect(nasApi.save).toHaveBeenCalledWith('d1'));
     expect(await screen.findByText('🎉 锦鲤已游入池塘!')).toBeInTheDocument();
-    expect(screen.getByText('已保存到 /视频/抖音/2026-01-01_x.mp4')).toBeInTheDocument();
+    expect(screen.getByText('已保存到 /douyin/2026-01-01/author/work/author_Video-A.mp4')).toBeInTheDocument();
     // The modal closes after a successful save...
     expect(screen.queryByTestId('nas-save-modal')).not.toBeInTheDocument();
     // ...and the item is REMOVED from the store: the backend moved its bubble
@@ -204,13 +199,12 @@ describe('NasPage', () => {
     renderWithProviders(<NasPage />);
 
     await user.click(await screen.findByTestId('nas-save-d1'));
-    await user.type(screen.getByTestId('nas-target-input'), '/视频');
-    // Enter while the first request is still in flight must not POST again.
-    await user.keyboard('{Enter}');
-    await user.keyboard('{Enter}');
+    await user.click(screen.getByTestId('nas-save-confirm'));
+    // Repeated confirmation while the first request is in flight must not POST again.
+    await user.click(screen.getByTestId('nas-save-confirm'));
     await waitFor(() => expect(nasApi.save).toHaveBeenCalledTimes(1));
 
-    resolveSave({ nas_path: '/视频/x.mp4', file_size: 10, saved_at: '2026-01-02T00:00:00Z' });
+    resolveSave({ nas_path: '/douyin/2026-01-01/author/work/author_Video-A.mp4', file_size: 10, saved_at: '2026-01-02T00:00:00Z' });
     await waitFor(() => expect(nasApi.save).toHaveBeenCalledTimes(1));
   });
 
@@ -223,67 +217,8 @@ describe('NasPage', () => {
     renderWithProviders(<NasPage />);
 
     await user.click(await screen.findByTestId('nas-save-d1'));
-    await user.clear(screen.getByTestId('nas-target-input'));
-    await user.type(screen.getByTestId('nas-target-input'), '/视频');
     await user.click(screen.getByTestId('nas-save-confirm'));
 
     expect(await screen.findByText(/File not fully downloaded/)).toBeInTheDocument();
-  });
-
-  it('rejects invalid targets client-side without calling the API', async () => {
-    const user = userEvent.setup();
-    useDownloadsStore.setState({
-      items: [seedItem({ download_id: 'd1', task_id: 't1', status: 'completed', title: 'Video A' })],
-    });
-    renderWithProviders(<NasPage />);
-
-    await user.click(await screen.findByTestId('nas-save-d1'));
-
-    // Backslash separator.
-    await user.clear(screen.getByTestId('nas-target-input'));
-    await user.type(screen.getByTestId('nas-target-input'), '视频\\抖音');
-    await user.click(screen.getByTestId('nas-save-confirm'));
-    expect(screen.getByText('目标路径无效：不能包含 .. 、反斜杠或盘符')).toBeInTheDocument();
-    expect(nasApi.save).not.toHaveBeenCalled();
-
-    // Parent-directory traversal.
-    await user.clear(screen.getByTestId('nas-target-input'));
-    await user.type(screen.getByTestId('nas-target-input'), '/视频/../抖音');
-    await user.click(screen.getByTestId('nas-save-confirm'));
-    expect(nasApi.save).not.toHaveBeenCalled();
-
-    // Drive-letter prefix.
-    await user.clear(screen.getByTestId('nas-target-input'));
-    await user.type(screen.getByTestId('nas-target-input'), 'C:\\evil');
-    await user.click(screen.getByTestId('nas-save-confirm'));
-    expect(nasApi.save).not.toHaveBeenCalled();
-
-    // Root-only "/" is rejected client-side (the backend rejects it too:
-    // backend tests treat "/" as an invalid target path).
-    await user.clear(screen.getByTestId('nas-target-input'));
-    await user.type(screen.getByTestId('nas-target-input'), '/');
-    await user.click(screen.getByTestId('nas-save-confirm'));
-    expect(screen.getByText('请输入至少一个目录(例如 /视频/抖音)')).toBeInTheDocument();
-    expect(nasApi.save).not.toHaveBeenCalled();
-  });
-
-  it('accepts a leading-slash-less target path', async () => {
-    const user = userEvent.setup();
-    useDownloadsStore.setState({
-      items: [seedItem({ download_id: 'd1', task_id: 't1', status: 'completed', title: 'Video A' })],
-    });
-    (nasApi.save as Mock).mockResolvedValue({
-      nas_path: '/视频/x.mp4',
-      file_size: 10,
-      saved_at: '2026-01-02T00:00:00Z',
-    });
-    renderWithProviders(<NasPage />);
-
-    await user.click(await screen.findByTestId('nas-save-d1'));
-    await user.clear(screen.getByTestId('nas-target-input'));
-    await user.type(screen.getByTestId('nas-target-input'), '视频');
-    await user.click(screen.getByTestId('nas-save-confirm'));
-
-    await waitFor(() => expect(nasApi.save).toHaveBeenCalledWith('d1', '视频'));
   });
 });

@@ -156,11 +156,17 @@ export function ParserWorkspace(): JSX.Element {
   };
 
   const handleDownloadAlbum = (result: ParseResult) => {
+    const imageCount = result.manifest?.kind === 'image_album' ? result.manifest.images.length : 0;
+    if (imageCount === 0) return;
     if (typeof downloadApi.prepare !== 'function') {
-      window.open(mediaApi.albumZipUrl(result.task_id), '_blank', 'noopener');
+      for (let index = 0; index < imageCount; index += 1) {
+        window.open(mediaApi.imageUrl(result.task_id, index), '_blank', 'noopener');
+      }
       return;
     }
-    void prepareTransfer(result.task_id, { kind: 'image', index: 0, package: 'album_zip' }, result.title);
+    for (let index = 0; index < imageCount; index += 1) {
+      void prepareTransfer(result.task_id, { kind: 'image', index }, result.title);
+    }
   };
 
   const hasOutput = status === 'success';

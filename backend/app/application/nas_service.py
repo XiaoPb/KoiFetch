@@ -95,7 +95,9 @@ from app.api.responses import (
     ApiError,
 )
 from app.application.stored_paths import resolve_bubble_path
-from app.domain import DownloadStatus, MediaType
+from app.application.nas_path import build_media_pond_path
+from app.application.storage_types import storage_media_type
+from app.domain import AssetSelector, DownloadStatus, MediaType
 from app.domain.paths import PathOutsideRootError, safe_media_filename, slugify
 from app.infrastructure.database import session_scope
 from app.infrastructure.models import DownloadTask, ParseTask
@@ -115,11 +117,6 @@ _MESSAGE_STORAGE_NOT_READY = "存储未就绪 / Storage not ready"
 _MESSAGE_STORAGE_ERROR = "存储操作失败 / Storage operation failed"
 
 _DRIVE_LETTER = re.compile(r"^[A-Za-z]:")
-
-# Documented target-path caps (v1): at most 16 directory segments, and the
-# joined pond-relative path (directories + filename) at most 260 characters —
-# far below typical filesystem limits, so an over-long slugified path is
-# rejected with a clear 400 instead of surfacing as a storage OSError (9001).
 _MAX_TARGET_DEPTH = 16
 _MAX_POND_RELATIVE_LENGTH = 260
 
@@ -156,8 +153,8 @@ class NasService:
         self._storage = storage
         self._engine = engine
 
-    def save(self, download_id: str, target_path: str) -> NasSaveResult:
-        """Move a completed download's bubble file to ``target_path`` in the pond.
+    def save(self, download_id: str, target_path: str | None = None) -> NasSaveResult:
+        """Move a completed download's bubble file to its generated pond path.
 
         Raises :class:`ApiError`: generic ``400`` for an invalid target path;
         ``9001`` (500) in degraded-storage mode; ``3001`` (400) unknown
@@ -165,7 +162,13 @@ class NasService:
         file missing or escaping its root. Returns the NAS-style destination
         plus file size and save time.
         """
-        segments = self._parse_target_path(target_path)
+        legacy_segments = (
+            self._parse_target_path(target_path) if target_path is not None else None
+        )
+        if legacy_segments is not None and len(legacy_segments) > _MAX_TARGET_DEPTH:
+            raise ApiError(
+                HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_TARGET_TOO_DEEP
+            )
         if self._storage is None:
             raise ApiError(
                 HTTP_500_INTERNAL_SERVER_ERROR,
@@ -190,23 +193,36 @@ class NasService:
 
             parse_task = row.parse_task
             media_type = parse_task.media_type
+            try:
+                selector = (
+                    AssetSelector.model_validate(row.asset_selector)
+                    if row.asset_selector is not None
+                    else None
+                )
+            except (TypeError, ValueError) as exc:
+                raise ApiError(
+                    HTTP_404_NOT_FOUND, CODE_FILE_NOT_FOUND, _MESSAGE_FILE_NOT_FOUND
+                ) from exc
+            storage_type = storage_media_type(media_type, selector)
 
             if not row.bubble_path:
                 raise ApiError(
                     HTTP_404_NOT_FOUND, CODE_FILE_NOT_FOUND, _MESSAGE_FILE_NOT_FOUND
                 )
-            bubble = resolve_bubble_path(self._storage, media_type, row.bubble_path)
+            bubble = resolve_bubble_path(self._storage, storage_type, row.bubble_path)
             if not self._storage.exists(bubble):
                 raise ApiError(
                     HTTP_404_NOT_FOUND, CODE_FILE_NOT_FOUND, _MESSAGE_FILE_NOT_FOUND
                 )
 
-            if len(segments) > _MAX_TARGET_DEPTH:
-                raise ApiError(
-                    HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_TARGET_TOO_DEEP
+            if legacy_segments is None:
+                pond_relative = self._pond_relative_path(
+                    row, parse_task, bubble.name, selector
                 )
-            filename = self._pond_filename(row, parse_task, bubble.name)
-            pond_relative = "/".join([*segments, filename])
+            else:
+                pond_relative = "/".join(
+                    [*legacy_segments, self._pond_filename(row, parse_task, bubble.name)]
+                )
             if len(pond_relative) > _MAX_POND_RELATIVE_LENGTH:
                 raise ApiError(
                     HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_TARGET_TOO_LONG
@@ -223,7 +239,7 @@ class NasService:
             # accepted and documented (SQLite-serialized saves in one process
             # make it a non-issue in practice).
             target_path_abs = self._storage.resolve_pond(
-                media_type, *segments, filename
+                storage_type, *pond_relative.split("/")
             )
             if self._storage.exists(target_path_abs):
                 raise ApiError(
@@ -232,7 +248,7 @@ class NasService:
 
             try:
                 pond_path = self._storage.move_to_pond(
-                    media_type, bubble, target=pond_relative
+                    storage_type, bubble, target=pond_relative
                 )
             except PathOutsideRootError as exc:
                 # Integrity event: slugified segments cannot escape, but a
@@ -286,6 +302,45 @@ class NasService:
             )
 
     # -- internals -------------------------------------------------------------
+
+    @staticmethod
+    def _pond_relative_path(
+        row: DownloadTask,
+        parse_task: ParseTask,
+        bubble_basename: str,
+        selector: AssetSelector | None,
+    ) -> str:
+        """Build the generated platform/date/author/work-relative path."""
+        ext = _extension_of(bubble_basename)
+        if not ext:
+            return bubble_basename
+        title = row.title or parse_task.title or "untitled"
+        metadata = parse_task.metadata_ if isinstance(parse_task.metadata_, dict) else {}
+        author_data = metadata.get("author")
+        author = author_data.get("name") if isinstance(author_data, dict) else author_data
+        index = None
+        resource_kind = None
+        if selector is not None:
+            resource_kind = selector.kind
+            if selector.kind in {"image", "live_image"}:
+                index = selector.index
+        if index is None:
+            try:
+                index = int(metadata["index"]) if "index" in metadata else None
+            except (TypeError, ValueError):
+                index = None
+        return build_media_pond_path(
+            media_bucket=storage_media_type(parse_task.media_type, selector).value,
+            platform=parse_task.platform,
+            published_at=metadata.get("published_at"),
+            author=author,
+            work_id=metadata.get("source_id"),
+            task_id=parse_task.task_id,
+            title=title,
+            extension=ext,
+            index=index,
+            resource_kind=resource_kind,
+        )
 
     @staticmethod
     def _parse_target_path(target_path: str) -> list[str]:

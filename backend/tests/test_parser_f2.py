@@ -4,6 +4,7 @@ monkeypatching the module-level names the adapter imports — the suite never
 touches the network."""
 
 import asyncio
+import logging
 import re
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -100,6 +101,45 @@ class TestRouting:
             "https://www.xiaohongshu.com/explore/1",
         ):
             assert parser_f2._route(url) is None
+
+
+def test_build_result_logs_all_resolved_media_link_groups(caplog):
+    caplog.set_level(logging.INFO, logger="app.adapters.parser_f2")
+    adapter = _offline_adapter()
+    result = adapter._build_result(
+        url="https://example.com/post/1",
+        platform="douyin",
+        title="album",
+        cover=None,
+        duration_ms=None,
+        images=["https://cdn.example/image-1.jpg", "https://cdn.example/image-2.jpg"],
+        author={"uid": "u1", "name": "author", "avatar": None},
+        extra_metadata={"background_music_urls": ["https://cdn.example/music.mp3"]},
+    )
+
+    assert result.metadata["manifest"]["kind"] == "image_album"
+    message = " ".join(record.getMessage() for record in caplog.records)
+    assert "image-1.jpg" in message
+    assert "image-2.jpg" in message
+    assert "music.mp3" in message
+
+
+class TestHandlerKwargs:
+    def test_extracts_uifid_and_sets_argus_header(self):
+        adapter = F2ParserAdapter(proxy="http://127.0.0.1:7890")
+
+        kwargs = adapter._kwargs(
+            "douyin",
+            "sid_guard=abc; UIFID=uifid-value; sessionid=session-value",
+        )
+
+        assert kwargs["headers"]["uifid"] == "uifid-value"
+        assert kwargs["headers"]["x-tt-argus"] == "1"
+        assert kwargs["cookie"].startswith("sid_guard=abc;")
+        assert kwargs["proxies"] == {
+            "http://": "http://127.0.0.1:7890",
+            "https://": "http://127.0.0.1:7890",
+        }
 
 
 class TestErrorTranslation:
@@ -281,6 +321,8 @@ def _fake_post_detail(**overrides):
         api_status_code=0,
         nickname="张三",
         uid="12345",
+        aweme_id="aweme-1",
+        create_time="2026-09-06T12:00:00+08:00",
         desc="示例视频",
         cover="https://cdn.example/c.jpg",
         duration=83000,
@@ -288,6 +330,7 @@ def _fake_post_detail(**overrides):
         images=[],
         images_video=[],
         aweme_type=0,
+        music_play_url=None,
     )
     defaults.update(overrides)
     return type("FakePostDetail", (), defaults)()
@@ -305,6 +348,8 @@ def _fake_weibo_detail(**overrides):
         desc="<p>示例微博</p>",
         nickname="博主",
         uid="u1",
+        post_id="post-1",
+        created_at="2026-09-05T08:00:00Z",
         playback_list=["https://cdn.example/w.mp4"],
         weibo_pic_infos={},
     )
@@ -317,7 +362,13 @@ class TestDouyinMapping:
         return _offline_adapter(cookie_provider=FakeCookieProvider({"douyin": "d=1"}), **kwargs)
 
     def test_maps_video_detail(self, monkeypatch):
-        fake_handler = Mock(fetch_one_video=_async_returns(_fake_post_detail()))
+        fake_handler = Mock(
+            fetch_one_video=_async_returns(
+                _fake_post_detail(
+                    music_play_url="https://cdn.example/music.mp3?token=secret"
+                )
+            )
+        )
         handler_cls = Mock(return_value=fake_handler)
         _stub_f2(monkeypatch, {
             ("f2.apps.douyin.utils", "AwemeIdFetcher"): Mock(get_aweme_id=_async_returns("1")),
@@ -331,7 +382,12 @@ class TestDouyinMapping:
         assert result.cover == "https://cdn.example/c.jpg"
         assert result.duration == "01:23"
         assert result.metadata["video_url"] == "https://cdn.example/v.mp4"
+        assert result.metadata["background_music_urls"] == [
+            "https://cdn.example/music.mp3?token=secret"
+        ]
         assert result.metadata["author"]["name"] == "张三"
+        assert result.metadata["source_id"] == "1"
+        assert result.metadata["published_at"] == "2026-09-06"
         # The cookie must be forwarded into the handler kwargs (first positional
         # argument of the DouyinHandler constructor).
         assert handler_cls.call_args[0][0]["cookie"] == "d=1"
@@ -593,6 +649,8 @@ class TestWeiboMapping:
         assert result.media_type is MediaType.VIDEO
         assert result.title == "示例微博"
         assert result.metadata["video_url"] == "https://cdn.example/w.mp4"
+        assert result.metadata["source_id"] == "wid"
+        assert result.metadata["published_at"] == "2026-09-05"
 
     def test_maps_image_weibo_with_cover_from_first_pic(self, monkeypatch):
         weibo_pic_infos = {
@@ -657,6 +715,8 @@ def _fake_tiktok_detail(**overrides):
         api_status_code=0,
         nickname="tiktoker",
         uid="tu1",
+        item_id="item-1",
+        create_time="2026-09-04T08:00:00Z",
         desc="TikTok clip",
         video_playAddr="https://cdn.example/t.mp4",
         video_cover="https://cdn.example/tc.jpg",
@@ -684,6 +744,8 @@ class TestTiktokMapping:
         assert result.cover == "https://cdn.example/tc.jpg"
         assert result.duration == "01:05"
         assert result.metadata["video_url"] == "https://cdn.example/t.mp4"
+        assert result.metadata["source_id"] == "tid"
+        assert result.metadata["published_at"] == "2026-09-04"
 
     def test_missing_video_addr_raises_parse_error(self, monkeypatch):
         fake_handler = Mock(

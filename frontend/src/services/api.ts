@@ -455,11 +455,11 @@ export const downloadApi = {
 
 export const nasApi = {
   /** POST /api/nas/save (admin, Bearer) → {nas_path, file_size, saved_at}. */
-  async save(downloadId: string, targetPath: string): Promise<NasSaveData> {
-    const { data } = await apiClient.post<NasSaveData>('/nas/save', {
-      download_id: downloadId,
-      target_path: targetPath,
-    });
+  async save(downloadId: string, targetPath?: string): Promise<NasSaveData> {
+    const body = targetPath === undefined
+      ? { download_id: downloadId }
+      : { download_id: downloadId, target_path: targetPath };
+    const { data } = await apiClient.post<NasSaveData>('/nas/save', body);
     return data;
   },
 };

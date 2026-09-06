@@ -192,6 +192,7 @@ class TestInitialMigration:
                 "SELECT sql FROM sqlite_master WHERE type='table' AND name='parse_tasks'"
             ).fetchone()[0]
             assert "CHECK" in parse_sql  # media_type enum CHECK constraint
+            assert "live_photo" in parse_sql
 
             download_sql = conn.execute(
                 "SELECT sql FROM sqlite_master WHERE type='table' AND name='download_tasks'"
@@ -210,6 +211,26 @@ class TestInitialMigration:
         monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path.as_posix()}")
         run_upgrade(db_path)
         run_upgrade(db_path)  # already at head: a no-op that must not raise
+
+    def test_upgrade_migrates_existing_pre_live_photo_database(
+        self, tmp_path, monkeypatch
+    ):
+        from alembic import command
+
+        db_path = tmp_path / "pre-live-photo.db"
+        monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path.as_posix()}")
+        config = alembic_config()
+        command.upgrade(config, "7d24b9c0e1f2")
+        command.upgrade(config, "head")
+
+        conn = sqlite3.connect(db_path)
+        try:
+            parse_sql = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='parse_tasks'"
+            ).fetchone()[0]
+            assert "live_photo" in parse_sql
+        finally:
+            conn.close()
 
     def test_downgrade_base_drops_all_tables(self, tmp_path, monkeypatch):
         # The full migration chain must be reversible: downgrading to base

@@ -232,7 +232,7 @@ describe('DownloadCenterDrawer', () => {
     renderDrawer();
 
     await user.click(screen.getByTestId('save-nas-d1'));
-    expect(nasApi.save).toHaveBeenCalledWith('d1', 'Video A.mp4');
+    expect(nasApi.save).toHaveBeenCalledWith('d1');
     // The bubble file was MOVED into the pond — the item is gone from the list.
     await waitFor(() => expect(useDownloadsStore.getState().items).toHaveLength(0));
   });

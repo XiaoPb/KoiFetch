@@ -203,6 +203,30 @@ class TestAuth:
 
 
 class TestSaveApi:
+    def test_save_without_target_uses_generated_path(self, client, engine, storage):
+        task_id = seed_parse_task(
+            engine,
+            task_id="api-generated-path",
+            metadata={
+                "published_at": "2026-09-06",
+                "source_id": "work-99",
+                "author": {"name": "作者A"},
+            },
+        )
+        download_id = seed_completed_with_file(engine, task_id=task_id, storage=storage)
+        token = login(client)
+
+        response = client.post(
+            "/api/nas/save",
+            json={"download_id": download_id},
+            headers=auth_headers(token),
+        )
+
+        assert response.status_code == 200
+        assert response.json()["data"]["nas_path"] == (
+            "/bilibili/2026-09-06/作者a/work-99/作者a_示例视频.mp4"
+        )
+
     def test_save_returns_success_envelope(self, client, engine, storage):
         task_id = seed_parse_task(engine)
         download_id = seed_completed_with_file(engine, task_id=task_id, storage=storage)
@@ -321,17 +345,17 @@ class TestSaveApi:
         assert response.status_code == 400
         assert response.json()["code"] == CODE_BAD_REQUEST
 
-    def test_save_missing_target_path_returns_400(self, client, engine, storage):
+    def test_save_blank_legacy_target_path_returns_400(self, client, engine, storage):
         task_id = seed_parse_task(engine)
         download_id = seed_completed_with_file(engine, task_id=task_id, storage=storage)
         token = login(client)
-        for payload in (
-            {"download_id": download_id},
-            {"download_id": download_id, "target_path": ""},
-        ):
-            response = client.post("/api/nas/save", json=payload, headers=auth_headers(token))
-            assert response.status_code == 400, payload
-            assert response.json()["code"] == CODE_BAD_REQUEST, payload
+        response = client.post(
+            "/api/nas/save",
+            json={"download_id": download_id, "target_path": ""},
+            headers=auth_headers(token),
+        )
+        assert response.status_code == 400
+        assert response.json()["code"] == CODE_BAD_REQUEST
 
     def test_save_unknown_body_field_returns_400(self, client, engine, storage):
         task_id = seed_parse_task(engine)

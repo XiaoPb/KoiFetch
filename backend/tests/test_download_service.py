@@ -283,6 +283,22 @@ class TestSubmit:
         assert exc.http_status == HTTP_409_CONFLICT
         assert exc.code == CODE_TASK_ALREADY_DOWNLOADING
 
+    def test_submit_allows_different_active_asset_selectors(self, service, engine):
+        task_id = seed_parse_task(engine)
+        first = service.submit(
+            task_id,
+            format="jpg",
+            selector=AssetSelector(kind="image", index=0),
+        )
+
+        second = service.submit(
+            task_id,
+            format="jpg",
+            selector=AssetSelector(kind="image", index=1),
+        )
+
+        assert second.download_id != first.download_id
+
     def test_submit_completed_same_variant_raises_3003(self, service, engine):
         task_id = seed_parse_task(engine)
         seed_download(

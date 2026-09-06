@@ -50,7 +50,6 @@ Design decisions (stable contract for Tasks 9-12):
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
 from pydantic import ValidationError
 from sqlalchemy import Engine
@@ -71,10 +70,9 @@ from app.api.responses import (
     CODE_URL_INVALID,
     ApiError,
 )
-from app.domain import ParseCommand, ParseResult, parse_duration
-from app.application.media_manifest import serialize_manifest
+from app.application.parse_persistence import to_parse_task, to_persisted_parse_task
+from app.domain import ParseCommand, ParseResult
 from app.infrastructure.database import session_scope
-from app.infrastructure.models import ParseTask
 
 __all__ = ["ParseBatchResult", "ParseFailure", "ParseService"]
 
@@ -160,7 +158,9 @@ class ParseService:
                     # branch below (stable bilingual messages by contract);
                     # the broad `except Exception` remains only for genuine
                     # programming errors, sanitized as failures.
-                    session.add(_task_row(parsed))
+                    with session.begin_nested():
+                        session.add(to_parse_task(to_persisted_parse_task(parsed)))
+                        session.flush()
                 except EngineError as exc:
                     failed.append(
                         ParseFailure(
@@ -194,25 +194,3 @@ def _failure_error(exc: Exception) -> str:
     diagnostic hint.
     """
     return f"{_MESSAGE_PARSE_FAILED} ({type(exc).__name__})"
-
-
-def _task_row(result: ParseResult) -> ParseTask:
-    """Map a :class:`ParseResult` to an ORM row (enriched metadata, secs)."""
-    metadata: dict[str, Any] = dict(result.metadata)
-    # Keep the compatibility URL fields private in persisted metadata while
-    # normalizing the strict manifest to JSON arrays for SQLAlchemy JSON.
-    metadata = serialize_manifest(metadata, media_type=result.media_type)
-    metadata["file_size_mb"] = result.file_size_mb
-    metadata["available_qualities"] = list(result.available_qualities)
-    metadata["available_bitrates"] = list(result.available_bitrates)
-    return ParseTask(
-        task_id=result.task_id,
-        url=result.url,
-        platform=result.platform,
-        media_type=result.media_type,
-        title=result.title,
-        cover_url=result.cover,
-        duration=parse_duration(result.duration) if result.duration else None,
-        format=result.format,
-        metadata_=metadata,
-    )

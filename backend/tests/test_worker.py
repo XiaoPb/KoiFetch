@@ -671,6 +671,45 @@ class TestRunOnce:
         assert any(name.endswith(".webm") for name in names)
         assert any(name.endswith(".mp4") for name in names)
 
+    def test_live_motion_bubble_uses_selected_manifest_format(
+        self, engine, storage, token_provider
+    ):
+        manifest = MediaManifest(
+            kind="live_photo",
+            live_photos=(
+                LivePhotoPair(
+                    image=MediaResource(url="https://cdn.example/live.webp", format="webp"),
+                    motion=MediaResource(url="https://cdn.example/live.mp4", format="mp4"),
+                ),
+            ),
+        )
+        task_id = seed_parse_task(
+            engine,
+            media_type=MediaType.LIVE_PHOTO,
+            metadata={"manifest": manifest.model_dump(mode="json")},
+        )
+        service = DownloadService(
+            token_provider=token_provider, storage=storage, engine=engine
+        )
+        download = service.submit(
+            task_id,
+            format="webp",
+            selector=AssetSelector(kind="live_motion", index=0),
+        )
+
+        run_once(
+            engine,
+            stub_downloader(),
+            storage,
+            FakeHub(),
+            token_provider=token_provider,
+            download_service=service,
+        )
+
+        row = load_download(engine, download.download_id)
+        assert row.status is DownloadStatus.COMPLETED
+        assert Path(row.bubble_path).suffix == ".mp4"
+
     def test_respects_max_concurrent(self, engine, storage, token_provider):
         task_a = seed_parse_task(engine, title="a")
         task_b = seed_parse_task(engine, title="b")

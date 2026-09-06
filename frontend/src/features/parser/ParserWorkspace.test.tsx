@@ -611,7 +611,8 @@ describe('ParserWorkspace', () => {
       expect(open).toHaveBeenCalledWith('/api/preview/t3/images/0', '_blank', 'noopener');
 
       await user.click(screen.getByTestId('download-all-t3'));
-      expect(open).toHaveBeenCalledWith('/api/preview/t3/images.zip', '_blank', 'noopener');
+      expect(open).toHaveBeenNthCalledWith(2, '/api/preview/t3/images/0', '_blank', 'noopener');
+      expect(open).toHaveBeenNthCalledWith(3, '/api/preview/t3/images/1', '_blank', 'noopener');
 
       expect(screen.queryByTestId('preview-t3')).not.toBeInTheDocument();
     } finally {

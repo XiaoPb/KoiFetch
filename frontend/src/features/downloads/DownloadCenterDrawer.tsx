@@ -145,8 +145,7 @@ export function DownloadCenterDrawer({ open, onClose }: DownloadCenterDrawerProp
   const handleSaveToNas = async (item: DownloadItem) => {
     setSavingNas(item.download_id);
     try {
-      const target = item.title ? `${item.title}.${item.format ?? 'file'}` : item.download_id;
-      await nasApi.save(item.download_id, target);
+      await nasApi.save(item.download_id);
       void message.success(t('downloads.savedToNas'));
       remove(item.download_id);
     } catch (err) {

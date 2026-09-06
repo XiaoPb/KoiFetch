@@ -98,6 +98,7 @@ from app.api.responses import (
     ApiError,
 )
 from app.application.stored_paths import resolve_bubble_path
+from app.application.storage_types import storage_media_type
 from app.domain import (
     DownloadCommand,
     DownloadProgress,
@@ -183,7 +184,7 @@ class DownloadService:
         """Create a ``pending`` download row for an existing parse task.
 
         Raises :class:`ApiError`: ``3001`` (400) unknown task; ``3002`` (409)
-        an active download already exists for the task; ``3003`` (400) the
+        an active download already exists for the same task asset; ``3003`` (400) the
         identical format+quality variant is already completed; generic ``400``
         for a blank selection or malformed task_id.
         """
@@ -207,13 +208,25 @@ class DownloadService:
                     CODE_TASK_NOT_FOUND,
                     _MESSAGE_TASK_NOT_FOUND,
                 )
-            active = session.scalar(
-                select(DownloadTask).where(
-                    DownloadTask.task_id == command.task_id,
-                    DownloadTask.status.in_(
-                        (DownloadStatus.PENDING, DownloadStatus.DOWNLOADING)
-                    ),
-                )
+            selector_data = (
+                command.asset_selector.model_dump(mode="json")
+                if command.asset_selector is not None
+                else None
+            )
+            active = next(
+                (
+                    row
+                    for row in session.scalars(
+                        select(DownloadTask).where(
+                            DownloadTask.task_id == command.task_id,
+                            DownloadTask.status.in_(
+                                (DownloadStatus.PENDING, DownloadStatus.DOWNLOADING)
+                            ),
+                        )
+                    )
+                    if row.asset_selector == selector_data
+                ),
+                None,
             )
             if active is not None:
                 raise ApiError(
@@ -221,11 +234,6 @@ class DownloadService:
                     CODE_TASK_ALREADY_DOWNLOADING,
                     _MESSAGE_TASK_ALREADY_DOWNLOADING,
                 )
-            selector_data = (
-                command.asset_selector.model_dump(mode="json")
-                if command.asset_selector is not None
-                else None
-            )
             completed_variant = next(
                 (
                     row
@@ -346,6 +354,17 @@ class DownloadService:
                     _MESSAGE_FILE_NOT_DOWNLOADED,
                 )
             media_type = row.parse_task.media_type
+            try:
+                selector = (
+                    AssetSelector.model_validate(row.asset_selector)
+                    if row.asset_selector is not None
+                    else None
+                )
+            except (TypeError, ValueError) as exc:
+                raise ApiError(
+                    HTTP_404_NOT_FOUND, CODE_FILE_NOT_FOUND, _MESSAGE_FILE_NOT_FOUND
+                ) from exc
+            media_type = storage_media_type(media_type, selector)
 
             try:
                 claims = self._token_provider.validate(token)

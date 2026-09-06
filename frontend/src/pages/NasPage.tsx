@@ -6,8 +6,6 @@ import {
   Card,
   Col,
   Empty,
-  Form,
-  Input,
   List,
   Modal,
   Row,
@@ -31,9 +29,9 @@ import type { HealthData } from '../types/api';
  * 2. **Save to NAS** — the save action from the PRD §3.4.3 flow: the
  *    download-center's completed items (this session only — the v1 backend
  *    has no download-list endpoint, same documented constraint as the Task 15
- *    drawer) each get an admin-only [存入NAS] button that opens a modal asking
- *    for a target directory (leading "/" optional; see the empty-default note
- *    below) and calls POST /api/nas/save. Success shows "🎉 锦鲤已游入池塘!"
+ *    drawer) each get an admin-only [存入NAS] button that calls
+ *    POST /api/nas/save. The backend generates the platform/date/author/work
+ *    path. Success shows "🎉 锦鲤已游入池塘!"
  *    with the returned `nas_path` and REMOVES the item from the store (the
  *    backend moved its bubble file into the pond, so the item's file link and
  *    a re-save would both fail); backend errors (3001/5001/5002/400) surface
@@ -68,17 +66,7 @@ const STORAGE_ROOT_LABELS: Record<string, TranslationKey> = {
 
 const DRIVE_LETTER = /^[A-Za-z]:/;
 
-/**
- * Client-side target-path validation mirroring the backend's documented rules
- * (backend/app/application/nas_service.py `_parse_target_path`): blank → 400,
- * backslash separator or drive-letter prefix → 400, `.`/`..` segments → 400,
- * and no remaining directory segment after the leading "/" (a bare "/", which
- * the backend also rejects — see its test suite) → 400. The backend remains
- * authoritative (it slugifies every segment); this pre-check catches the
- * obvious classes with inline messages instead of a round-trip 400.
- *
- * @returns an i18n key describing the problem, or null when acceptable.
- */
+/** Retained for compatibility with older page consumers; generated saves do not use it. */
 export function validateNasTargetPath(value: string): TranslationKey | null {
   const text = value.trim();
   if (!text) return 'nas.save.targetEmpty';
@@ -139,28 +127,17 @@ export default function NasPage(): JSX.Element {
 
   // --- save-to-NAS ----------------------------------------------------------
   const [saveTarget, setSaveTarget] = useState<DownloadItem | null>(null);
-  // PRD §3.4.3 says the modal defaults to "/", but the backend rejects a
-  // root-only target (nas_service._parse_target_path requires ≥1 segment) —
-  // a genuine PRD-vs-backend conflict. The field therefore opens EMPTY with
-  // an example placeholder; typing "/" alone still gets a clear message.
-  const [targetPath, setTargetPath] = useState('');
   const [saving, setSaving] = useState(false);
 
   const openSaveModal = (item: DownloadItem) => {
-    setTargetPath('');
     setSaveTarget(item);
   };
 
   const handleSave = async () => {
     if (!saveTarget || saving) return;
-    const invalidKey = validateNasTargetPath(targetPath);
-    if (invalidKey) {
-      void message.error(t(invalidKey));
-      return;
-    }
     setSaving(true);
     try {
-      const data = await nasApi.save(saveTarget.download_id, targetPath);
+      const data = await nasApi.save(saveTarget.download_id);
       setSaveTarget(null);
       // The backend MOVED the bubble file into the pond: the item is no
       // longer downloadable or re-saveable — remove it so neither the NAS
@@ -301,20 +278,7 @@ export default function NasPage(): JSX.Element {
         okButtonProps={{ 'data-testid': 'nas-save-confirm' }}
       >
         <div data-testid="nas-save-modal">
-          <Form layout="vertical">
-            <Form.Item label={t('nas.save.targetLabel')}>
-              <Input
-                data-testid="nas-target-input"
-                value={targetPath}
-                onChange={(event) => setTargetPath(event.target.value)}
-                onPressEnter={() => void handleSave()}
-                placeholder={t('nas.save.targetPlaceholder')}
-                // Backend cap (NasSaveRequest.target_path max_length=1024).
-                maxLength={1024}
-              />
-              <Typography.Text type="secondary">{t('nas.save.targetHint')}</Typography.Text>
-            </Form.Item>
-          </Form>
+          <Typography.Paragraph>{t('nas.save.generatedPathHint')}</Typography.Paragraph>
         </div>
       </Modal>
     </div>

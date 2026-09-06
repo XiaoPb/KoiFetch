@@ -103,7 +103,7 @@ def enum_check_constraint(
 
     The constraint text is derived from the domain enum so the DB contract
     cannot drift from the Python vocabulary (e.g. ``media_type IN
-    ('video', 'image', 'music')``). Alembic compares named constraints by name,
+    ('video', 'image', 'live_photo', 'music')``). Alembic compares named constraints by name,
     keeping ``alembic check`` deterministic.
     """
     values = ", ".join(repr(member.value) for member in enum_cls)

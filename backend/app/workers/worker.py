@@ -117,6 +117,7 @@ from app.application.media_manifest import (
     validate_manifest_media_type,
 )
 from app.application.preview_service import _MAX_ALBUM_BYTES, _MAX_IMAGE_BYTES
+from app.application.storage_types import storage_media_type
 from app.domain.paths import slugify
 from app.infrastructure.database import session_scope
 from app.infrastructure.models import DownloadTask
@@ -257,7 +258,9 @@ def _execute_download(
             _record_failure(engine, event_hub, download_id, exc, max_retries, target)
             return
         storage_type = _storage_media_type(media_type, selector)
-        target = storage.resolve_bubble(storage_type, _bubble_filename(row, storage_type))
+        target = storage.resolve_bubble(
+            storage_type, _bubble_filename(row, storage_type, selector)
+        )
         title = row.title
         source_url = row.parse_task.url
         try:
@@ -341,13 +344,7 @@ def _metadata_for_selector(
 
 def _storage_media_type(media_type: MediaType, selector: AssetSelector | None) -> MediaType:
     """Map live-photo selections to the configured image/video storage roots."""
-    if selector is None:
-        return media_type
-    if selector.kind == "live_motion":
-        return MediaType.VIDEO
-    if selector.kind == "live_image" or selector.package == "live_zip":
-        return MediaType.IMAGE
-    return media_type
+    return storage_media_type(media_type, selector)
 
 
 def _resource_for_selector(manifest, selector: AssetSelector, media_type: MediaType):
@@ -637,7 +634,11 @@ def _record_failure(
 # ---------------------------------------------------------------------------
 
 
-def _bubble_filename(row: DownloadTask, media_type: MediaType) -> str:
+def _bubble_filename(
+    row: DownloadTask,
+    media_type: MediaType,
+    selector: AssetSelector | None = None,
+) -> str:
     """A safe, deterministic bubble basename for a download row.
 
     ``<title-slug>_<download-id-prefix>.<ext>`` — the download id suffix keeps
@@ -646,10 +647,14 @@ def _bubble_filename(row: DownloadTask, media_type: MediaType) -> str:
     titles/formats cannot escape the bubble root.
     """
     title = row.title or "untitled"
-    return f"{slugify(title)}_{row.download_id[:8]}.{_extension_for(row, media_type)}"
+    return f"{slugify(title)}_{row.download_id[:8]}.{_extension_for(row, media_type, selector)}"
 
 
-def _extension_for(row: DownloadTask, media_type: MediaType) -> str:
+def _extension_for(
+    row: DownloadTask,
+    media_type: MediaType,
+    selector: AssetSelector | None = None,
+) -> str:
     """A sanitized file extension for a download row.
 
     Takes the segment after the last dot of the row's format (so ``mp4.webm``
@@ -658,7 +663,10 @@ def _extension_for(row: DownloadTask, media_type: MediaType) -> str:
     blank or yields nothing usable. An unknown media type raises a clear
     ``ValueError`` instead of a bare ``KeyError``.
     """
-    ext = (row.format or "").strip().lstrip(".")
+    if selector is not None and selector.package is not None:
+        return "zip"
+    selector_format = _manifest_format_for_selector(row, selector)
+    ext = (selector_format or row.format or "").strip().lstrip(".")
     if ext:
         cleaned = _EXT_UNSAFE.sub("", ext.rsplit(".", 1)[-1].lower())
         if cleaned:
@@ -667,6 +675,26 @@ def _extension_for(row: DownloadTask, media_type: MediaType) -> str:
         return _DEFAULT_EXT_BY_TYPE[media_type]
     except KeyError:
         raise ValueError(f"no default extension for media type {media_type!r}") from None
+
+
+def _manifest_format_for_selector(
+    row: DownloadTask, selector: AssetSelector | None
+) -> str | None:
+    """Return the selected manifest resource format, if available."""
+    if selector is None or selector.kind not in {"live_image", "live_motion"}:
+        return None
+    metadata = getattr(row.parse_task, "metadata_", None) or {}
+    manifest = metadata.get("manifest") if isinstance(metadata, dict) else None
+    if not isinstance(manifest, dict):
+        return None
+    pairs = manifest.get("live_photos")
+    if not isinstance(pairs, list) or selector.index >= len(pairs):
+        return None
+    pair = pairs[selector.index]
+    if not isinstance(pair, dict):
+        return None
+    resource = pair.get("motion" if selector.kind == "live_motion" else "image")
+    return resource.get("format") if isinstance(resource, dict) else None
 
 
 def _progress_event(progress: DownloadProgress) -> dict:

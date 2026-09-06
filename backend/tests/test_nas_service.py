@@ -131,6 +131,7 @@ def seed_download(
     status=DownloadStatus.PENDING,
     progress=0.0,
     bubble_path=None,
+    asset_selector=None,
 ) -> str:
     download_id = download_id or str(uuid.uuid4())
     with session_scope(engine) as session:
@@ -143,6 +144,7 @@ def seed_download(
                 status=status,
                 progress=progress,
                 bubble_path=str(bubble_path) if bubble_path is not None else None,
+                asset_selector=asset_selector,
             )
         )
     return download_id
@@ -171,6 +173,121 @@ def api_error(exc: Exception) -> ApiError:
 
 
 class TestSaveHappyPath:
+    def test_save_uses_generated_platform_author_work_path(
+        self, service, engine, storage
+    ):
+        task_id = seed_parse_task(
+            engine,
+            task_id="parse-path-rule",
+            title="作品标题",
+            metadata={
+                "published_at": "2026-09-06",
+                "source_id": "7123456789",
+                "author": {"name": "作者A"},
+            },
+        )
+        download_id = seed_completed_with_file(
+            engine,
+            storage,
+            task_id=task_id,
+            title="作品标题",
+            filename="作品标题.mp4",
+        )
+
+        result = service.save(download_id)
+
+        assert result.nas_path == "/bilibili/2026-09-06/作者a/7123456789/作者a_作品标题.mp4"
+        assert (
+            storage.pond_root(MediaType.VIDEO)
+            / "bilibili"
+            / "2026-09-06"
+            / "作者a"
+            / "7123456789"
+            / "作者a_作品标题.mp4"
+        ).is_file()
+
+    def test_album_resources_share_generated_work_directory_and_get_indexes(
+        self, service, engine, storage
+    ):
+        task_id = seed_parse_task(
+            engine,
+            task_id="parse-album-path",
+            title="图集标题",
+            media_type=MediaType.IMAGE,
+            metadata={
+                "published_at": "2026-09-06",
+                "source_id": "album-1",
+                "author": {"name": "作者A"},
+            },
+        )
+        first_id = seed_completed_with_file(
+            engine,
+            storage,
+            task_id=task_id,
+            media_type=MediaType.IMAGE,
+            filename="first.webp",
+            data=b"first",
+            title="图集标题",
+            asset_selector={"kind": "image", "index": 0},
+        )
+        second_id = seed_completed_with_file(
+            engine,
+            storage,
+            task_id=task_id,
+            media_type=MediaType.IMAGE,
+            filename="second.webp",
+            data=b"second",
+            title="图集标题",
+            asset_selector={"kind": "image", "index": 1},
+        )
+
+        first = service.save(first_id)
+        second = service.save(second_id)
+
+        assert first.nas_path == "/bilibili/2026-09-06/作者a/album-1/作者a_图集标题_001.webp"
+        assert second.nas_path == "/bilibili/2026-09-06/作者a/album-1/作者a_图集标题_002.webp"
+
+    def test_live_photo_image_and_motion_share_generated_work_directory(
+        self, service, engine, storage
+    ):
+        task_id = seed_parse_task(
+            engine,
+            task_id="parse-live-path",
+            title="动图标题",
+            media_type=MediaType.LIVE_PHOTO,
+            metadata={
+                "published_at": "2026-09-06",
+                "source_id": "live-1",
+                "author": {"name": "作者A"},
+            },
+        )
+        image_id = seed_completed_with_file(
+            engine,
+            storage,
+            task_id=task_id,
+            media_type=MediaType.IMAGE,
+            filename="still.webp",
+            data=b"still",
+            title="动图标题",
+            asset_selector={"kind": "live_image", "index": 0},
+        )
+        motion_id = seed_completed_with_file(
+            engine,
+            storage,
+            task_id=task_id,
+            media_type=MediaType.VIDEO,
+            filename="motion.mp4",
+            data=b"motion",
+            title="动图标题",
+            asset_selector={"kind": "live_motion", "index": 0},
+        )
+
+        image = service.save(image_id)
+        motion = service.save(motion_id)
+
+        assert image.nas_path == "/bilibili/2026-09-06/作者a/live-1/作者a_动图标题_001.webp"
+        assert motion.nas_path == "/bilibili/2026-09-06/作者a/live-1/作者a_动图标题_motion.mp4"
+
     def test_save_moves_bubble_file_into_pond_target(self, service, engine, storage):
         task_id = seed_parse_task(engine)
         download_id = seed_completed_with_file(engine, storage, task_id=task_id)
@@ -259,6 +376,30 @@ class TestSaveHappyPath:
         assert video.file_size == len(BUBBLE_DATA)
         assert image.file_size == 8
         assert music.file_size == 10
+
+    def test_save_live_motion_uses_video_storage_bucket(
+        self, service, engine, storage
+    ):
+        task_id = seed_parse_task(engine, media_type=MediaType.LIVE_PHOTO)
+        bubble = storage.save_bytes(
+            MediaType.VIDEO, "live-motion.mov", b"motion-bytes"
+        )
+        download_id = seed_completed_with_file(
+            engine,
+            storage,
+            task_id=task_id,
+            media_type=MediaType.VIDEO,
+            filename="live-motion.mov",
+            data=b"motion-bytes",
+            asset_selector={"kind": "live_motion", "index": 0},
+        )
+
+        result = service.save(download_id, "/动图")
+
+        pond = storage.pond_root(MediaType.VIDEO) / "动图" / "live-motion.mov"
+        assert result.nas_path == "/动图/live-motion.mov"
+        assert pond.read_bytes() == b"motion-bytes"
+        assert not bubble.exists()
 
     def test_save_metadata_driven_video_filename(self, service, engine, storage):
         task_id = seed_parse_task(
