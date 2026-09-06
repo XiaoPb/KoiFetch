@@ -41,10 +41,11 @@ def build_media_pond_path(
     published = _format_date(published_at, downloaded_on)
 
     name_parts = [author_slug, title_slug]
-    if index is not None:
+    if resource_kind in {"live_image", "live_motion"}:
+        kind_label = "motion" if resource_kind == "live_motion" else "image"
+        name_parts.append(f"live-{(index or 0) + 1:04d}-{kind_label}")
+    elif index is not None:
         name_parts.append(f"{index + 1:03d}")
-    if resource_kind == "live_motion":
-        name_parts.append("motion")
     base = "_".join(name_parts)
     # Empty extension → directory path (loose-file package like live_zip)
     filename = base if not extension else f"{base}.{extension}"

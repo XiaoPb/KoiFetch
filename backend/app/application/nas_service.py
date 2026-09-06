@@ -106,6 +106,18 @@ __all__ = ["NasSaveResult", "NasService"]
 
 logger = logging.getLogger(__name__)
 
+# Parse "live-0001-image.webp" / "live-0001-motion.mp4" → (index, kind)
+_LIVE_MEMBER_RE = re.compile(r"live-(\d+)-(image|motion)\.")
+
+
+def _parse_live_member(name: str) -> tuple[int, str] | None:
+    """Parse a loose-file member name into (0-based index, resource_kind)."""
+    m = _LIVE_MEMBER_RE.match(name)
+    if m:
+        return int(m.group(1)) - 1, f"live_{m.group(2)}"
+    return None
+
+
 _MESSAGE_TASK_NOT_FOUND = "任务不存在 / Task not found"
 _MESSAGE_FILE_NOT_DOWNLOADED = "文件未下载完成 / File not fully downloaded"
 _MESSAGE_FILE_NOT_FOUND = "文件不存在 / File not found"
@@ -227,6 +239,75 @@ class NasService:
                 raise ApiError(
                     HTTP_400_BAD_REQUEST, CODE_BAD_REQUEST, _MESSAGE_TARGET_TOO_LONG
                 )
+
+            # Loose-file package (live_zip): bubble is a directory of images
+            # and motion videos. Move each member individually to its own
+            # pond path so the pond mirrors the video layout (no extra
+            # directory nesting — files go directly under work_id/).
+            if bubble.is_dir():
+                members = sorted(f for f in bubble.iterdir() if f.is_file())
+                if not members:
+                    raise ApiError(
+                        HTTP_404_NOT_FOUND,
+                        CODE_FILE_NOT_FOUND,
+                        _MESSAGE_FILE_NOT_FOUND,
+                    )
+                first_relative: str | None = None
+                total_size = 0
+                skipped = 0
+                for member in members:
+                    parsed = _parse_live_member(member.name)
+                    if parsed is not None:
+                        m_index, m_kind = parsed
+                        m_selector = AssetSelector(kind=m_kind, index=m_index)
+                    else:
+                        m_selector = selector
+                    # Each member lands in its own bucket: images → image,
+                    # motion videos → video.
+                    m_storage_type = storage_media_type(media_type, m_selector)
+                    m_relative = self._pond_relative_path(
+                        row, parse_task, member.name, m_selector
+                    )
+                    if len(m_relative) > _MAX_POND_RELATIVE_LENGTH:
+                        continue
+                    m_target = self._storage.resolve_pond(
+                        m_storage_type, *m_relative.split("/")
+                    )
+                    if self._storage.exists(m_target):
+                        skipped += 1
+                        continue
+                    try:
+                        m_pond = self._storage.move_to_pond(
+                            m_storage_type, member, target=m_relative
+                        )
+                    except (FileExistsError, PathOutsideRootError):
+                        skipped += 1
+                        continue
+                    if first_relative is None:
+                        first_relative = m_relative
+                    total_size += m_pond.stat().st_size
+                if first_relative is None:
+                    # All members already existed in pond
+                    raise ApiError(
+                        HTTP_400_BAD_REQUEST,
+                        CODE_BAD_REQUEST,
+                        _MESSAGE_TARGET_EXISTS,
+                    )
+                saved_at = datetime.now(timezone.utc)
+                row.pond_path = first_relative
+                row.completed_at = saved_at
+                # Best-effort: remove the now-empty bubble directory
+                try:
+                    bubble.rmdir()
+                except OSError:
+                    pass
+                return NasSaveResult(
+                    nas_path="/" + first_relative,
+                    file_size=total_size,
+                    saved_at=saved_at,
+                )
+
+            # --- single-file path (original logic) ---
 
             # Collision guard (data-loss prevention): the one-to-many model
             # allows several COMPLETED variants per task, and metadata-driven
