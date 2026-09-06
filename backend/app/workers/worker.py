@@ -82,12 +82,10 @@ import logging
 import os
 import re
 import shutil
-import tempfile
 import threading
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-import zipfile
 
 from sqlalchemy import Engine, select, update
 from sqlalchemy.orm import selectinload
@@ -308,9 +306,9 @@ def _execute_download(
         logger.warning("download %s failed: %s", download_id, exc)
         _record_failure(engine, event_hub, download_id, exc, max_retries, target)
         return
-    if not target.is_file():
-        # The adapter reported COMPLETED but left no file: treat as a failure
-        # (the protocol contract is that the file exists at target_path).
+    if not target.exists():
+        # The adapter reported COMPLETED but left nothing: treat as a failure
+        # (the protocol contract is that the file/dir exists at target_path).
         error = RuntimeError(f"downloader reported success but no file at {target}")
         logger.warning("download %s: %s", download_id, error)
         _record_failure(engine, event_hub, download_id, error, max_retries, target)
@@ -415,10 +413,14 @@ def _download_package(
     selector: AssetSelector,
     target: Path,
 ) -> DownloadResult:
-    """Fetch package members and atomically materialize one deterministic ZIP."""
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temp_dir = Path(tempfile.mkdtemp(prefix=f".{request.download_id[:8]}-", dir=target.parent))
-    zip_path = temp_dir / "package.zip"
+    """Fetch package members and materialize them as loose files in a directory.
+
+    Unlike the previous ZIP packaging, each member (image/motion) is downloaded
+    directly into the target directory with its deterministic name, so the
+    bubble holds individual files (not an archive) and ``move_to_pond`` can
+    relocate the whole directory to the pond.
+    """
+    target.mkdir(parents=True, exist_ok=True)
     try:
         members = _package_members(parse_task, selector)
         if len(members) > _MAX_PACKAGE_MEMBERS:
@@ -429,74 +431,60 @@ def _download_package(
         ):
             raise EngineDownloadError("下载失败 / Download failed")
         total_written = 0
-        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_STORED) as archive:
-            for name, resource, effective_type in members:
-                member_path = temp_dir / name
-                command = request.command.model_copy(
-                    update={
-                        "format": resource.format,
-                        "quality": resource.quality,
-                    }
-                )
-                metadata = dict(request.metadata)
-                if effective_type is MediaType.VIDEO:
-                    metadata["video_url"] = str(resource.url)
-                    metadata.pop("images", None)
-                else:
-                    metadata["images"] = [{"url": str(resource.url)}]
-                    metadata.pop("video_url", None)
+        for name, resource, effective_type in members:
+            member_path = target / name
+            command = request.command.model_copy(
+                update={
+                    "format": resource.format,
+                    "quality": resource.quality,
+                }
+            )
+            metadata = dict(request.metadata)
+            if effective_type is MediaType.VIDEO:
+                metadata["video_url"] = str(resource.url)
+                metadata.pop("images", None)
+            else:
+                metadata["images"] = [{"url": str(resource.url)}]
+                metadata.pop("video_url", None)
 
-                def guard_progress(progress: DownloadProgress) -> None:
-                    downloaded = progress.downloaded_bytes
-                    if downloaded is not None and (
-                        downloaded > _MAX_PACKAGE_MEMBER_BYTES
-                        or downloaded > _MAX_PACKAGE_TOTAL_BYTES - total_written
-                    ):
-                        raise EngineDownloadError("下载失败 / Download failed")
-
-                member_request = DownloadRequest(
-                    command=command,
-                    download_id=request.download_id,
-                    target_path=member_path,
-                    title=request.title,
-                    media_type=effective_type,
-                    source_url=request.source_url,
-                    metadata=metadata,
-                    progress_callback=guard_progress,
-                )
-                downloader.download(member_request)
-                if not member_path.is_file():
-                    raise EngineDownloadError("下载失败 / Download failed")
-                member_size = member_path.stat().st_size
-                if (
-                    member_size > _MAX_PACKAGE_MEMBER_BYTES
-                    or total_written + member_size > _MAX_PACKAGE_TOTAL_BYTES
-                ):
-                    raise EngineDownloadError("下载失败 / Download failed")
-                total_written += member_size
-                archive.write(member_path, arcname=name)
-        os.replace(zip_path, target)
-        size = target.stat().st_size
+            member_request = DownloadRequest(
+                command=command,
+                download_id=request.download_id,
+                target_path=member_path,
+                title=request.title,
+                media_type=effective_type,
+                source_url=request.source_url,
+                metadata=metadata,
+                progress_callback=None,  # per-member progress omitted for loose files
+            )
+            downloader.download(member_request)
+            if not member_path.is_file():
+                raise EngineDownloadError("下载失败 / Download failed")
+            member_size = member_path.stat().st_size
+            if (
+                member_size > _MAX_PACKAGE_MEMBER_BYTES
+                or total_written + member_size > _MAX_PACKAGE_TOTAL_BYTES
+            ):
+                raise EngineDownloadError("下载失败 / Download failed")
+            total_written += member_size
         return DownloadResult(
             download_id=request.download_id,
             task_id=request.command.task_id,
             title=request.title,
             media_type=request.media_type,
-            format="zip",
+            format="dir",
             quality=None,
             status=DownloadStatus.COMPLETED,
             progress=100.0,
             speed=None,
-            total_bytes=size,
-            downloaded_bytes=size,
+            total_bytes=total_written,
+            downloaded_bytes=total_written,
             retry_count=0,
             error_message=None,
         )
     except Exception:
-        target.unlink(missing_ok=True)
+        shutil.rmtree(target, ignore_errors=True)
         raise
-    finally:
-        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 def _progress_callback_for(
@@ -653,7 +641,11 @@ def _bubble_filename(
     titles/formats cannot escape the bubble root.
     """
     title = row.title or "untitled"
-    return f"{slugify(title)}_{row.download_id[:8]}.{_extension_for(row, media_type, selector)}"
+    ext = _extension_for(row, media_type, selector)
+    if ext:
+        return f"{slugify(title)}_{row.download_id[:8]}.{ext}"
+    # No extension → directory name (e.g. live_zip package with loose files)
+    return f"{slugify(title)}_{row.download_id[:8]}"
 
 
 def _extension_for(
@@ -670,7 +662,7 @@ def _extension_for(
     ``ValueError`` instead of a bare ``KeyError``.
     """
     if selector is not None and selector.package is not None:
-        return "zip"
+        return ""  # package → directory, not a single file
     selector_format = _manifest_format_for_selector(row, selector)
     ext = (selector_format or row.format or "").strip().lstrip(".")
     if ext:

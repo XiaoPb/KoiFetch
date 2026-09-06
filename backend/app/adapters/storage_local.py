@@ -186,9 +186,9 @@ class LocalStorageAdapter:
             raise PathOutsideRootError(
                 f"path {str(bubble)!r} is outside bubble root {str(bubble_root)!r}"
             )
-        if not bubble.is_file():
+        if not bubble.exists():
             raise ValueError(
-                f"move_to_pond source must be a file, got {str(bubble)!r}"
+                f"move_to_pond source does not exist: {str(bubble)!r}"
             )
         if target is None:
             relative = os.path.relpath(bubble, bubble_root)
@@ -216,7 +216,7 @@ class LocalStorageAdapter:
         path = Path(stored_path)
         if not self._within_roots(path):
             return False
-        return path.is_file()
+        return path.exists()
 
     def delete(self, stored_path: Path | str) -> None:
         path = Path(stored_path)

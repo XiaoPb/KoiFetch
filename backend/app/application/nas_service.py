@@ -312,8 +312,8 @@ class NasService:
     ) -> str:
         """Build the generated platform/date/author/work-relative path."""
         ext = _extension_of(bubble_basename)
-        if not ext:
-            return bubble_basename
+        # Empty extension → loose-file directory (e.g. live_zip package);
+        # still build the full pond path so it lands under platform/date/author.
         title = row.title or parse_task.title or "untitled"
         metadata = parse_task.metadata_ if isinstance(parse_task.metadata_, dict) else {}
         author_data = metadata.get("author")

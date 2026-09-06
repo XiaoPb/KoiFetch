@@ -542,16 +542,16 @@ def main() -> int:
                 time.sleep(3)  # 等 worker 初始化
 
         # 6. 提交下载 + 轮询（对所有任务，验证各媒体类型 Worker 下载）
-        bubble_download_id: str | None = None
+        bubble_download_ids: list[tuple[str, str]] = []  # (download_id, media_type)
         if tasks:
             for task in tasks:
                 _, did = tester.test_submit_and_poll(task)
-                # 记录第一个成功的 download_id 用于 nas/save
-                if bubble_download_id is None and did:
+                if did:
                     resp = tester._request("GET", f"/api/download/progress/{did}")
                     if resp.status_code == 200 and resp.json().get("data", {}).get("status") == "completed":
-                        bubble_download_id = did
-                        info(f"首个成功下载: {did[:8]}...（用于 NAS 验证）")
+                        mt = task.get("media_type", "?")
+                        bubble_download_ids.append((did, mt))
+                        info(f"成功下载: {did[:8]}... ({mt})")
 
         # 7. 直连下载（对每个任务尝试）
         if not args.no_download:
@@ -561,15 +561,16 @@ def main() -> int:
             info("已跳过直连下载 (--no-download)")
 
         # 8-9. Bubble/Pond 存储验证
-        if not args.no_nas and bubble_download_id:
+        if not args.no_nas and bubble_download_ids:
             # 8. 验证 bubble 文件
             tester.test_verify_bubble()
-            # 9. NAS save → pond（即使 nas/save 返回"已存在"也验证 pond 目录）
-            nas_ok, nas_path = tester.test_nas_save(bubble_download_id)
-            # 9b. 验证 pond 文件（无论 nas/save 结果，pond 目录可能有之前保存的文件）
-            tester.test_verify_pond(nas_path)
-        elif not args.no_nas and not bubble_download_id:
-            info("无 download_id，跳过 bubble/pond 验证")
+            # 9. NAS save → pond（对所有成功的下载验证 nas/save）
+            for did, mt in bubble_download_ids:
+                tester.test_nas_save(did)
+            # 9b. 验证 pond 文件
+            tester.test_verify_pond(None)
+        elif not args.no_nas and not bubble_download_ids:
+            info("无成功下载，跳过 bubble/pond 验证")
 
         # 10. 查看 Cookie
         tester.test_list_cookies()

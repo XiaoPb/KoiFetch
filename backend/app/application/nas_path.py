@@ -29,7 +29,7 @@ def build_media_pond_path(
     if media_bucket not in _MEDIA_BUCKETS:
         raise ValueError(f"unsupported media bucket: {media_bucket!r}")
     extension = extension.strip().lstrip(".").lower()
-    if not extension or not _EXTENSION_RE.fullmatch(extension):
+    if extension and not _EXTENSION_RE.fullmatch(extension):
         raise ValueError("extension must contain only letters and digits")
     if index is not None and index < 0:
         raise ValueError("index must be >= 0")
@@ -45,7 +45,9 @@ def build_media_pond_path(
         name_parts.append(f"{index + 1:03d}")
     if resource_kind == "live_motion":
         name_parts.append("motion")
-    filename = "_".join(name_parts) + f".{extension}"
+    base = "_".join(name_parts)
+    # Empty extension → directory path (loose-file package like live_zip)
+    filename = base if not extension else f"{base}.{extension}"
     return "/".join((platform_slug, published, author_slug, work_slug, filename))
 
 
