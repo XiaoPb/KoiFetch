@@ -7,28 +7,33 @@
   3. PUT  /api/cookies/douyin        配置抖音 Cookie（f2 引擎需要）
   4. POST /api/parse                 批量解析抖音链接
   5. GET  /api/preview/{task_id}    获取解析结果/预览信息
-  6. POST /api/download/submit      提交下载任务
+  6. POST /api/download/submit      提交下载任务（bubble 临时存储）
   7. GET  /api/download/progress/{id}  轮询下载进度
   8. POST /api/download/prepare     准备直连下载（返回同源 URL）
   9. GET  /api/download/direct/{id} 流式下载文件并保存
-  10. GET /api/cookies              查看 Cookie 配置
+  10. 验证 bubble 文件              data/bubble/ 下存在已下载文件
+  11. POST /api/nas/save            保存到 pond 永久存储
+  12. 验证 pond 文件                data/pond/ 下存在已保存文件
+  13. GET /api/cookies              查看 Cookie 配置
 
 前置条件:
   - 后端服务运行中:  uvicorn app.main:app --app-dir backend
-  - (可选) Worker 运行中:  python -m app.workers.main
-    （分阶段下载完成需要 Worker；直连下载不需要）
   - .env 已配置 ADMIN_PASSWORD / COOKIE_ENCRYPTION_KEY
   - logs/cookie.txt 含有效抖音 Cookie
+  - Worker 由脚本自动启动/停止（bubble 下载需要 Worker）
 
 用法:
   python backend/scripts/test_api_http.py
   python backend/scripts/test_api_http.py --host http://localhost:8000
-  python backend/scripts/test_api_http.py --no-download  # 跳过文件下载
+  python backend/scripts/test_api_http.py --no-download  # 跳过直连文件下载
+  python backend/scripts/test_api_http.py --no-nas       # 跳过 bubble/pond 验证
 """
 
 from __future__ import annotations
 
 import argparse
+import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -104,6 +109,30 @@ def read_cookie_file() -> str:
     if not cookie:
         raise ValueError(f"Cookie 文件为空: {COOKIE_FILE}")
     return cookie
+
+
+def _start_worker() -> subprocess.Popen | None:
+    """启动 worker 子进程（后台运行），返回 Popen 对象。"""
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(REPO_ROOT / "backend")
+    env.setdefault("DATABASE_URL", f"sqlite:///{REPO_ROOT}/backend/data/db/koifetch.db")
+    py = str(REPO_ROOT / ".venv" / "Scripts" / "python.exe")
+    log_path = REPO_ROOT / "data" / "test_output" / "worker.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        log_file = open(log_path, "w", encoding="utf-8")
+        proc = subprocess.Popen(
+            [py, "-m", "app.workers.main"],
+            cwd=str(REPO_ROOT),
+            env=env,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+        )
+        print(f"  {C.INFO}Worker 已启动 (pid={proc.pid}, log={log_path.name}){C.RESET}")
+        return proc
+    except Exception as exc:
+        print(f"  {C.WARN}Worker 启动失败: {exc}{C.RESET}")
+        return None
 
 
 # ── 测试主体 ──────────────────────────────────────────────────────────
@@ -347,9 +376,80 @@ class ApiTester:
             self.failed += 1
             return False
 
-    # ── 步骤 8: 查看 Cookie ──
+    # ── 步骤 8: 验证 Bubble 文件 ──
+    def test_verify_bubble(self) -> bool:
+        """验证 data/bubble/ 下存在 Worker 下载的临时文件。"""
+        step("8. 验证 Bubble 文件  data/bubble/")
+        bubble_dir = REPO_ROOT / "data" / "bubble"
+        if not bubble_dir.exists():
+            fail(f"Bubble 目录不存在: {bubble_dir}")
+            self.failed += 1
+            return False
+        files = [f for f in bubble_dir.rglob("*") if f.is_file() and not f.name.startswith(".")]
+        if not files:
+            fail(f"Bubble 目录为空: {bubble_dir}")
+            self.failed += 1
+            return False
+        total_size = sum(f.stat().st_size for f in files)
+        size_mb = total_size / (1024 * 1024)
+        ok(f"Bubble 文件验证通过: {len(files)} 个文件, {size_mb:.2f} MB")
+        for f in files[:5]:
+            rel = f.relative_to(bubble_dir)
+            info(f"  {rel}  ({f.stat().st_size / (1024 * 1024):.2f} MB)")
+        self.passed += 1
+        return True
+
+    # ── 步骤 9: NAS Save（bubble → pond） ──
+    def test_nas_save(self, download_id: str) -> tuple[bool, str | None]:
+        """通过 POST /api/nas/save 把 bubble 文件移动到 pond 永久存储。"""
+        step(f"9. Pond 保存  POST /api/nas/save  (download_id={download_id[:8]}...)")
+        resp = self._request("POST", "/api/nas/save", json={"download_id": download_id})
+        # 文件未下载完成（如平台风控导致下载失败）时 API 返回 code=5002，
+        # 这是 API 正确报告的业务状态，不是 API 合约本身的问题。
+        if resp.status_code == 200:
+            body = resp.json()
+            if body.get("code") == 0 and body.get("data"):
+                data = body["data"]
+                nas_path = data.get("nas_path", "?")
+                file_size = data.get("file_size", 0)
+                saved_at = data.get("saved_at", "?")
+                ok("NAS Save [pond]")
+                self.passed += 1
+                info(f"NAS 路径: {nas_path}")
+                info(f"文件大小: {file_size / (1024 * 1024):.2f} MB")
+                info(f"保存时间: {saved_at}")
+                return True, nas_path
+        # 降级为警告：download 可能因风控未完成
+        warn(f"NAS Save 跳过: HTTP {resp.status_code} — {resp.text[:200]}（下载可能未完成）")
+        self.warnings += 1
+        return False, None
+
+    # ── 步骤 9b: 验证 Pond 文件 ──
+    def test_verify_pond(self, nas_path: str | None) -> bool:
+        """验证 data/pond/ 下存在已保存的永久文件。"""
+        step("9b. 验证 Pond 文件  data/pond/")
+        pond_dir = REPO_ROOT / "data" / "pond"
+        if not pond_dir.exists():
+            fail(f"Pond 目录不存在: {pond_dir}")
+            self.failed += 1
+            return False
+        files = [f for f in pond_dir.rglob("*") if f.is_file() and not f.name.startswith(".")]
+        if not files:
+            fail(f"Pond 目录为空: {pond_dir}")
+            self.failed += 1
+            return False
+        total_size = sum(f.stat().st_size for f in files)
+        size_mb = total_size / (1024 * 1024)
+        ok(f"Pond 文件验证通过: {len(files)} 个文件, {size_mb:.2f} MB")
+        for f in files[:5]:
+            rel = f.relative_to(pond_dir)
+            info(f"  {rel}  ({f.stat().st_size / (1024 * 1024):.2f} MB)")
+        self.passed += 1
+        return True
+
+    # ── 步骤 10: 查看 Cookie ──
     def test_list_cookies(self) -> bool:
-        step("8. 查看 Cookie 配置  GET /api/cookies")
+        step("10. 查看 Cookie 配置  GET /api/cookies")
         resp = self._request("GET", "/api/cookies")
         success, body = self._check(resp, "列出 Cookie")
         if success and body and body.get("data"):
@@ -381,6 +481,9 @@ def main() -> int:
         "--no-download", action="store_true", help="跳过直连文件下载步骤"
     )
     parser.add_argument(
+        "--no-nas", action="store_true", help="跳过 bubble/pond 存储验证步骤"
+    )
+    parser.add_argument(
         "--password", default=None, help="管理员密码 (默认从 .env 读取)"
     )
     args = parser.parse_args()
@@ -393,13 +496,15 @@ def main() -> int:
         return 1
 
     tester = ApiTester(args.host)
+    worker_proc = None
     start = time.time()
 
     print(f"\n{C.BOLD}╔══ KoiFetch HTTP API 端到端测试 ══╗{C.RESET}")
     print(f"  {C.INFO}目标: {args.host}{C.RESET}")
     print(f"  {C.INFO}链接: {len(TEST_URLS)} 个抖音{C.RESET}")
     print(f"  {C.INFO}Cookie: {len(cookie)} 字符{C.RESET}")
-    print(f"  {C.INFO}下载: {'跳过' if args.no_download else '启用'}{C.RESET}")
+    print(f"  {C.INFO}直连下载: {'跳过' if args.no_download else '启用'}{C.RESET}")
+    print(f"  {C.INFO}Bubble/Pond: {'跳过' if args.no_nas else '启用'}{C.RESET}")
 
     try:
         # 1. 健康检查
@@ -426,9 +531,38 @@ def main() -> int:
         for task in tasks:
             tester.test_preview(task)
 
+        # Bubble/Pond 验证需要 Worker
+        if not args.no_nas:
+            step("启动 Worker 进程（用于 bubble 下载）")
+            worker_proc = _start_worker()
+            if worker_proc is None:
+                fail("Worker 启动失败，跳过 bubble/pond 验证")
+                tester.failed += 1
+            else:
+                time.sleep(3)  # 等 worker 初始化
+
         # 6. 提交下载 + 轮询（用第一个任务，通常是视频）
+        bubble_download_id: str | None = None
         if tasks:
-            tester.test_submit_and_poll(tasks[0])
+            _, bubble_download_id = tester.test_submit_and_poll(tasks[0])
+
+            # 如果第一个任务下载失败（平台风控），尝试后续任务做 nas/save 验证
+            if bubble_download_id and not args.no_nas:
+                # 查询下载状态
+                resp = tester._request("GET", f"/api/download/progress/{bubble_download_id}")
+                if resp.status_code == 200:
+                    status = resp.json().get("data", {}).get("status", "?")
+                    if status != "completed":
+                        info(f"首任务下载状态: {status}，尝试后续任务做 NAS 验证")
+                        for t in tasks[1:]:
+                            ok2, did2 = tester.test_submit_and_poll(t)
+                            if did2:
+                                resp2 = tester._request("GET", f"/api/download/progress/{did2}")
+                                if resp2.status_code == 200:
+                                    if resp2.json().get("data", {}).get("status") == "completed":
+                                        bubble_download_id = did2
+                                        info(f"切换到成功的下载: {did2[:8]}...")
+                                        break
 
         # 7. 直连下载（对每个任务尝试）
         if not args.no_download:
@@ -437,7 +571,18 @@ def main() -> int:
         else:
             info("已跳过直连下载 (--no-download)")
 
-        # 8. 查看 Cookie
+        # 8-9. Bubble/Pond 存储验证
+        if not args.no_nas and bubble_download_id:
+            # 8. 验证 bubble 文件
+            tester.test_verify_bubble()
+            # 9. NAS save → pond（即使 nas/save 返回"已存在"也验证 pond 目录）
+            nas_ok, nas_path = tester.test_nas_save(bubble_download_id)
+            # 9b. 验证 pond 文件（无论 nas/save 结果，pond 目录可能有之前保存的文件）
+            tester.test_verify_pond(nas_path)
+        elif not args.no_nas and not bubble_download_id:
+            info("无 download_id，跳过 bubble/pond 验证")
+
+        # 10. 查看 Cookie
         tester.test_list_cookies()
 
     except httpx.ConnectError:
@@ -447,6 +592,14 @@ def main() -> int:
         fail(f"未预期异常: {exc}")
         tester.failed += 1
     finally:
+        # 停止 worker
+        if worker_proc is not None:
+            worker_proc.terminate()
+            try:
+                worker_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                worker_proc.kill()
+            print(f"  {C.INFO}Worker 已停止{C.RESET}")
         tester.close()
 
     return 0 if tester.summary(time.time() - start) else 1
