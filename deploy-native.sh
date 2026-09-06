@@ -32,6 +32,30 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 
+load_dotenv_defaults() {
+  local dotenv="$ROOT/.env"
+  [ -f "$dotenv" ] || return 0
+
+  local key value
+  declare -A inherited_env=()
+  while IFS='=' read -r key value; do
+    [[ "$key" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]] || continue
+    [ -n "$key" ] || continue
+    inherited_env["$key"]="$value"
+  done < <(env)
+
+  set -a
+  # shellcheck disable=SC1090
+  source "$dotenv"
+  set +a
+
+  for key in "${!inherited_env[@]}"; do
+    export "$key=${inherited_env[$key]}"
+  done
+}
+
+load_dotenv_defaults
+
 KOI_PORT="${KOI_PORT:-8010}"
 KOI_HOST="${KOI_HOST:-127.0.0.1}"
 KOI_DATA_ROOT="${KOI_DATA_ROOT:-backend/data}"
@@ -41,6 +65,7 @@ LOG_DIR="$ROOT/.deploy-logs"
 API_PID="$LOG_DIR/api.pid"
 WORKER_PID="$LOG_DIR/worker.pid"
 PY="$ROOT/.venv/bin/python"
+DEPS_MARKER="$ROOT/.venv/.koifetch-deps-installed"
 NPM_CACHE="${NPM_CACHE:-/tmp/npm-cache}"
 PIP_CACHE="$ROOT/.venv/pip-cache"
 
@@ -70,12 +95,17 @@ start() {
       log "creating venv"
       python3 -m venv "$ROOT/.venv"
     fi
-    log "installing backend dependencies (cache: $PIP_CACHE)"
-    if [ -n "${PIP_INDEX:-}" ]; then
-      export PIP_INDEX_URL="$PIP_INDEX"
+    if [ -f "$DEPS_MARKER" ]; then
+      log "skipping backend dependency installation (marker: $DEPS_MARKER)"
+    else
+      log "installing backend dependencies (cache: $PIP_CACHE)"
+      if [ -n "${PIP_INDEX:-}" ]; then
+        export PIP_INDEX_URL="$PIP_INDEX"
+      fi
+      "$PY" "$ROOT/backend/scripts/install_backend_dependencies.py" \
+        --cache "$PIP_CACHE"
+      touch "$DEPS_MARKER"
     fi
-    "$PY" "$ROOT/backend/scripts/install_backend_dependencies.py" \
-      --cache "$PIP_CACHE"
   fi
 
   # --- 4. frontend build -------------------------------------------------
@@ -111,6 +141,7 @@ start() {
       echo
       log "Koi Fetch is live: http://$KOI_HOST:$KOI_PORT/  (worker pid $(cat "$WORKER_PID"))"
       log "stop with: $0 stop"
+      read -r -p "Press Enter to finish deployment (API and worker remain running)... " _ || true
       return 0
     fi
     if ! kill -0 "$(cat "$API_PID")" 2>/dev/null; then
